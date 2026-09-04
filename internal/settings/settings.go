@@ -1,18 +1,52 @@
 // Package settings 用户配置的加载与持久化（方案 §4.8）。
-// 存放于用户数据目录（%APPDATA%/PrismProxy/settings.json）。
+// 存放于 exe 同级 config 目录（便携模式，见 DefaultConfigDir）。
 package settings
 
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"prismproxy/internal/rules"
 )
 
 const fileName = "settings.json"
+
+// DefaultConfigDir 返回配置目录：exe 同级的 config 文件夹（便携模式，
+// 2026-09-04 起取代 %APPDATA%\PrismProxy）。获取 exe 路径失败时退化为 ./config。
+// 新位置尚无配置且旧 %APPDATA% 配置存在时，一次性搬迁（不删旧文件）。
+func DefaultConfigDir() string {
+	dir := "config"
+	if exe, err := os.Executable(); err == nil {
+		dir = filepath.Join(filepath.Dir(exe), "config")
+	}
+	migrateLegacyConfig(dir)
+	return dir
+}
+
+func migrateLegacyConfig(dir string) {
+	if _, err := os.Stat(filepath.Join(dir, fileName)); err == nil {
+		return // 新位置已有配置
+	}
+	uc, err := os.UserConfigDir()
+	if err != nil {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(uc, "PrismProxy", fileName))
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, fileName), data, 0o644); err == nil {
+		log.Printf("已将旧配置从 %%APPDATA%%\\PrismProxy 搬迁到 %s", dir)
+	}
+}
 
 // 上游代理模式（方案 §4.5）
 const (
@@ -21,7 +55,7 @@ const (
 	UpstreamSystem = "system" // 跟随系统代理（跳过自身，防环路）
 )
 
-// Settings 全部可配项（端口/绑定/上游代理/三层规则/绕过列表/存储预算）
+// Settings 全部可配项（端口/绑定/上游代理/过滤规则组/解密规则/绕过列表/存储预算）
 type Settings struct {
 	ListenAddr    string `json:"listenAddr"`    // 监听地址，默认 127.0.0.1:9090
 	UpstreamMode  string `json:"upstreamMode"`  // direct | manual | system
@@ -29,13 +63,19 @@ type Settings struct {
 	MaxFlows      int    `json:"maxFlows"`      // 环形缓冲条数，默认 2000
 	MaxBodyMB     int    `json:"maxBodyMB"`     // body 字节预算（MB），默认 256；0=不限
 
+	// ShowSysProxySwitch 是否在顶栏显示系统代理快捷开关（默认显示）。
+	ShowSysProxySwitch bool `json:"showSysProxySwitch"`
+
 	// BypassList 系统代理 ProxyOverride 绕过列表（内置默认，可增删并持久化）。
 	// 语义：裸域名匹配自身+全部子域；代理崩溃残留时这些域名仍直连（方案 §4.6）。
 	BypassList []string `json:"bypassList"`
 
-	CaptureRules []rules.CaptureRule `json:"captureRules"`
+	FilterGroups []rules.FilterGroup `json:"filterGroups"`
 	DecryptRules []rules.DecryptRule `json:"decryptRules"`
-	ProcessRules []rules.ProcessRule `json:"processRules"`
+
+	// 旧字段仅作迁移用途：Migrate 迁移后清空并重写落盘（规则设计 §六）
+	CaptureRules []rules.CaptureRule `json:"captureRules,omitempty"`
+	ProcessRules []rules.ProcessRule `json:"processRules,omitempty"`
 }
 
 // BuiltinBypass 内置绕过列表（方案 §4.6：开发工具自身/常见 AI 与本机服务）
@@ -51,14 +91,14 @@ var BuiltinBypass = []string{
 // Default 默认配置
 func Default() *Settings {
 	return &Settings{
-		ListenAddr:    "127.0.0.1:9090",
-		UpstreamMode:  UpstreamDirect,
-		MaxFlows:      2000,
-		MaxBodyMB:     256,
-		BypassList:    append([]string(nil), BuiltinBypass...),
-		CaptureRules:  []rules.CaptureRule{},
-		DecryptRules:  []rules.DecryptRule{},
-		ProcessRules:  []rules.ProcessRule{},
+		ListenAddr:         "127.0.0.1:9090",
+		UpstreamMode:       UpstreamDirect,
+		MaxFlows:           2000,
+		MaxBodyMB:          256,
+		ShowSysProxySwitch: true,
+		BypassList:         append([]string(nil), BuiltinBypass...),
+		FilterGroups:       []rules.FilterGroup{},
+		DecryptRules:       []rules.DecryptRule{},
 	}
 }
 
@@ -94,30 +134,115 @@ func (s *Settings) Save(dir string) error {
 	return os.Rename(tmp, filepath.Join(dir, fileName))
 }
 
-// Validate 保存前校验（监听地址/上游模式/规则可编译）
-func (s *Settings) Validate() error {
+// Migrate 旧 captureRules/processRules → filterGroups（规则设计 §六）。
+// 返回是否发生迁移（调用方据此落盘一次；迁移幂等：旧字段清空后二次调用返回 false）。
+// urlRe/method 维度丢弃（path glob + 展示层方法过滤替代）并 log 提示；
+// decryptRules 不迁移、不改动。
+func (s *Settings) Migrate() bool {
+	if len(s.CaptureRules) == 0 && len(s.ProcessRules) == 0 {
+		return false
+	}
+	// 来源 × 模式 四个迁移桶：同 action 旧条目合并进同一组（语义聚合）
+	type bucket struct {
+		name      string
+		id        string
+		mode      string
+		hosts     []string
+		processes []string
+	}
+	buckets := map[string]*bucket{
+		"capture_black": {name: "旧捕获规则-黑名单(迁移)", id: "_migrated_capture_black", mode: rules.ModeBlacklist},
+		"capture_white": {name: "旧捕获规则-白名单(迁移)", id: "_migrated_capture_white", mode: rules.ModeWhitelist},
+		"process_black": {name: "旧进程规则-黑名单(迁移)", id: "_migrated_process_black", mode: rules.ModeBlacklist},
+		"process_white": {name: "旧进程规则-白名单(迁移)", id: "_migrated_process_white", mode: rules.ModeWhitelist},
+	}
+	appendUniq := func(dst *[]string, v string) {
+		for _, x := range *dst {
+			if x == v {
+				return
+			}
+		}
+		*dst = append(*dst, v)
+	}
+	for _, r := range s.CaptureRules {
+		key := "capture_black"
+		if r.Action == rules.ActionInclude {
+			key = "capture_white"
+		}
+		if r.Host != "" {
+			appendUniq(&buckets[key].hosts, r.Host)
+		}
+		if r.URLRe != "" || r.Method != "" {
+			log.Printf("settings migrate: 旧捕获规则 %q 的 urlRe/method 维度已丢弃（path glob/展示层过滤替代）", r.Host)
+		}
+	}
+	for _, r := range s.ProcessRules {
+		key := "process_black"
+		if r.Action == rules.ActionInclude {
+			key = "process_white"
+		}
+		if r.Name != "" {
+			appendUniq(&buckets[key].processes, r.Name)
+		}
+	}
+	// 固定顺序追加非空迁移组，保证输出确定性
+	for _, key := range []string{"capture_black", "capture_white", "process_black", "process_white"} {
+		b := buckets[key]
+		if len(b.hosts)+len(b.processes) == 0 {
+			continue
+		}
+		s.FilterGroups = append(s.FilterGroups, rules.FilterGroup{
+			ID: b.id, Name: b.name, Enabled: true, Mode: b.mode,
+			Hosts: b.hosts, Processes: b.processes,
+		})
+	}
+	s.CaptureRules = nil
+	s.ProcessRules = nil
+	return true
+}
+
+// Validate 保存前校验（规则设计 §4.2）。
+// knownGroups 为内置域名组 id 集合（@组名 引用存在性检查，缺失只产生 warning 不阻塞）；
+// 返回 (阻塞错误, 非阻塞警告)。
+func (s *Settings) Validate(knownGroups map[string][]string) (error, []string) {
 	if _, _, err := net.SplitHostPort(s.ListenAddr); err != nil {
-		return fmt.Errorf("监听地址 %q 非法: %v", s.ListenAddr, err)
+		return fmt.Errorf("监听地址 %q 非法: %v", s.ListenAddr, err), nil
 	}
 	switch s.UpstreamMode {
 	case UpstreamDirect:
 	case UpstreamManual:
 		if s.UpstreamProxy == "" {
-			return fmt.Errorf("手动上游代理模式须填写代理地址")
+			return fmt.Errorf("手动上游代理模式须填写代理地址"), nil
 		}
 		if _, _, err := net.SplitHostPort(s.UpstreamProxy); err != nil {
-			return fmt.Errorf("上游代理地址 %q 非法: %v", s.UpstreamProxy, err)
+			return fmt.Errorf("上游代理地址 %q 非法: %v", s.UpstreamProxy, err), nil
 		}
 	case UpstreamSystem:
 	default:
-		return fmt.Errorf("非法上游模式 %q", s.UpstreamMode)
+		return fmt.Errorf("非法上游模式 %q", s.UpstreamMode), nil
 	}
 	if s.MaxFlows <= 0 {
-		return fmt.Errorf("MaxFlows 须 > 0")
+		return fmt.Errorf("MaxFlows 须 > 0"), nil
 	}
 	if s.MaxBodyMB < 0 {
-		return fmt.Errorf("MaxBodyMB 须 >= 0")
+		return fmt.Errorf("MaxBodyMB 须 >= 0"), nil
 	}
-	_, err := rules.NewEngine(s.CaptureRules, s.DecryptRules, s.ProcessRules, nil)
-	return err
+	// 规则可编译性（mode/组名/host 条目/glob 由 NewEngine 统一把关）
+	if _, err := rules.NewEngine(s.FilterGroups, s.DecryptRules, knownGroups); err != nil {
+		return err, nil
+	}
+	var warns []string
+	seen := map[string]bool{}
+	for _, g := range s.FilterGroups {
+		for _, h := range g.Hosts {
+			if !strings.HasPrefix(h, "@") {
+				continue
+			}
+			if _, ok := knownGroups[strings.TrimPrefix(h, "@")]; !ok && !seen[h] {
+				seen[h] = true
+				warns = append(warns, fmt.Sprintf("规则组 %q 引用了不存在的域名组 %q（该引用永不命中）", g.Name, h))
+			}
+		}
+	}
+	return nil, warns
 }

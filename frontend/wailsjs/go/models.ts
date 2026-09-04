@@ -280,6 +280,7 @@ export namespace main {
 	export class IndexImportResult {
 	    id: string;
 	    count: number;
+	    skipped?: boolean;
 	    err?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -290,6 +291,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.count = source["count"];
+	        this.skipped = source["skipped"];
 	        this.err = source["err"];
 	    }
 	}

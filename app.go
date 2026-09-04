@@ -530,9 +530,13 @@ func (a *App) ListDomainGroups() map[string]interface{} {
 	g := a.groups
 	a.mu.Unlock()
 	if g == nil {
-		return map[string]interface{}{"names": []string{}, "meta": []domains.GroupMeta{}}
+		return map[string]interface{}{"names": []string{}, "meta": []domains.GroupMeta{}, "titles": map[string]string{}}
 	}
-	return map[string]interface{}{"names": g.Names(), "meta": g.Meta}
+	titles := g.Titles
+	if titles == nil {
+		titles = map[string]string{}
+	}
+	return map[string]interface{}{"names": g.Names(), "meta": g.Meta, "titles": titles}
 }
 
 // ---------- 域名组管理（设置面板：导入/导出/删除，即时生效） ----------
@@ -540,10 +544,21 @@ func (a *App) ListDomainGroups() map[string]interface{} {
 // DomainGroupInfo 域名组管理列表项
 type DomainGroupInfo struct {
 	ID       string `json:"id"`
-	Name     string `json:"name"` // 中文名（index.json），自定义组无则回退 id
+	Name     string `json:"name"` // 显示名：优先 txt 标准头部「# 域名组：…」，回退 index.json，再回退 id
 	Category string `json:"category"`
 	Count    int    `json:"count"`
 	Custom   bool   `json:"custom"` // 用户导入（同 id 覆盖内置组）
+}
+
+// displayName 解析域名组展示名：txt 头部标题 > index.json 中文名 > 组 id
+func groupDisplayName(id string, titles map[string]string, meta map[string]domains.GroupMeta) string {
+	if t := titles[id]; t != "" {
+		return t
+	}
+	if m, ok := meta[id]; ok && m.Name != "" {
+		return m.Name
+	}
+	return id
 }
 
 // DomainGroupImportResult 导入结果
@@ -566,13 +581,11 @@ func (a *App) ListDomainGroupDetails() []DomainGroupInfo {
 	for _, m := range g.Meta {
 		meta[m.ID] = m
 	}
+	titles := g.Titles
 	out := make([]DomainGroupInfo, 0, len(g.Domains))
 	for id, list := range g.Domains {
-		info := DomainGroupInfo{ID: id, Name: id, Count: len(list), Custom: g.Custom[id]}
+		info := DomainGroupInfo{ID: id, Name: groupDisplayName(id, titles, meta), Count: len(list), Custom: g.Custom[id]}
 		if m, ok := meta[id]; ok {
-			if m.Name != "" {
-				info.Name = m.Name
-			}
 			info.Category = m.Category
 		}
 		out = append(out, info)
@@ -641,9 +654,10 @@ type URLImportProbe struct {
 
 // IndexImportResult 索引批量导入单项结果
 type IndexImportResult struct {
-	ID    string `json:"id"`
-	Count int    `json:"count"`
-	Err   string `json:"err,omitempty"`
+	ID      string `json:"id"`
+	Count   int    `json:"count"`
+	Skipped bool   `json:"skipped,omitempty"` // 本地已存在同名组且选择跳过
+	Err     string `json:"err,omitempty"`
 }
 
 // domainIndex index.json 结构（仅取导入所需字段）
@@ -701,8 +715,9 @@ func (a *App) ProbeURLImport(rawurl string) (*URLImportProbe, error) {
 	return &URLImportProbe{Kind: "txt"}, nil
 }
 
-// ImportDomainGroupsFromIndex 按勾选的 id 从索引 URL 批量下载域名组并导入（各组文件相对索引 URL 解析）
-func (a *App) ImportDomainGroupsFromIndex(rawurl string, ids []string) ([]IndexImportResult, error) {
+// ImportDomainGroupsFromIndex 按勾选的 id 从索引 URL 批量下载域名组并导入（各组文件相对索引 URL 解析）。
+// overwrite=false 时本地已存在的同名组（config/domains/<id>.txt）跳过不下载、不覆盖。
+func (a *App) ImportDomainGroupsFromIndex(rawurl string, ids []string, overwrite bool) ([]IndexImportResult, error) {
 	base, err := parseHTTPURL(rawurl)
 	if err != nil {
 		return nil, err
@@ -746,6 +761,14 @@ func (a *App) ImportDomainGroupsFromIndex(rawurl string, ids []string) ([]IndexI
 			results = append(results, res)
 			emitImportProgress(a.ctx, i+1, total, id, false)
 			continue
+		}
+		if !overwrite {
+			if _, err := os.Stat(filepath.Join(a.userDomainsDir(), id+".txt")); err == nil {
+				res.Skipped = true
+				results = append(results, res)
+				emitImportProgress(a.ctx, i+1, total, id, false)
+				continue
+			}
 		}
 		txt, err := httpGet(base.ResolveReference(ref).String())
 		if err != nil {

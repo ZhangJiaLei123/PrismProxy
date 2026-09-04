@@ -123,26 +123,23 @@ func (s *Server) shouldDecrypt(host string) bool {
 	return s.eng.Get().ShouldDecrypt(host)
 }
 
-// ApplyRulesFilter 把规则引擎接到 Recorder：捕获/进程规则 exclude 的流不记录
-// （正常转发不受影响，方案 §4.7）。app 与 headless 共用。
+// ApplyRulesFilter 把规则引擎接到 Recorder：ShouldDisplay 为 false 的流不记录
+// （正常转发不受影响，规则设计 §5.3）。app 与 headless 共用。
 func ApplyRulesFilter(rec *capture.Recorder, h *rules.Holder) {
 	if h == nil {
 		return
 	}
 	rec.Filter = func(f *capture.Flow) bool {
-		eng := h.Get() // nil Engine 各判定返回默认值
+		eng := h.Get() // nil Engine ShouldDisplay 返回默认 true
 		procName := ""
 		if f.Process != nil {
 			procName = f.Process.Name
 		}
-		if !eng.ShouldCaptureProcess(procName) {
-			return false
-		}
-		method, rawURL := "", ""
+		rawURL := ""
 		if f.Request != nil {
-			method, rawURL = f.Request.Method, f.Request.URL
+			rawURL = f.Request.URL
 		}
-		return eng.ShouldCapture(hostOnly(f.ServerAddr), rawURL, method)
+		return eng.ShouldDisplay(hostOnly(f.ServerAddr), rawURL, procName)
 	}
 }
 

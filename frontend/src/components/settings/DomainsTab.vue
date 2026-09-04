@@ -40,6 +40,7 @@
           <n-checkbox :value="e.id" size="small">
             {{ e.name || e.id }}
             <n-tag size="tiny" :bordered="false" type="info">@{{ e.id }}</n-tag>
+            <n-tag v-if="existingIDs.has(e.id)" size="tiny" :bordered="false" type="warning">已存在</n-tag>
             <span v-if="e.category" class="hint"> · {{ e.category }}</span>
           </n-checkbox>
         </div>
@@ -86,25 +87,35 @@
   <section class="sec">
     <div class="sec-title">域名组（{{ list.length }}）</div>
     <div v-for="g in list" :key="g.id" class="group-row">
-      <span class="g-name" :title="'@' + g.id">{{ g.name }}</span>
-      <n-tag size="tiny" :bordered="false" type="info">@{{ g.id }}</n-tag>
-      <span class="hint">{{ g.count }} 域名<template v-if="g.category"> · {{ g.category }}</template></span>
+      <div class="g-main">
+        <span class="g-name" :title="g.name">{{ g.name }}</span>
+        <n-tag size="tiny" :bordered="false" type="info">@{{ g.id }}</n-tag>
+        <n-tag v-if="g.custom" size="tiny" :bordered="false" type="warning">自定义</n-tag>
+        <n-tag v-else size="tiny" :bordered="false">内置</n-tag>
+        <n-tag v-if="g.category" size="tiny" :bordered="false" type="default">{{ g.category }}</n-tag>
+      </div>
+      <div class="g-sub">
+        <span class="hint">{{ g.count }} 个域名</span>
+      </div>
       <span class="spacer" />
-      <n-button size="tiny" quaternary @click="openEdit(g)">编辑</n-button>
-      <n-button size="tiny" quaternary @click="exportGroup(g)">导出</n-button>
-      <n-popconfirm @positive-click="removeGroup(g)">
-        <template #trigger>
-          <n-button size="tiny" quaternary type="error">删除</n-button>
-        </template>
-        删除域名组「{{ g.name }}」？此操作不可撤销。
-      </n-popconfirm>
+      <div class="g-actions">
+        <n-button size="tiny" quaternary @click="openEdit(g)">编辑</n-button>
+        <n-button size="tiny" quaternary @click="exportGroup(g)">导出</n-button>
+        <n-popconfirm @positive-click="removeGroup(g)">
+          <template #trigger>
+            <n-button size="tiny" quaternary type="error">删除</n-button>
+          </template>
+          删除域名组「{{ g.name }}」？此操作不可撤销。
+        </n-popconfirm>
+      </div>
     </div>
+    <n-empty v-if="!list.length" description="暂无域名组，从上方本地文件或 URL 导入" size="small" style="margin: 12px 0" />
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NAlert, NButton, NCheckbox, NCheckboxGroup, NEmpty, NInput, NModal, NPopconfirm, NProgress, NTag, useMessage } from 'naive-ui'
+import { NAlert, NButton, NCheckbox, NCheckboxGroup, NEmpty, NInput, NModal, NPopconfirm, NProgress, NTag, useDialog, useMessage } from 'naive-ui'
 import { EventsOff, EventsOn } from '../../../wailsjs/runtime/runtime'
 import {
   DeleteDomainGroup,
@@ -120,11 +131,15 @@ import {
 import type { main } from '../../../wailsjs/go/models'
 
 const message = useMessage()
+const dialog = useDialog()
 const list = ref<main.DomainGroupInfo[]>([])
 
 async function refresh() {
   list.value = (await ListDomainGroupDetails()) ?? []
 }
+
+// 本地已存在的组 ID（用于索引列表「已存在」标记与冲突检测）
+const existingIDs = computed(() => new Set(list.value.map((g) => g.id)))
 
 // ---- 导入 ----
 const importId = ref('')
@@ -192,8 +207,30 @@ function checkAll() {
   indexChecked.value = indexEntries.value.map((e) => e.id)
 }
 
-async function importFromIndex() {
-  indexBusy.value = true
+// 冲突时让用户一次性选择：覆盖全部 / 跳过已存在；取消则中止导入
+function askOverwrite(conflictIDs: string[]): Promise<boolean | null> {
+  return new Promise((resolve) => {
+    const d = dialog.warning({
+      title: '发现本地同名域名组',
+      content: `以下 ${conflictIDs.length} 个组本地已存在：${conflictIDs.map((id) => '@' + id).join('、')}。覆盖将替换本地文件，跳过则保留本地不下载。`,
+      positiveText: '全部覆盖',
+      negativeText: '跳过已存在',
+      closable: false,
+      maskClosable: false,
+      onPositiveClick: () => {
+        resolve(true)
+      },
+      onNegativeClick: () => {
+        resolve(false)
+      },
+      onClose: () => {
+        resolve(null)
+      },
+    })
+  })
+}
+
+async function doImportFromIndex(overwrite: boolean) {
   showProgress.value = true
   progressCurrent.value = 0
   progressTotal.value = indexChecked.value.length
@@ -205,11 +242,15 @@ async function importFromIndex() {
     progressId.value = data.id ?? ''
   })
   try {
-    const results = (await ImportDomainGroupsFromIndex(indexURL.value, indexChecked.value)) ?? []
-    const ok = results.filter((r) => !r.err)
+    const results = (await ImportDomainGroupsFromIndex(indexURL.value, indexChecked.value, overwrite)) ?? []
+    const ok = results.filter((r) => !r.err && !r.skipped)
+    const skipped = results.filter((r) => r.skipped)
     const fail = results.filter((r) => r.err)
     if (ok.length) {
       message.success(`已导入 ${ok.length} 个组：${ok.map((r) => '@' + r.id).join('、')}`, { closable: true, duration: 5000 })
+    }
+    if (skipped.length) {
+      message.info(`跳过 ${skipped.length} 个已存在组：${skipped.map((r) => '@' + r.id).join('、')}`, { closable: true, duration: 5000 })
     }
     if (fail.length) {
       message.error(`${fail.length} 个失败：${fail.map((r) => `@${r.id}（${r.err}）`).join('；')}`, { closable: true, duration: 8000 })
@@ -225,6 +266,18 @@ async function importFromIndex() {
     indexBusy.value = false
     showProgress.value = false
   }
+}
+
+async function importFromIndex() {
+  const conflictIDs = indexChecked.value.filter((id) => existingIDs.value.has(id))
+  let overwrite = true
+  if (conflictIDs.length) {
+    const choice = await askOverwrite(conflictIDs)
+    if (choice === null) return // 用户中止
+    overwrite = choice
+  }
+  indexBusy.value = true
+  await doImportFromIndex(overwrite)
 }
 
 // ---- 导出 / 删除 ----
@@ -287,11 +340,14 @@ onMounted(refresh)
 .sec-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
 .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .hint { opacity: 0.5; font-size: 11px; }
-.group-row { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px dashed rgba(128, 128, 128, 0.15); }
+.group-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px dashed rgba(128, 128, 128, 0.15); }
+.g-main { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.g-sub { flex-shrink: 0; }
+.g-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .idx-row { padding: 2px 0; }
 .idx-list { max-height: 50vh; overflow-y: auto; padding-right: 4px; }
 .prog-wrap { margin-top: 10px; }
 .edit-area :deep(textarea) { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
-.g-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spacer { flex: 1; }
 </style>

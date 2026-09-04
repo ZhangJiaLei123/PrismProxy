@@ -30,13 +30,14 @@ type GroupMeta struct {
 type Groups struct {
 	Domains map[string][]string
 	Meta    []GroupMeta
-	Custom  map[string]bool // 用户导入的组（userDir 来源；同 id 时覆盖内置组）
+	Custom  map[string]bool   // 用户导入的组（userDir 来源；同 id 时覆盖内置组）
+	Titles  map[string]string // 各 txt 标准头部「# 域名组：…」标题行（缺失时 UI 回退 id）
 }
 
 // Load 从 fsys 的 dir 目录加载 index.json 与全部 txt。
 // index.json 缺失/损坏不致命（降级为仅按文件名建组）。
 func Load(fsys fs.FS, dir string) (*Groups, error) {
-	g := &Groups{Domains: make(map[string][]string)}
+	g := &Groups{Domains: make(map[string][]string), Titles: make(map[string]string)}
 
 	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
@@ -53,6 +54,9 @@ func Load(fsys fs.FS, dir string) (*Groups, error) {
 		}
 		id := strings.TrimSuffix(name, ".txt")
 		g.Domains[id] = Parse(data)
+		if t := ParseTitle(data); t != "" {
+			g.Titles[id] = t
+		}
 	}
 
 	if data, err := fs.ReadFile(fsys, path.Join(dir, "index.json")); err == nil {
@@ -74,6 +78,9 @@ func LoadMerged(fsys fs.FS, dir, userDir string) (*Groups, error) {
 		return nil, err
 	}
 	g.Custom = make(map[string]bool)
+	if g.Titles == nil {
+		g.Titles = make(map[string]string)
+	}
 	if userDir == "" {
 		return g, nil
 	}
@@ -96,6 +103,11 @@ func LoadMerged(fsys fs.FS, dir, userDir string) (*Groups, error) {
 		id := strings.TrimSuffix(name, ".txt")
 		g.Domains[id] = Parse(data)
 		g.Custom[id] = true
+		if t := ParseTitle(data); t != "" {
+			g.Titles[id] = t
+		} else {
+			delete(g.Titles, id) // 覆盖内置组时旧标题不残留
+		}
 	}
 	return g, nil
 }
@@ -103,7 +115,7 @@ func LoadMerged(fsys fs.FS, dir, userDir string) (*Groups, error) {
 // LoadUser 仅加载用户目录下的自定义域名组（程序不再内嵌任何域名组，
 // domains/ 源码目录仅作 git 分发的导入源，不 go:embed 进 exe）。所有组均标记 Custom=true。
 func LoadUser(userDir string) (*Groups, error) {
-	g := &Groups{Domains: make(map[string][]string), Custom: make(map[string]bool)}
+	g := &Groups{Domains: make(map[string][]string), Custom: make(map[string]bool), Titles: make(map[string]string)}
 	if userDir == "" {
 		return g, nil
 	}
@@ -126,6 +138,9 @@ func LoadUser(userDir string) (*Groups, error) {
 		id := strings.TrimSuffix(name, ".txt")
 		g.Domains[id] = Parse(data)
 		g.Custom[id] = true
+		if t := ParseTitle(data); t != "" {
+			g.Titles[id] = t
+		}
 	}
 	return g, nil
 }
@@ -168,6 +183,26 @@ func DeleteUser(userDir, id string) error {
 		return fmt.Errorf("自定义域名组 %q 不存在", id)
 	}
 	return err
+}
+
+// ParseTitle 提取 txt 标准头部标题行「# 域名组：<名称>」（首个命中即返回）。
+// 标准格式见 domains/alipay.txt 头部注释；无该头的第三方文件返回空串（UI 回退组 id）。
+func ParseTitle(data []byte) string {
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "#") {
+			return "" // 首个非注释行之前未命中即无标准头
+		}
+		body := strings.TrimSpace(strings.TrimPrefix(line, "#"))
+		if t, ok := strings.CutPrefix(body, "域名组："); ok {
+			return strings.TrimSpace(t)
+		}
+	}
+	return ""
 }
 
 // Parse 解析 txt：每行一个域名，# 注释/空行忽略，统一小写，去重保序

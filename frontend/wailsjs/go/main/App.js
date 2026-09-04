@@ -58,8 +58,8 @@ export function ImportDomainGroupURL(arg1, arg2) {
   return window['go']['main']['App']['ImportDomainGroupURL'](arg1, arg2);
 }
 
-export function ImportDomainGroupsFromIndex(arg1, arg2) {
-  return window['go']['main']['App']['ImportDomainGroupsFromIndex'](arg1, arg2);
+export function ImportDomainGroupsFromIndex(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ImportDomainGroupsFromIndex'](arg1, arg2, arg3);
 }
 
 export function InstallRootCA() {

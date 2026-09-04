@@ -31,7 +31,7 @@ export function ImportDomainGroupFile(arg1:string):Promise<main.DomainGroupImpor
 
 export function ImportDomainGroupURL(arg1:string,arg2:string):Promise<main.DomainGroupImportResult>;
 
-export function ImportDomainGroupsFromIndex(arg1:string,arg2:Array<string>):Promise<Array<main.IndexImportResult>>;
+export function ImportDomainGroupsFromIndex(arg1:string,arg2:Array<string>,arg3:boolean):Promise<Array<main.IndexImportResult>>;
 
 export function InstallRootCA():Promise<void>;
 

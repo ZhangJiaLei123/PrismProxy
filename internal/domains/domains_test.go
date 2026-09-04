@@ -65,6 +65,27 @@ func TestWriteUser(t *testing.T) {
 	}
 }
 
+func TestParseTitle(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{"标准头（alipay 样式）", "# ============================================================\n# 域名组：支付宝（alipay）\n# 用途：……\nalipay.com\n", "支付宝（alipay）"},
+		{"无分隔线直接标题", "# 域名组：哔哩哔哩（B站）\nbilibili.com\n", "哔哩哔哩（B站）"},
+		{"无标准头", "example.com\n# 注释\n", ""},
+		{"域名行在标题前", "example.com\n# 域名组：不应命中\n", ""},
+		{"仅注释无标题", "# 随便写点注释\nexample.com\n", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ParseTitle([]byte(c.data)); got != c.want {
+				t.Fatalf("ParseTitle = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestDeleteUser(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "x.txt"), []byte("x.com"), 0o644); err != nil {

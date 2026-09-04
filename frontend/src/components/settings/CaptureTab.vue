@@ -51,12 +51,15 @@ onMounted(async () => {
   const res = await ListDomainGroups()
   knownGroups.value = (res?.names as string[]) ?? []
   const meta = (res?.meta as GroupMeta[]) ?? []
-  // 以 names 为准（含用户导入的自定义组，其无 index.json 元数据）
+  const titles = (res?.titles as Record<string, string>) ?? {}
+  // 以 names 为准（含用户导入的自定义组）；显示名：txt 头部标题 > index.json 中文名 > id
   const byId = new Map(meta.map((m) => [m.id, m]))
   groupOptions.value = knownGroups.value.map((id) => {
+    const t = titles[id]
     const m = byId.get(id)
+    const name = t || m?.name || id
     return {
-      label: m ? (m.category ? `${m.name}（${m.category}）` : m.name) : id,
+      label: m?.category ? `${name}（${m.category}）` : name,
       value: '@' + id,
     }
   })
