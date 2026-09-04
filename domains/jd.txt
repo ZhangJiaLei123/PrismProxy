@@ -1,0 +1,20 @@
+# 域名组：京东（JD）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+
+# ---- 主站 / App API ----
+jd.com
+jingdong.com
+
+# ---- 短链（u.jd.com 之外另有 3.cn 短链）----
+3.cn
+
+# ---- 静态资源 CDN（img*.360buyimg.com）----
+360buyimg.com
+
+# ---- 京东云 / 支付 ----
+jdcloud.com
+jdpay.com
+
+# ---- 可选（按需启用）----
+# jd.hk             # 京东国际
+# paipai.com        # 拍拍（已边缘化）

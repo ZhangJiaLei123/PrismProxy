@@ -1,0 +1,14 @@
+# 域名组：美团 / 大众点评
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+
+# ---- 美团（含美团外卖 waimai.meituan.com、酒店、买菜等子域）----
+meituan.com
+
+# ---- 美团图片/静态资源 CDN（p0.meituan.net 等）----
+meituan.net
+
+# ---- 大众点评 ----
+dianping.com
+
+# ---- 可选（按需启用）----
+# maoyan.com        # 猫眼（美团系娱乐票务）

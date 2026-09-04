@@ -1,0 +1,17 @@
+# 域名组：小米（小米 / 红米 / MIUI/澎湃 OS / 米家 / 小米有品）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+
+# ---- 小米主域（含商城 mi.com、账号 account.xiaomi.com、App API）----
+xiaomi.com
+mi.com
+
+# ---- 静态资源 CDN ----
+mi-img.com
+
+# ---- 对象存储 / 推送等基础服务 ----
+miui.com
+
+# ---- 可选（按需启用）----
+# xiaomiyoupin.com  # 小米有品（电商，部分已迁 youpin.mi.com）
+# miwifi.com        # 小米路由器
+# miboy.com         # 旧域

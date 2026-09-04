@@ -1,0 +1,50 @@
+# ============================================================
+# 域名组：Trae（字节跳动 AI IDE）
+# 用途：PrismProxy 规则处理时引用本文件的域名集合
+#       （捕获规则 include/exclude、解密规则白/黑名单、
+#         系统代理 ProxyOverride 绕过列表等）
+# 维护：每行一个域名；# 开头为注释；空行忽略；行尾 # 之后为行内注释
+# 匹配语义（与方案 §4.7 规则一致）：
+#   - 裸域名（如 trae.cn）匹配自身 + 全部子域
+#   - 支持通配符 *.trae.cn（等价于裸域名写法）
+# 数据来源：Trae CN resources/app/out/main.js 实测
+#   API/遥测走 *.trae.volces.com、mcs/mon.zijieapi.com、
+#   gator/tab/apmplus.volces.com、abtestvm.bytedance.com，
+#   前端 CDN 走 *.byted-static.com
+# ============================================================
+
+# ---- Trae 自有品牌域名 ----
+trae.cn
+trae.ai
+trae.com
+trae.com.cn
+
+# ---- Trae API / 遥测（火山引擎承载）----
+trae.volces.com
+
+# ---- 字节 / 火山引擎基础设施（Trae 国内版依赖）----
+zijieapi.com
+volces.com
+volcengine.com
+volcengineapi.com
+bytedance.com
+bytedance.net
+byted.org
+byteoversea.com
+byteintl.net
+bytepluses.com
+snssdk.com
+doubao.com
+byted-static.com
+tiktokcdn.com
+
+# ---- Trae 团队开发的 AI 助手 ----
+mchost.guru
+
+# ---- 实测命中的具体子域（供参考，裸域名已全覆盖）----
+# mcs.zijieapi.com
+# mon.zijieapi.com
+# gator.volces.com
+# tab.volces.com
+# apmplus.volces.com
+# abtestvm.bytedance.com

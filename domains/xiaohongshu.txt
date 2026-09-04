@@ -1,0 +1,9 @@
+# 域名组：小红书（Xiaohongshu / RED）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+
+# ---- 主站 / App API ----
+xiaohongshu.com
+xhscdn.com
+
+# ---- 短链（xhslink.com 分享短链）----
+xhslink.com

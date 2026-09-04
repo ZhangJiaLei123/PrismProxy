@@ -1,0 +1,17 @@
+# 域名组：微博（Weibo）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+
+# ---- 主站 / App API ----
+weibo.com
+weibo.cn
+sinaimg.cn
+
+# ---- 短链（t.cn 转发短链）----
+t.cn
+
+# ---- 公司主域（新浪）----
+sina.com.cn
+
+# ---- 可选（按需启用）----
+# weibocdn.com
+# sinaimg.com

@@ -1,0 +1,12 @@
+# 域名组：拼多多（PDD）/ Temu（海外）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+
+# ---- 拼多多主站 / App API ----
+pinduoduo.com
+pddpic.com
+
+# ---- 拼多多图片 CDN（t00img.yangkeduo.com 等）----
+yangkeduo.com
+
+# ---- Temu（海外版，独立运营）----
+temu.com

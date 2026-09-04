@@ -1,0 +1,35 @@
+# 域名组：字节跳动内容与电商（抖音 / 头条 / 西瓜 / 番茄 / 飞书 / 剪映等）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+# 注：Trae/AI IDE 及火山引擎基础设施见 trae.txt；本文件聚焦内容与电商。
+
+# ---- 抖音 / TikTok ----
+douyin.com
+douyincdn.com
+douyinstatic.com
+tiktok.com
+tiktokcdn.com
+
+# ---- 今日头条 / 西瓜视频（主域名见字节基础设施，此处为内容产品域）----
+toutiao.com
+toutiaocdn.com
+toutiaocdn.net
+ixigua.com
+
+# ---- 番茄小说 ----
+fanqienovel.com
+
+# ---- 飞书（办公）----
+feishu.cn
+feishu.net
+larksuite.com
+larkoffice.com
+
+# ---- 剪映 ----
+capcut.net
+jianyingpro.com
+
+# ---- 电商（抖音商城多在 douyin.com 内，跨境电商相关）----
+jimuyx.com
+
+# ---- 可选（按需启用）----
+# douban.com        # 注意：豆瓣与字节无关系，勿误加

@@ -1,0 +1,26 @@
+# 域名组：谷歌（Google 搜索 / YouTube / Gmail / Android / 云端）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+# 注：国内直连通常不可达，多用于模拟器/海外网络环境抓包。
+
+# ---- Google 主域 ----
+google.com
+google.cn
+googleapis.com
+
+# ---- 静态 / CDN ----
+gstatic.com
+googleusercontent.com
+ggpht.com
+
+# ---- YouTube ----
+youtube.com
+ytimg.com
+googlevideo.com
+
+# ---- Android / 应用 ----
+android.com
+gvt1.com
+
+# ---- 可选（按需启用）----
+# gmail.com         # 邮箱（Web/IMAP 登录多走 google.com 账户）
+# google.dev

@@ -1,0 +1,90 @@
+import { defineStore } from 'pinia'
+import { ListFlows, ClearFlows } from '../../wailsjs/go/main/App'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
+import type { main } from '../../wailsjs/go/models'
+
+// 列表展示序：最新在顶部（新流 unshift）
+export const useFlowsStore = defineStore('flows', {
+  state: () => ({
+    flows: [] as main.FlowMeta[],
+    index: new Map<string, number>(), // ID → flows 下标
+    selectedId: '',
+    inited: false,
+    // 展示过滤（方案验收 #8）：与 Go 侧捕获规则相互独立，仅影响列表显示
+    filter: { keyword: '', regex: false, method: '', status: '' },
+  }),
+  getters: {
+    selected(s): main.FlowMeta | null {
+      const i = s.index.get(s.selectedId)
+      return i === undefined ? null : s.flows[i]
+    },
+    filtered(s): main.FlowMeta[] {
+      const f = s.filter
+      const kw = f.keyword.trim().toLowerCase()
+      let re: RegExp | null = null
+      if (kw && f.regex) {
+        try {
+          re = new RegExp(f.keyword.trim(), 'i')
+        } catch {
+          re = null // 非法正则降级为子串匹配（UI 另有红色提示）
+        }
+      }
+      return s.flows.filter((m) => {
+        if (f.method && m.Method !== f.method) return false
+        if (f.status) {
+          if (f.status === 'error') {
+            if (m.State !== 'error') return false
+          } else if (m.State === 'error' || Math.floor(m.Status / 100) + 'xx' !== f.status) {
+            return false
+          }
+        }
+        if (kw) {
+          const hay = m.Host + ' ' + m.URL
+          if (re ? !re.test(hay) : !hay.toLowerCase().includes(kw)) return false
+        }
+        return true
+      })
+    },
+  },
+  actions: {
+    async init() {
+      if (this.inited) return
+      this.inited = true
+      const all = (await ListFlows()) ?? []
+      all.sort((a, b) => b.StartedAt - a.StartedAt)
+      this.flows = all
+      this.rebuildIndex()
+      EventsOn('flow:upsert', (metas: main.FlowMeta[]) => this.upsert(metas ?? []))
+      EventsOn('flow:evict', (ids: string[]) => this.evict(ids ?? []))
+    },
+    upsert(metas: main.FlowMeta[]) {
+      const news: main.FlowMeta[] = []
+      for (const m of metas) {
+        const i = this.index.get(m.ID)
+        if (i !== undefined) this.flows[i] = m
+        else news.push(m)
+      }
+      if (news.length) {
+        news.sort((a, b) => b.StartedAt - a.StartedAt)
+        this.flows.unshift(...news)
+        this.rebuildIndex()
+      }
+    },
+    evict(ids: string[]) {
+      const dead = new Set(ids)
+      this.flows = this.flows.filter((f) => !dead.has(f.ID))
+      this.rebuildIndex()
+      if (dead.has(this.selectedId)) this.selectedId = ''
+    },
+    rebuildIndex() {
+      this.index.clear()
+      this.flows.forEach((f, i) => this.index.set(f.ID, i))
+    },
+    select(id: string) {
+      this.selectedId = id
+    },
+    async clear() {
+      await ClearFlows() // Go 侧 evict 事件会同步清空前端
+    },
+  },
+})

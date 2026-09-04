@@ -1,0 +1,18 @@
+# 域名组：哔哩哔哩（B站）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+
+# ---- 主站 / App API（api.bilibili.com）----
+bilibili.com
+
+# ---- 视频 CDN / 静态资源 ----
+bilivideo.com
+bilivideo.cn
+hdslb.com
+
+# ---- 直播 ----
+biliapi.net
+
+# ---- 可选（按需启用）----
+# acgvideo.com      # 旧版视频 CDN
+# biliimg.com
+# bigfun.cn         # 游戏社区

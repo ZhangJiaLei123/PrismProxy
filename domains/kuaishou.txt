@@ -1,0 +1,10 @@
+# 域名组：快手（Kwai）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+
+# ---- 主站 / App API（短链 v.kuaishou.com 为主域子域）----
+kuaishou.com
+gifshow.com
+
+# ---- 可选（CDN/图床域名为收购/自建，未完全确认，按需启用）----
+# yximgs.com
+# ksapisrv.com

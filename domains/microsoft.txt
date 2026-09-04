@@ -1,0 +1,33 @@
+# 域名组：微软（Microsoft 365 / Windows 更新 / Bing / GitHub 等）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+
+# ---- 主域 ----
+microsoft.com
+microsoftonline.com
+
+# ---- Windows / 服务 ----
+windows.com
+windowsupdate.com
+
+# ---- Office / 365 ----
+office.com
+office365.com
+office.net
+
+# ---- 应用 / 内容 CDN ----
+msftconnecttest.com
+msftncsi.com
+
+# ---- Bing / 必应 ----
+bing.com
+bing.net
+
+# ---- GitHub（微软旗下，抓开发流量常用）----
+github.com
+githubusercontent.com
+githubassets.com
+
+# ---- 可选（按需启用）----
+# skype.com
+# xbox.com
+# live.com

@@ -1,0 +1,19 @@
+# 域名组：滴滴出行（DiDi）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+
+# ---- 主站 / App API（common.didi.com 等接口均在其子域）----
+didi.com
+
+# ---- 小桔科技（滴滴运营主体，账号/SSO/内部接口）----
+xiaojukeji.com
+
+# ---- App 接口历史主域（api/common 等接口长期承载于该域）----
+udache.com
+
+# ---- 海外版（DiDi Global）----
+didiglobal.com
+
+# ---- 可选（按需启用，未完全确认）----
+# didistatic.com   # 静态资源/CDN（待核实后放开）
+# huaxiaozhu.com   # 花小猪打车（滴滴旗下低价品牌）
+# didimobility.com # 海外业务关联域

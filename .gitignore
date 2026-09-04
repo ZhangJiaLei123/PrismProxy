@@ -1,0 +1,19 @@
+# 构建产物
+/build/bin/
+/frontend/dist/
+*.exe
+*.exe~
+
+# 前端依赖
+/frontend/node_modules/
+
+# wails 依赖校验缓存
+/frontend/package.json.md5
+
+# Go 测试/覆盖率产物
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/

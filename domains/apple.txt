@@ -1,0 +1,16 @@
+# 域名组：Apple（苹果，含中国大陆 CDN / iCloud / App Store / 推送）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+
+# ---- Apple 全球主域 ----
+apple.com
+icloud.com
+
+# ---- 推送（APNs）----
+push.apple.com
+
+# ---- 中国大陆 iCloud（云上贵州运营）----
+icloud.com.cn
+icloud.apple.com.cn
+
+# ---- 可选（CDN 大量走 a1.mzstatic.com 等 mzstatic，已被 apple.com 外独立）----
+# mzstatic.com

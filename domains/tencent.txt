@@ -1,0 +1,31 @@
+# 域名组：腾讯（QQ / 微信 / 腾讯系 + 腾讯云）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+
+# ---- 腾讯主域（覆盖 QQ 邮箱 mail.qq.com、腾讯视频 v.qq.com、
+#      QQ 音乐 y.qq.com、腾讯新闻、微信网页 wx.qq.com / weixin.qq.com 等）----
+qq.com
+
+# ---- 公司 / 开放平台 ----
+tencent.com
+wechat.com
+
+# ---- 支付（财付通 / 微信支付 pay.weixin.qq.com 为 qq.com 子域）----
+tenpay.com
+
+# ---- 短链 ----
+url.cn
+
+# ---- 图片 / 静态资源 CDN ----
+qpic.cn
+gtimg.cn
+gtimg.com
+qlogo.cn
+
+# ---- 腾讯云 ----
+myqcloud.com
+qcloud.com
+tencentcloudapi.com
+
+# ---- 可选（按需启用）----
+# qq.com.cn
+# weiyun.com        # 微云

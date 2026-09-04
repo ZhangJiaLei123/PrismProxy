@@ -1,0 +1,19 @@
+# 域名组：华为 / 荣耀（设备 / 应用市场 / HMS / 华为云）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+
+# ---- 华为主域（含商城、支持等）----
+huawei.com
+huawei.cn
+
+# ---- 消费者业务 / App 商城 / HMS（AppGallery 等）----
+hicloud.com
+dbankcdn.com
+
+# ---- 华为云 ----
+myhuaweicloud.com
+huaweicloud.com
+huaweicloud.com.cn
+
+# ---- 可选：荣耀（已独立，按需启用）----
+# honor.com
+# hihonor.com

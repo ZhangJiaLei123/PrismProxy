@@ -1,0 +1,36 @@
+# 域名组：阿里电商与本地生活（淘宝 / 天猫 / 1688 / 闲鱼 / 饿了么等）
+# 用途/格式约定同 baidu.txt 头部：每行一个域名，# 注释，裸域名匹配自身+全部子域。
+# 注：阿里云基础设施见 aliyun.txt，支付宝见 alipay.txt。
+
+# ---- 淘宝 / 天猫 ----
+taobao.com
+taobao.cn
+tmall.com
+tmall.hk
+
+# ---- 短链（e.tb.cn / m.tb.cn）----
+tb.cn
+
+# ---- 批发 / B2B ----
+1688.com
+alibaba.com
+
+# ---- 静态资源 CDN（与阿里云组共享，img.alicdn.com / g.alicdn.com）----
+alicdn.com
+
+# ---- 营销 / 数据采集 ----
+alimama.com
+mmstat.com
+
+# ---- 闲鱼 ----
+goofish.com
+
+# ---- 饿了么 ----
+ele.me
+
+# ---- 可选（按需启用）----
+# taobaocdn.com     # 旧版 CDN
+# fliggy.com        # 飞猪旅行
+# youku.com         # 优酷（阿里大文娱）
+# uc.cn             # UC 浏览器
+# dingtalk.com      # 钉钉（亦在 aliyun.txt 中注释）

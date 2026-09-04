@@ -1,0 +1,69 @@
+# ============================================================
+# 域名组：百度（baidu）
+# 用途：PrismProxy 规则处理时引用本文件的域名集合
+#       （捕获规则 include/exclude、解密规则白/黑名单、
+#         系统代理 ProxyOverride 绕过列表等）
+# 维护：每行一个域名；# 开头为注释；空行忽略；行尾 # 之后为行内注释
+# 匹配语义（与方案 §4.7 规则一致）：
+#   - 裸域名（如 baidu.com）匹配自身 + 全部子域
+#   - 支持通配符 *.baidu.com（等价于裸域名写法）
+# 说明：本清单按业务线分组，可持续补充；不确定的域名请勿加入
+# ============================================================
+
+# ---- 搜索 / 主站 ----
+baidu.com
+www.baidu.com
+baidu.cn
+www.baidu.cn
+baiducontent.com
+
+# ---- 移动 / App ----
+m.baidu.com
+baidubox.com
+baiduboxapp.com
+
+# ---- 静态资源 / CDN ----
+bdstatic.com
+bdimg.com
+bcebos.com
+bdimg.cn
+
+# ---- 百度统计 / 广告联盟 ----
+hm.baidu.com
+pos.baidu.com
+cpro.baidustatic.com
+baidustatic.com
+
+# ---- 百度云（智能云）----
+bce.com
+bcecdn.com
+bj.bcebos.com
+
+# ---- 百度网盘 ----
+pan.baidu.com
+pan.com
+bdpan.com
+
+# ---- 地图 ----
+map.baidu.com
+api.map.baidu.com
+maponlinebd.com
+
+# ---- 贴吧 / 知道 / 百科 / 文库等社区 ----
+tieba.com
+tieba.baidu.com
+
+# ---- 旗下入口 ----
+hao123.com
+hao123img.com
+
+# ---- 金融（已独立为度小满，如需抓取可启用）----
+# baifubao.com
+# duxiaoman.com
+
+# ---- 输入法 / 浏览器等客户端 ----
+shurufa.baidu.com
+srf.baidu.com
+
+# ---- 小程序 / 智能小程序 ----
+smartprogram.baidu.com
