@@ -10,6 +10,22 @@ export function ClearFlows() {
   return window['go']['main']['App']['ClearFlows']();
 }
 
+export function DeleteDomainGroup(arg1) {
+  return window['go']['main']['App']['DeleteDomainGroup'](arg1);
+}
+
+export function ExportDomainGroup(arg1) {
+  return window['go']['main']['App']['ExportDomainGroup'](arg1);
+}
+
+export function FindFreePort(arg1, arg2) {
+  return window['go']['main']['App']['FindFreePort'](arg1, arg2);
+}
+
+export function GetDomainGroupText(arg1) {
+  return window['go']['main']['App']['GetDomainGroupText'](arg1);
+}
+
 export function GetFlowBody(arg1, arg2) {
   return window['go']['main']['App']['GetFlowBody'](arg1, arg2);
 }
@@ -34,8 +50,24 @@ export function GetSystemProxyStatus() {
   return window['go']['main']['App']['GetSystemProxyStatus']();
 }
 
+export function ImportDomainGroupFile(arg1) {
+  return window['go']['main']['App']['ImportDomainGroupFile'](arg1);
+}
+
+export function ImportDomainGroupURL(arg1, arg2) {
+  return window['go']['main']['App']['ImportDomainGroupURL'](arg1, arg2);
+}
+
+export function ImportDomainGroupsFromIndex(arg1, arg2) {
+  return window['go']['main']['App']['ImportDomainGroupsFromIndex'](arg1, arg2);
+}
+
 export function InstallRootCA() {
   return window['go']['main']['App']['InstallRootCA']();
+}
+
+export function ListDomainGroupDetails() {
+  return window['go']['main']['App']['ListDomainGroupDetails']();
 }
 
 export function ListDomainGroups() {
@@ -44,6 +76,14 @@ export function ListDomainGroups() {
 
 export function ListFlows() {
   return window['go']['main']['App']['ListFlows']();
+}
+
+export function ProbeURLImport(arg1) {
+  return window['go']['main']['App']['ProbeURLImport'](arg1);
+}
+
+export function SaveDomainGroupText(arg1, arg2) {
+  return window['go']['main']['App']['SaveDomainGroupText'](arg1, arg2);
 }
 
 export function SaveSettings(arg1) {

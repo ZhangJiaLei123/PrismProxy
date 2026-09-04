@@ -2,13 +2,20 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"io/fs"
+	"io"
+	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,10 +80,11 @@ type BodyPayload struct {
 
 // ProxyStatus 代理运行状态
 type ProxyStatus struct {
-	Running   bool
-	Addr      string
-	Mode      string // MITM | tunnel-only
-	FlowCount int
+	Running    bool
+	Addr       string
+	Mode       string // MITM | tunnel-only
+	FlowCount  int
+	StartError string // 启动自动抓包失败原因（如端口占用），空为正常
 }
 
 // ---------- App ----------
@@ -90,13 +98,14 @@ type App struct {
 	cfg    *settings.Settings
 	cfgDir string
 	eng    *rules.Holder   // 规则引擎热更新容器（proxy 与 Recorder.Filter 共享）
-	groups *domains.Groups // 内置域名组（@组名 引用源）
+	groups *domains.Groups // 域名组（用户导入，@组名 引用源）
 
-	mu     sync.Mutex
-	srv    *proxy.Server
-	ca     *mitm.CA
-	addr   string
-	noMITM bool
+	mu       sync.Mutex
+	srv      *proxy.Server
+	ca       *mitm.CA
+	addr     string
+	noMITM   bool
+	startErr string // 启动自动抓包失败原因（GetProxyStatus 暴露给前端，事件竞态兜底）
 
 	// 事件合帧缓冲（~50ms 窗口，方案 §4.4）
 	pendMu   sync.Mutex
@@ -105,20 +114,22 @@ type App struct {
 	flushDue bool
 }
 
-// NewApp addr 为空时使用持久化配置里的监听地址；dfs 为内嵌域名组（go:embed domains）
-func NewApp(addr string, noMITM bool, dfs fs.FS) *App {
-	cfgDir, err := os.UserConfigDir()
-	if err != nil {
-		cfgDir = "."
-	}
-	cfgDir = filepath.Join(cfgDir, "PrismProxy")
+// NewApp addr 为空时使用持久化配置里的监听地址
+func NewApp(addr string, noMITM bool) *App {
+	cfgDir := settings.DefaultConfigDir()
 
 	cfg, err := settings.Load(cfgDir)
 	if err != nil {
 		cfg = settings.Default()
 	}
+	// 旧 captureRules/processRules → filterGroups 迁移（规则设计 §六）：迁移即落盘一次
+	if cfg.Migrate() {
+		if serr := cfg.Save(cfgDir); serr != nil {
+			log.Printf("迁移配置落盘失败（内存态已迁移）: %v", serr)
+		}
+	}
 
-	groups, gerr := domains.Load(dfs, "domains")
+	groups, gerr := domains.LoadUser(filepath.Join(cfgDir, "domains"))
 	if gerr != nil {
 		groups = nil // 域名组缺失不致命：@组名 引用将不匹配
 	}
@@ -128,8 +139,11 @@ func NewApp(addr string, noMITM bool, dfs fs.FS) *App {
 	if groups != nil {
 		gmap = groups.Domains
 	}
-	if e, err := rules.NewEngine(cfg.CaptureRules, cfg.DecryptRules, cfg.ProcessRules, gmap); err == nil {
+	// 编译失败兜底：log warn + 空引擎全放行（规则设计 §5.3）
+	if e, err := rules.NewEngine(cfg.FilterGroups, cfg.DecryptRules, gmap); err == nil {
 		eng.Set(e)
+	} else {
+		log.Printf("过滤规则编译失败，当前过滤未生效（全量显示）: %v", err)
 	}
 
 	if addr == "" {
@@ -160,9 +174,13 @@ func (a *App) startup(ctx context.Context) {
 	} else if healed {
 		runtime.LogWarning(ctx, "检测到上次异常退出，已恢复原系统代理设置")
 	}
-	// GUI 启动即抓包
+	// GUI 启动即抓包；失败（如端口占用）记录状态并通知前端弹提示
 	if err := a.StartProxy(""); err != nil {
 		runtime.LogErrorf(ctx, "auto start proxy: %v", err)
+		a.mu.Lock()
+		a.startErr = err.Error()
+		a.mu.Unlock()
+		runtime.EventsEmit(ctx, "proxy:start-error", err.Error())
 	}
 }
 
@@ -248,7 +266,7 @@ func (a *App) StartProxy(addr string) error {
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return err
+		return fmt.Errorf("监听 %s 失败：%w（端口可能被占用，可在「设置」中更换监听地址/端口）", addr, err)
 	}
 	srv, err := proxy.NewServerOpts(addr, a.rec, ca, &proxy.Options{
 		UpstreamProxy: a.resolveUpstream(addr),
@@ -265,6 +283,7 @@ func (a *App) StartProxy(addr string) error {
 	}()
 
 	a.srv, a.ca, a.addr = srv, ca, addr
+	a.startErr = "" // 任何一次成功启动都清除此前的启动失败标记（含手动重启）
 	return nil
 }
 
@@ -286,7 +305,7 @@ func (a *App) GetProxyStatus() ProxyStatus {
 	if a.ca == nil {
 		mode = "tunnel-only"
 	}
-	return ProxyStatus{Running: a.srv != nil, Addr: a.addr, Mode: mode, FlowCount: len(a.st.List())}
+	return ProxyStatus{Running: a.srv != nil, Addr: a.addr, Mode: mode, FlowCount: len(a.st.List()), StartError: a.startErr}
 }
 
 func (a *App) ListFlows() []FlowMeta {
@@ -371,13 +390,16 @@ func (a *App) resolveUpstream(selfAddr string) string {
 	return ""
 }
 
-// rebuildEngine 按当前配置重编译规则引擎并热替换（持锁外调用安全：Holder 原子替换）
+// rebuildEngine 按当前配置重编译规则引擎并热替换（Holder 原子替换，持锁仅做快照）
 func (a *App) rebuildEngine() error {
+	a.mu.Lock()
+	fg, dr := a.cfg.FilterGroups, a.cfg.DecryptRules
 	var gmap map[string][]string
 	if a.groups != nil {
 		gmap = a.groups.Domains
 	}
-	e, err := rules.NewEngine(a.cfg.CaptureRules, a.cfg.DecryptRules, a.cfg.ProcessRules, gmap)
+	a.mu.Unlock()
+	e, err := rules.NewEngine(fg, dr, gmap)
 	if err != nil {
 		return err
 	}
@@ -392,17 +414,39 @@ func (a *App) GetSettings() *settings.Settings {
 	return a.cfg
 }
 
+// SaveSettingsResult 保存结果：warnings 为非阻塞提示（如 @引用不存在的域名组）
+type SaveSettingsResult struct {
+	Warnings []string `json:"warnings"`
+}
+
 // SaveSettings 校验并持久化配置，随后热应用：规则/存储预算立即生效；
-// 监听地址或上游变化且代理运行中时自动重启代理
-func (a *App) SaveSettings(nu *settings.Settings) error {
+// 监听地址或上游变化且代理运行中时自动重启代理。
+// 组 ID 为空由后端补全（时间戳毫秒+序号，规则设计 §4.2）。
+func (a *App) SaveSettings(nu *settings.Settings) (*SaveSettingsResult, error) {
 	if nu == nil {
-		return fmt.Errorf("配置为空")
+		return nil, fmt.Errorf("配置为空")
 	}
-	if err := nu.Validate(); err != nil {
-		return err
+	var gmap map[string][]string
+	if a.groups != nil {
+		gmap = a.groups.Domains
+	}
+	err, warns := nu.Validate(gmap)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range warns {
+		log.Printf("settings warning: %s", w)
+	}
+	// 补全新组 ID（同批多组加循环序号去重）
+	seq := 0
+	for i := range nu.FilterGroups {
+		if nu.FilterGroups[i].ID == "" {
+			seq++
+			nu.FilterGroups[i].ID = fmt.Sprintf("%d-%d", time.Now().UnixMilli(), seq)
+		}
 	}
 	if err := nu.Save(a.cfgDir); err != nil {
-		return fmt.Errorf("保存配置: %w", err)
+		return nil, fmt.Errorf("保存配置: %w", err)
 	}
 
 	a.mu.Lock()
@@ -413,15 +457,17 @@ func (a *App) SaveSettings(nu *settings.Settings) error {
 
 	a.st.SetLimits(nu.MaxFlows, int64(nu.MaxBodyMB)<<20)
 	if err := a.rebuildEngine(); err != nil {
-		return err // 理论上 Validate 已拦截，双保险
+		return nil, err // 理论上 Validate 已拦截，双保险
 	}
 	if needRestart {
 		if err := a.StopProxy(); err != nil {
-			return err
+			return nil, err
 		}
-		return a.StartProxy("")
+		if err := a.StartProxy(""); err != nil {
+			return nil, err
+		}
 	}
-	return nil
+	return &SaveSettingsResult{Warnings: warns}, nil
 }
 
 // SystemProxyStatus 系统代理状态（DTO）
@@ -480,10 +526,350 @@ func (a *App) AddDecryptBypass(host string) error {
 
 // ListDomainGroups 域名组清单（规则编辑器 @组名 引用候选）
 func (a *App) ListDomainGroups() map[string]interface{} {
-	if a.groups == nil {
+	a.mu.Lock()
+	g := a.groups
+	a.mu.Unlock()
+	if g == nil {
 		return map[string]interface{}{"names": []string{}, "meta": []domains.GroupMeta{}}
 	}
-	return map[string]interface{}{"names": a.groups.Names(), "meta": a.groups.Meta}
+	return map[string]interface{}{"names": g.Names(), "meta": g.Meta}
+}
+
+// ---------- 域名组管理（设置面板：导入/导出/删除，即时生效） ----------
+
+// DomainGroupInfo 域名组管理列表项
+type DomainGroupInfo struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"` // 中文名（index.json），自定义组无则回退 id
+	Category string `json:"category"`
+	Count    int    `json:"count"`
+	Custom   bool   `json:"custom"` // 用户导入（同 id 覆盖内置组）
+}
+
+// DomainGroupImportResult 导入结果
+type DomainGroupImportResult struct {
+	ID    string `json:"id"`
+	Count int    `json:"count"`
+}
+
+func (a *App) userDomainsDir() string { return filepath.Join(a.cfgDir, "domains") }
+
+// ListDomainGroupDetails 域名组管理列表（含条数与自定义标记，按 id 排序）
+func (a *App) ListDomainGroupDetails() []DomainGroupInfo {
+	a.mu.Lock()
+	g := a.groups
+	a.mu.Unlock()
+	if g == nil {
+		return []DomainGroupInfo{}
+	}
+	meta := make(map[string]domains.GroupMeta, len(g.Meta))
+	for _, m := range g.Meta {
+		meta[m.ID] = m
+	}
+	out := make([]DomainGroupInfo, 0, len(g.Domains))
+	for id, list := range g.Domains {
+		info := DomainGroupInfo{ID: id, Name: id, Count: len(list), Custom: g.Custom[id]}
+		if m, ok := meta[id]; ok {
+			if m.Name != "" {
+				info.Name = m.Name
+			}
+			info.Category = m.Category
+		}
+		out = append(out, info)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// ImportDomainGroupFile 本地导入：弹文件对话框选 txt，id 为空取文件名（去扩展名）。用户取消返回 nil
+func (a *App) ImportDomainGroupFile(id string) (*DomainGroupImportResult, error) {
+	file, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "选择域名组文件",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "域名组文本 (*.txt)", Pattern: "*.txt"},
+			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if file == "" {
+		return nil, nil // 用户取消
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil, fmt.Errorf("读取文件: %w", err)
+	}
+	if id == "" {
+		id = strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+	}
+	return a.importDomains(id, data)
+}
+
+// ImportDomainGroupURL URL 导入：拉取远程 txt（限 4MB），id 为空取 URL 路径文件名
+func (a *App) ImportDomainGroupURL(rawurl, id string) (*DomainGroupImportResult, error) {
+	u, err := parseHTTPURL(rawurl)
+	if err != nil {
+		return nil, err
+	}
+	data, err := httpGet(rawurl)
+	if err != nil {
+		return nil, err
+	}
+	if id == "" {
+		base := path.Base(u.Path)
+		id = strings.TrimSuffix(base, path.Ext(base))
+	}
+	return a.importDomains(id, data)
+}
+
+// ---------- URL 导入：索引（index.json）支持 ----------
+
+// DomainIndexEntry 索引文件中的单个域名组条目
+type DomainIndexEntry struct {
+	ID       string `json:"id"`
+	File     string `json:"file"` // 相对索引 URL 的组文件路径
+	Name     string `json:"name"`
+	Category string `json:"category"`
+}
+
+// URLImportProbe URL 探测结果：kind = txt（直接域名组文件）| index（索引文件）
+type URLImportProbe struct {
+	Kind    string             `json:"kind"`
+	Entries []DomainIndexEntry `json:"entries,omitempty"`
+}
+
+// IndexImportResult 索引批量导入单项结果
+type IndexImportResult struct {
+	ID    string `json:"id"`
+	Count int    `json:"count"`
+	Err   string `json:"err,omitempty"`
+}
+
+// domainIndex index.json 结构（仅取导入所需字段）
+type domainIndex struct {
+	Groups []DomainIndexEntry `json:"groups"`
+}
+
+// parseHTTPURL 校验 URL 仅支持 http/https
+func parseHTTPURL(rawurl string) (*url.URL, error) {
+	u, err := url.Parse(rawurl)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return nil, fmt.Errorf("URL 非法（仅支持 http/https）")
+	}
+	return u, nil
+}
+
+// httpGet 拉取远程内容（20s 超时，限 4MB）
+func httpGet(rawurl string) ([]byte, error) {
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Get(rawurl)
+	if err != nil {
+		return nil, fmt.Errorf("下载失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, fmt.Errorf("读取响应: %w", err)
+	}
+	return data, nil
+}
+
+// ProbeURLImport 探测 URL 内容：能解析为含 groups 数组的 JSON 视为索引，否则视为直接域名组 txt
+func (a *App) ProbeURLImport(rawurl string) (*URLImportProbe, error) {
+	if _, err := parseHTTPURL(rawurl); err != nil {
+		return nil, err
+	}
+	data, err := httpGet(rawurl)
+	if err != nil {
+		return nil, err
+	}
+	var idx domainIndex
+	if err := json.Unmarshal(data, &idx); err == nil && idx.Groups != nil {
+		entries := make([]DomainIndexEntry, 0, len(idx.Groups))
+		for _, e := range idx.Groups {
+			if e.ID == "" || e.File == "" {
+				continue
+			}
+			entries = append(entries, e)
+		}
+		return &URLImportProbe{Kind: "index", Entries: entries}, nil
+	}
+	return &URLImportProbe{Kind: "txt"}, nil
+}
+
+// ImportDomainGroupsFromIndex 按勾选的 id 从索引 URL 批量下载域名组并导入（各组文件相对索引 URL 解析）
+func (a *App) ImportDomainGroupsFromIndex(rawurl string, ids []string) ([]IndexImportResult, error) {
+	base, err := parseHTTPURL(rawurl)
+	if err != nil {
+		return nil, err
+	}
+	data, err := httpGet(rawurl)
+	if err != nil {
+		return nil, err
+	}
+	var idx domainIndex
+	if err := json.Unmarshal(data, &idx); err != nil || idx.Groups == nil {
+		return nil, fmt.Errorf("不是有效的索引文件（index.json）")
+	}
+	byID := make(map[string]DomainIndexEntry, len(idx.Groups))
+	for _, e := range idx.Groups {
+		byID[e.ID] = e
+	}
+	// 去重并得到总数（进度条用）
+	seen := make(map[string]bool, len(ids))
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
+	}
+	total := len(unique)
+	results := make([]IndexImportResult, 0, total)
+	for i, id := range unique {
+		res := IndexImportResult{ID: id}
+		emitImportProgress(a.ctx, i, total, id, false)
+		entry, ok := byID[id]
+		if !ok {
+			res.Err = "索引中不存在该组"
+			results = append(results, res)
+			emitImportProgress(a.ctx, i+1, total, id, false)
+			continue
+		}
+		ref, err := url.Parse(entry.File)
+		if err != nil {
+			res.Err = "索引中文件路径非法"
+			results = append(results, res)
+			emitImportProgress(a.ctx, i+1, total, id, false)
+			continue
+		}
+		txt, err := httpGet(base.ResolveReference(ref).String())
+		if err != nil {
+			res.Err = err.Error()
+			results = append(results, res)
+			emitImportProgress(a.ctx, i+1, total, id, false)
+			continue
+		}
+		n, err := domains.WriteUser(a.userDomainsDir(), id, txt)
+		if err != nil {
+			res.Err = err.Error()
+			results = append(results, res)
+			emitImportProgress(a.ctx, i+1, total, id, false)
+			continue
+		}
+		res.Count = n
+		results = append(results, res)
+		emitImportProgress(a.ctx, i+1, total, id, false)
+	}
+	emitImportProgress(a.ctx, total, total, "", true)
+	if err := a.reloadGroups(); err != nil {
+		return results, fmt.Errorf("热更新失败: %w", err)
+	}
+	return results, nil
+}
+
+// emitImportProgress 发射索引批量导入进度事件（前端 n-progress 监听 index-import-progress）
+func emitImportProgress(ctx context.Context, current, total int, id string, done bool) {
+	runtime.EventsEmit(ctx, "index-import-progress", map[string]interface{}{
+		"current": current,
+		"total":   total,
+		"id":      id,
+		"done":    done,
+	})
+}
+
+// importDomains 校验并落盘导入内容，随后重载域名组 + 热更新规则引擎
+func (a *App) importDomains(id string, data []byte) (*DomainGroupImportResult, error) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	n, err := domains.WriteUser(a.userDomainsDir(), id, data)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.reloadGroups(); err != nil {
+		return nil, err
+	}
+	return &DomainGroupImportResult{ID: id, Count: n}, nil
+}
+
+// ExportDomainGroup 导出域名组到文件（弹保存对话框）；返回保存路径（用户取消返回空串）
+func (a *App) ExportDomainGroup(id string) (string, error) {
+	data, err := a.groupRaw(id)
+	if err != nil {
+		return "", err
+	}
+	dest, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "导出域名组",
+		DefaultFilename: id + ".txt",
+		Filters:         []runtime.FileFilter{{DisplayName: "域名组文本 (*.txt)", Pattern: "*.txt"}},
+	})
+	if err != nil {
+		return "", err
+	}
+	if dest == "" {
+		return "", nil // 用户取消
+	}
+	if err := os.WriteFile(dest, data, 0o644); err != nil {
+		return "", fmt.Errorf("写入文件: %w", err)
+	}
+	return dest, nil
+}
+
+// groupRaw 取组原始文本（保留注释原貌）：所有组均为用户导入，读用户目录文件
+func (a *App) groupRaw(id string) ([]byte, error) {
+	a.mu.Lock()
+	g := a.groups
+	a.mu.Unlock()
+	if g == nil {
+		return nil, fmt.Errorf("域名组不可用")
+	}
+	if _, ok := g.Domains[id]; !ok {
+		return nil, fmt.Errorf("域名组 %q 不存在", id)
+	}
+	return os.ReadFile(filepath.Join(a.userDomainsDir(), id+".txt"))
+}
+
+// DeleteDomainGroup 删除自定义域名组（内置组不可删除；覆盖同名内置组的删除后内置组恢复生效）
+func (a *App) DeleteDomainGroup(id string) error {
+	a.mu.Lock()
+	custom := a.groups != nil && a.groups.Custom[id]
+	a.mu.Unlock()
+	if !custom {
+		return fmt.Errorf("内置域名组不可删除")
+	}
+	if err := domains.DeleteUser(a.userDomainsDir(), id); err != nil {
+		return err
+	}
+	return a.reloadGroups()
+}
+
+// GetDomainGroupText 取域名组原始文本（含注释/格式）：自定义组读用户目录，内置组读内嵌资源
+func (a *App) GetDomainGroupText(id string) (string, error) {
+	data, err := a.groupRaw(id)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// SaveDomainGroupText 保存编辑后的域名组文本（落盘为自定义组，同 id 覆盖内置组），随后热更新
+func (a *App) SaveDomainGroupText(id, content string) (*DomainGroupImportResult, error) {
+	return a.importDomains(id, []byte(content))
+}
+
+// reloadGroups 重载用户导入的域名组并热更新规则引擎
+func (a *App) reloadGroups() error {
+	g, err := domains.LoadUser(a.userDomainsDir())
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.groups = g
+	a.mu.Unlock()
+	return a.rebuildEngine()
 }
 
 // GetLocalAddrs 本机 IPv4 地址候选（绑定地址设置项）
@@ -512,6 +898,25 @@ func (a *App) GetLocalAddrs() []string {
 		}
 	}
 	return out
+}
+
+// FindFreePort 在 ip 上从 start 起向上逐个探测，返回首个空闲端口
+func (a *App) FindFreePort(ip string, start int) (int, error) {
+	if start < 1 || start > 65535 {
+		return 0, fmt.Errorf("起始端口非法: %d", start)
+	}
+	if ip == "" {
+		ip = "127.0.0.1"
+	}
+	for p := start; p <= 65535; p++ {
+		ln, err := net.Listen("tcp", net.JoinHostPort(ip, strconv.Itoa(p)))
+		if err != nil {
+			continue // 被占用（含自身代理监听），继续向上
+		}
+		_ = ln.Close()
+		return p, nil
+	}
+	return 0, fmt.Errorf("无空闲端口")
 }
 
 // InstallRootCA 把根证书装入当前用户受信根存储（certutil -user，免管理员）

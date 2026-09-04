@@ -7,6 +7,14 @@ export function AddDecryptBypass(arg1:string):Promise<void>;
 
 export function ClearFlows():Promise<void>;
 
+export function DeleteDomainGroup(arg1:string):Promise<void>;
+
+export function ExportDomainGroup(arg1:string):Promise<string>;
+
+export function FindFreePort(arg1:string,arg2:number):Promise<number>;
+
+export function GetDomainGroupText(arg1:string):Promise<string>;
+
 export function GetFlowBody(arg1:string,arg2:string):Promise<main.BodyPayload>;
 
 export function GetFlowDetail(arg1:string):Promise<main.FlowDetail>;
@@ -19,13 +27,25 @@ export function GetSettings():Promise<settings.Settings>;
 
 export function GetSystemProxyStatus():Promise<main.SystemProxyStatus>;
 
+export function ImportDomainGroupFile(arg1:string):Promise<main.DomainGroupImportResult>;
+
+export function ImportDomainGroupURL(arg1:string,arg2:string):Promise<main.DomainGroupImportResult>;
+
+export function ImportDomainGroupsFromIndex(arg1:string,arg2:Array<string>):Promise<Array<main.IndexImportResult>>;
+
 export function InstallRootCA():Promise<void>;
+
+export function ListDomainGroupDetails():Promise<Array<main.DomainGroupInfo>>;
 
 export function ListDomainGroups():Promise<Record<string, any>>;
 
 export function ListFlows():Promise<Array<main.FlowMeta>>;
 
-export function SaveSettings(arg1:settings.Settings):Promise<void>;
+export function ProbeURLImport(arg1:string):Promise<main.URLImportProbe>;
+
+export function SaveDomainGroupText(arg1:string,arg2:string):Promise<main.DomainGroupImportResult>;
+
+export function SaveSettings(arg1:settings.Settings):Promise<main.SaveSettingsResult>;
 
 export function SetSystemProxy(arg1:boolean):Promise<void>;
 
