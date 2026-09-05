@@ -52,8 +52,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { NAlert, NButton, NCheckbox, NInput, useDialog, useMessage } from 'naive-ui'
-import { ExportRules, ImportRules, ListDomainGroups, ListSystemProcesses } from '../../../wailsjs/go/main/App'
-import type { main, settings } from '../../../wailsjs/go/models'
+import { ExportRules, ImportRules, ListDomainGroups, ListSystemProcesses } from '../../../wailsjs/go/app/App'
+import type { app, settings } from '../../../wailsjs/go/models'
 import { useFlowsStore } from '../../stores/flows'
 import FilterGroupCard from './FilterGroupCard.vue'
 
@@ -195,7 +195,7 @@ function confirmReplace(): Promise<boolean> {
   })
 }
 
-async function afterImport(res: main.ImportRulesResult | null) {
+async function afterImport(res: app.ImportRulesResult | null) {
   if (!res) return // 用户取消文件对话框
   message.success('规则已导入并即时生效', { closable: true, duration: 3000 })
   // 缺组等校验提醒（不阻塞导入）

@@ -3,7 +3,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul 2>&1
 
 rem ============================================================
-rem  PrismProxy one-click build & package script
+rem  PrismProxy one-click build and package script
 rem  Usage:
 rem    build.bat              normal release build (embedded WebView2)
 rem    build.bat nsis         build + NSIS installer
@@ -87,12 +87,22 @@ if not errorlevel 1 (
 )
 
 rem ---------- clean ----------
+rem 注意：clean 删除 build\bin 但保留其下的 config（Root CA 证书/私钥、settings.json、
+rem ctl token）。否则重建后 config\ca 丢失 -> LoadOrCreateCA 生成全新 CA，而系统受信根里
+rem 装的还是旧 CA -> 所有 HTTPS 握手失败降级为盲透传（列表只剩 CONNECT），需重新装证书。
 if "%DO_CLEAN%"=="1" (
     echo.
-    echo [2/5] Cleaning previous build artifacts...
+    echo [2/5] Cleaning previous build artifacts [keeping build\bin\config]...
+    if exist "build\_config_keep" rmdir /s /q "build\_config_keep"
+    if exist "build\bin\config" move /y "build\bin\config" "build\_config_keep" >nul
     if exist "build\bin"       rmdir /s /q "build\bin"
     if exist "frontend\dist"   rmdir /s /q "frontend\dist"
     if exist "dist"            rmdir /s /q "dist"
+    if exist "build\_config_keep" (
+        mkdir "build\bin" 2>nul
+        move /y "build\_config_keep" "build\bin\config" >nul
+        echo         Preserved build\bin\config [CA cert + settings].
+    )
     echo         Done.
 ) else (
     echo.
@@ -182,6 +192,7 @@ echo   build.bat debug          Debug build with DevTools enabled
 echo   build.bat nsis          Also generate NSIS installer (needs NSIS installed)
 echo   build.bat upx           Compress binary with UPX (needs UPX installed)
 echo   build.bat clean         Remove build/bin, frontend/dist, dist before building
+echo                           (keeps build\bin\config: CA cert, settings, ctl token)
 echo   build.bat help          Show this help
 echo.
 echo Options are combinable, e.g.  build.bat clean upx

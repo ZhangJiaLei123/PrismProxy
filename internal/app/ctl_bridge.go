@@ -1,4 +1,4 @@
-package main
+package app
 
 // ctl_bridge.go：ctlapi.Service 适配层（M8，方案 §4.12）。
 // App 已有同名/近签名 Wails binding，故用 ctlService 适配器包装 *App，

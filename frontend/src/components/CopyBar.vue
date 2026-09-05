@@ -8,7 +8,7 @@
 
 <script setup lang="ts">
 import { NButton, useMessage } from 'naive-ui'
-import { GetFlowRawText } from '../../wailsjs/go/main/App'
+import { GetFlowRawText } from '../../wailsjs/go/app/App'
 import { copyText } from '../lib/clip'
 
 // 通用复制栏：请求/响应详情共用，文本由 Go 侧 GetFlowRawText 生成

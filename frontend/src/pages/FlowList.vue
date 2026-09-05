@@ -73,8 +73,8 @@ import type { DropdownOption } from 'naive-ui'
 import { useFlowsStore } from '../stores/flows'
 import { fmtBytes, fmtDuration, fmtTime } from '../lib/format'
 import { copyText } from '../lib/clip'
-import { AddQuickIgnore, BuildCurl, SetFlowPinned } from '../../wailsjs/go/main/App'
-import type { main } from '../../wailsjs/go/models'
+import { AddQuickIgnore, BuildCurl, SetFlowPinned } from '../../wailsjs/go/app/App'
+import type { app } from '../../wailsjs/go/models'
 
 const store = useFlowsStore()
 const message = useMessage()
@@ -145,7 +145,7 @@ function toggleSort(key: SortKey) {
   }
 }
 
-const valOf: Record<SortKey, (f: main.FlowMeta) => number | string> = {
+const valOf: Record<SortKey, (f: app.FlowMeta) => number | string> = {
   time: (f) => f.StartedAt,
   method: (f) => f.Method,
   status: (f) => f.Status,
@@ -186,11 +186,11 @@ async function copyCell(text: string) {
 const ctxShow = ref(false)
 const ctxX = ref(0)
 const ctxY = ref(0)
-const ctxFlow = ref<main.FlowMeta | null>(null)
+const ctxFlow = ref<app.FlowMeta | null>(null)
 // 右键落点列：决定是否给出「忽略此域名/进程」入口
 const ctxCol = ref<'host' | 'proc' | null>(null)
 
-function onContextMenu(e: MouseEvent, f: main.FlowMeta) {
+function onContextMenu(e: MouseEvent, f: app.FlowMeta) {
   const cell = (e.target as HTMLElement).closest('span')
   ctxCol.value = cell?.classList.contains('c-proc') ? 'proc' : cell?.classList.contains('c-host') ? 'host' : null
   ctxFlow.value = f
@@ -276,7 +276,7 @@ const { list, containerProps, wrapperProps } = useVirtualList(sortedFlows, {
   overscan: 15,
 })
 
-function statusClass(f: main.FlowMeta): string {
+function statusClass(f: app.FlowMeta): string {
   if (f.State === 'error') return 's-err'
   const s = f.Status
   if (s >= 500) return 's-5xx'

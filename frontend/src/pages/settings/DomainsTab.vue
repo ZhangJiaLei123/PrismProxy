@@ -127,12 +127,12 @@ import {
   ListDomainGroupDetails,
   ProbeURLImport,
   SaveDomainGroupText,
-} from '../../../wailsjs/go/main/App'
-import type { main } from '../../../wailsjs/go/models'
+} from '../../../wailsjs/go/app/App'
+import type { app } from '../../../wailsjs/go/models'
 
 const message = useMessage()
 const dialog = useDialog()
-const list = ref<main.DomainGroupInfo[]>([])
+const list = ref<app.DomainGroupInfo[]>([])
 
 async function refresh() {
   list.value = (await ListDomainGroupDetails()) ?? []
@@ -147,7 +147,7 @@ const importURL = ref('')
 const fileBusy = ref(false)
 const urlBusy = ref(false)
 
-async function afterImport(res: main.DomainGroupImportResult | null) {
+async function afterImport(res: app.DomainGroupImportResult | null) {
   if (!res) return // 用户取消对话框
   message.success(`已导入 @${res.id}（${res.count} 个域名）`, { closable: true, duration: 4000 })
   importId.value = ''
@@ -189,7 +189,7 @@ async function importFromURL() {
 // ---- 索引勾选导入 ----
 const showIndex = ref(false)
 const indexURL = ref('')
-const indexEntries = ref<main.DomainIndexEntry[]>([])
+const indexEntries = ref<app.DomainIndexEntry[]>([])
 const indexChecked = ref<string[]>([])
 const indexBusy = ref(false)
 
@@ -281,7 +281,7 @@ async function importFromIndex() {
 }
 
 // ---- 导出 / 删除 ----
-async function exportGroup(g: main.DomainGroupInfo) {
+async function exportGroup(g: app.DomainGroupInfo) {
   try {
     const dest = await ExportDomainGroup(g.id)
     if (dest) message.success(`已导出到 ${dest}`, { closable: true, duration: 5000 })
@@ -290,7 +290,7 @@ async function exportGroup(g: main.DomainGroupInfo) {
   }
 }
 
-async function removeGroup(g: main.DomainGroupInfo) {
+async function removeGroup(g: app.DomainGroupInfo) {
   try {
     await DeleteDomainGroup(g.id)
     message.success(`已删除 @${g.id}`, { duration: 3000 })
@@ -306,7 +306,7 @@ const editId = ref('')
 const editText = ref('')
 const editBusy = ref(false)
 
-async function openEdit(g: main.DomainGroupInfo) {
+async function openEdit(g: app.DomainGroupInfo) {
   try {
     editText.value = await GetDomainGroupText(g.id)
     editId.value = g.id

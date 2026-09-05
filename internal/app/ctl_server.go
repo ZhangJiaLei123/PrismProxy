@@ -1,4 +1,4 @@
-package main
+package app
 
 // ctl_server.go：App 的本地控制 API（M8）生命周期管理。
 // GUI startup 与 headless 主流程均调用 startCtlAPI；shutdown/退出时 stopCtlAPI。

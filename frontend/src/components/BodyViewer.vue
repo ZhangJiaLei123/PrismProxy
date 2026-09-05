@@ -62,14 +62,14 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { NAlert, NRadioButton, NRadioGroup, NTable, NTag } from 'naive-ui'
 import JsonTree from './JsonTree.vue'
-import { GetFlowBody, GetFlowDetail } from '../../wailsjs/go/main/App'
-import type { main } from '../../wailsjs/go/models'
+import { GetFlowBody, GetFlowDetail } from '../../wailsjs/go/app/App'
+import type { app } from '../../wailsjs/go/models'
 import { b64ToBytes, bytesToText, fmtBytes } from '../lib/format'
 
 const props = defineProps<{ flowId: string; which: 'req' | 'resp' }>()
 
-const payload = ref<main.BodyPayload | null>(null)
-const detail = ref<main.FlowDetail | null>(null)
+const payload = ref<app.BodyPayload | null>(null)
+const detail = ref<app.FlowDetail | null>(null)
 const view = ref('auto')
 const imageUrl = ref('')
 const HEX_LIMIT = 64 * 1024

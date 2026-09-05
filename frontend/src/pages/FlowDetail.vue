@@ -69,14 +69,14 @@ import { NButton, NDescriptions, NDescriptionsItem, NTabPane, NTabs, NTag } from
 import BodyViewer from '../components/BodyViewer.vue'
 import HeaderTable from '../components/HeaderTable.vue'
 import CopyBar from '../components/CopyBar.vue'
-import { GetFlowDetail } from '../../wailsjs/go/main/App'
-import type { main } from '../../wailsjs/go/models'
+import { GetFlowDetail } from '../../wailsjs/go/app/App'
+import type { app } from '../../wailsjs/go/models'
 import { useFlowsStore } from '../stores/flows'
 import { fmtBytes, fmtDuration, fmtDateTime } from '../lib/format'
 
 const store = useFlowsStore()
 
-const detail = ref<main.FlowDetail | null>(null)
+const detail = ref<app.FlowDetail | null>(null)
 const reqBody = ref<InstanceType<typeof BodyViewer> | null>(null)
 const respBody = ref<InstanceType<typeof BodyViewer> | null>(null)
 

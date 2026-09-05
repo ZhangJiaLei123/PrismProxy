@@ -16,7 +16,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { NDynamicInput, NSelect, NInput } from 'naive-ui'
-import { ListDomainGroups } from '../../../wailsjs/go/main/App'
+import { ListDomainGroups } from '../../../wailsjs/go/app/App'
 import type { settings } from '../../../wailsjs/go/models'
 
 const props = defineProps<{ form: settings.Settings }>()

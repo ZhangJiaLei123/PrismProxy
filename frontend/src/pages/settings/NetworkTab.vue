@@ -44,7 +44,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import { NSelect, NInputNumber, NInput, NButton, NDynamicTags } from 'naive-ui'
-import { GetLocalAddrs, FindFreePort } from '../../../wailsjs/go/main/App'
+import { GetLocalAddrs, FindFreePort } from '../../../wailsjs/go/app/App'
 import type { settings } from '../../../wailsjs/go/models'
 
 const props = defineProps<{ form: settings.Settings }>()

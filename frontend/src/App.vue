@@ -123,12 +123,12 @@ import FlowDetail from './pages/FlowDetail.vue'
 import SettingsPanel from './pages/SettingsPanel.vue'
 import Composer from './pages/Composer.vue'
 import { useFlowsStore } from './stores/flows'
-import { GetProxyStatus, StartProxy, StopProxy, GetSystemProxyStatus, SetSystemProxy, GetSettings } from '../wailsjs/go/main/App'
+import { GetProxyStatus, StartProxy, StopProxy, GetSystemProxyStatus, SetSystemProxy, GetSettings } from '../wailsjs/go/app/App'
 import { EventsOn, WindowUnminimise } from '../wailsjs/runtime/runtime'
-import type { main } from '../wailsjs/go/models'
+import type { app } from '../wailsjs/go/models'
 
 const store = useFlowsStore()
-const status = ref<main.ProxyStatus>({ Running: false, Addr: '', Mode: '', FlowCount: 0 } as main.ProxyStatus)
+const status = ref<app.ProxyStatus>({ Running: false, Addr: '', Mode: '', FlowCount: 0 } as app.ProxyStatus)
 const showSettings = ref(false)
 // 设置抽屉初始标签：状态标签入口定位到「网络」（代理服务），底部按钮默认「常规」
 const settingsTab = ref('general')

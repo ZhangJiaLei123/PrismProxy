@@ -10,6 +10,7 @@
         <span class="cp-title">调试重发（Composer）</span>
         <n-checkbox v-model:checked="skipVerify" size="small">跳过 HTTPS 证书校验</n-checkbox>
         <n-button size="small" type="primary" :loading="sending" @click="send">发送</n-button>
+        <n-button size="small" quaternary circle class="cp-close" title="关闭" @click="close">✕</n-button>
       </div>
 
       <div class="cp-row">
@@ -80,8 +81,8 @@ import {
 } from 'naive-ui'
 import BodyViewer from '../components/BodyViewer.vue'
 import HeaderTable from '../components/HeaderTable.vue'
-import { GetFlowBody, GetFlowDetail, SendComposed } from '../../wailsjs/go/main/App'
-import type { main } from '../../wailsjs/go/models'
+import { GetFlowBody, GetFlowDetail, SendComposed } from '../../wailsjs/go/app/App'
+import type { app } from '../../wailsjs/go/models'
 import { useFlowsStore } from '../stores/flows'
 import { b64ToBytes, bytesToText } from '../lib/format'
 
@@ -99,7 +100,7 @@ const headers = ref<{ key: string; value: string }[]>([])
 const body = ref('')
 const skipVerify = ref(false)
 const sending = ref(false)
-const resp = ref<main.FlowDetail | null>(null)
+const resp = ref<app.FlowDetail | null>(null)
 
 const methodOptions = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((m) => ({ label: m, value: m }))
 
@@ -201,6 +202,7 @@ function statusCls(status: number): string {
 .cp-header { display: flex; align-items: center; gap: 12px; flex: none; padding-bottom: 10px; }
 .cp-title { font-weight: 600; font-size: 13px; flex: none; }
 .cp-header .n-checkbox { margin-left: auto; }
+.cp-close { flex: none; color: rgba(255, 255, 255, 0.65); }
 .cp-row { display: flex; gap: 8px; flex: none; margin-bottom: 10px; }
 .cp-method { width: 130px; flex: none; }
 .cp-url { flex: 1; }

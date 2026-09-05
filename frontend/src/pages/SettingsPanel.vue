@@ -51,7 +51,7 @@ import NetworkTab from './settings/NetworkTab.vue'
 import DecryptTab from './settings/DecryptTab.vue'
 import CaptureTab from './settings/CaptureTab.vue'
 import DomainsTab from './settings/DomainsTab.vue'
-import { GetSettings, SaveSettings } from '../../wailsjs/go/main/App'
+import { GetSettings, SaveSettings } from '../../wailsjs/go/app/App'
 import type { settings } from '../../wailsjs/go/models'
 
 const props = defineProps<{ show: boolean; initialTab?: string }>()

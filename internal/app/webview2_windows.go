@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package app
 
 import (
 	"os/exec"
@@ -42,8 +42,8 @@ func webview2Installed() bool {
 	return false
 }
 
-// ensureWebView2 启动自检：已安装返回 true；缺失时弹框引导，用户确认后打开官方下载页，返回 false 由调用方退出
-func ensureWebView2() bool {
+// EnsureWebView2 启动自检：已安装返回 true；缺失时弹框引导，用户确认后打开官方下载页，返回 false 由调用方退出
+func EnsureWebView2() bool {
 	if webview2Installed() {
 		return true
 	}

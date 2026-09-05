@@ -42,14 +42,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { NSwitch, NTag, NButton, NCheckbox } from 'naive-ui'
-import { GetSystemProxyStatus, SetSystemProxy, InstallRootCA } from '../../../wailsjs/go/main/App'
-import type { main, settings } from '../../../wailsjs/go/models'
+import { GetSystemProxyStatus, SetSystemProxy, InstallRootCA } from '../../../wailsjs/go/app/App'
+import type { app, settings } from '../../../wailsjs/go/models'
 
 defineProps<{ form: settings.Settings }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
 
 // ---- 系统代理状态 ----
-const sys = ref<main.SystemProxyStatus>({ state: 'off', server: '', override: '' } as main.SystemProxyStatus)
+const sys = ref<app.SystemProxyStatus>({ state: 'off', server: '', override: '' } as app.SystemProxyStatus)
 const sysBusy = ref(false)
 
 // ProxyOverride 注册表值为分号分隔的单行字符串，拆成条目用于标签展示

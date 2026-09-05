@@ -1,12 +1,12 @@
 import { defineStore } from 'pinia'
-import { ListFlows, ClearFlows } from '../../wailsjs/go/main/App'
+import { ListFlows, ClearFlows } from '../../wailsjs/go/app/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
-import type { main } from '../../wailsjs/go/models'
+import type { app } from '../../wailsjs/go/models'
 
 // 列表展示序：最新在顶部（新流 unshift）
 export const useFlowsStore = defineStore('flows', {
   state: () => ({
-    flows: [] as main.FlowMeta[],
+    flows: [] as app.FlowMeta[],
     index: new Map<string, number>(), // ID → flows 下标
     selectedId: '',
     inited: false,
@@ -19,11 +19,11 @@ export const useFlowsStore = defineStore('flows', {
     paused: false,
   }),
   getters: {
-    selected(s): main.FlowMeta | null {
+    selected(s): app.FlowMeta | null {
       const i = s.index.get(s.selectedId)
       return i === undefined ? null : s.flows[i]
     },
-    filtered(s): main.FlowMeta[] {
+    filtered(s): app.FlowMeta[] {
       const f = s.filter
       const kw = f.keyword.trim().toLowerCase()
       let re: RegExp | null = null
@@ -59,12 +59,12 @@ export const useFlowsStore = defineStore('flows', {
       all.sort((a, b) => b.StartedAt - a.StartedAt)
       this.flows = all
       this.rebuildIndex()
-      EventsOn('flow:upsert', (metas: main.FlowMeta[]) => this.upsert(metas ?? []))
+      EventsOn('flow:upsert', (metas: app.FlowMeta[]) => this.upsert(metas ?? []))
       EventsOn('flow:evict', (ids: string[]) => this.evict(ids ?? []))
     },
-    upsert(metas: main.FlowMeta[]) {
+    upsert(metas: app.FlowMeta[]) {
       if (this.paused) return
-      const news: main.FlowMeta[] = []
+      const news: app.FlowMeta[] = []
       for (const m of metas) {
         const i = this.index.get(m.ID)
         if (i !== undefined) this.flows[i] = m

@@ -1,99 +1,4 @@
-export namespace capture {
-	
-	export class CurlResult {
-	    command: string;
-	    bodyOmitted: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new CurlResult(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.command = source["command"];
-	        this.bodyOmitted = source["bodyOmitted"];
-	    }
-	}
-	export class PeerCert {
-	    Subject: string;
-	    Issuer: string;
-	    DNSNames: string[];
-	    // Go type: time
-	    NotBefore: any;
-	    // Go type: time
-	    NotAfter: any;
-	
-	    static createFrom(source: any = {}) {
-	        return new PeerCert(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.Subject = source["Subject"];
-	        this.Issuer = source["Issuer"];
-	        this.DNSNames = source["DNSNames"];
-	        this.NotBefore = this.convertValues(source["NotBefore"], null);
-	        this.NotAfter = this.convertValues(source["NotAfter"], null);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class TLSInfo {
-	    ClientVersion: string;
-	    ServerVersion: string;
-	    ServerName: string;
-	    PeerCerts: PeerCert[];
-	
-	    static createFrom(source: any = {}) {
-	        return new TLSInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.ClientVersion = source["ClientVersion"];
-	        this.ServerVersion = source["ServerVersion"];
-	        this.ServerName = source["ServerName"];
-	        this.PeerCerts = this.convertValues(source["PeerCerts"], PeerCert);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-
-}
-
-export namespace main {
+export namespace app {
 	
 	export class BodyPayload {
 	    Encoding: string;
@@ -441,6 +346,101 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.kind = source["kind"];
 	        this.entries = this.convertValues(source["entries"], DomainIndexEntry);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace capture {
+	
+	export class CurlResult {
+	    command: string;
+	    bodyOmitted: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CurlResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.command = source["command"];
+	        this.bodyOmitted = source["bodyOmitted"];
+	    }
+	}
+	export class PeerCert {
+	    Subject: string;
+	    Issuer: string;
+	    DNSNames: string[];
+	    // Go type: time
+	    NotBefore: any;
+	    // Go type: time
+	    NotAfter: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new PeerCert(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Subject = source["Subject"];
+	        this.Issuer = source["Issuer"];
+	        this.DNSNames = source["DNSNames"];
+	        this.NotBefore = this.convertValues(source["NotBefore"], null);
+	        this.NotAfter = this.convertValues(source["NotAfter"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class TLSInfo {
+	    ClientVersion: string;
+	    ServerVersion: string;
+	    ServerName: string;
+	    PeerCerts: PeerCert[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TLSInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ClientVersion = source["ClientVersion"];
+	        this.ServerVersion = source["ServerVersion"];
+	        this.ServerName = source["ServerName"];
+	        this.PeerCerts = this.convertValues(source["PeerCerts"], PeerCert);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
