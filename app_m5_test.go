@@ -33,6 +33,7 @@ func newTestApp(t *testing.T) *App {
 		t.Fatalf("newEngine: %v", err)
 	}
 	a.eng.Set(e)
+	a.rec = capture.NewRecorder(a.st) // M6 调试重发借用 Recorder 的 ID 分配
 	return a
 }
 

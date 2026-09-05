@@ -18,6 +18,12 @@ const (
 // MaxBodyCapture 单条消息体捕获上限（2MB，超出截断，转发不受影响）
 const MaxBodyCapture = 2 << 20
 
+// 流来源（方案 §五）：抓包代理产生 vs 调试重发（M6 Composer）
+const (
+	SourceCapture  = "capture"
+	SourceComposer = "composer"
+)
+
 // ProcessInfo 发起连接的本地进程
 type ProcessInfo struct {
 	PID  uint32
@@ -76,10 +82,11 @@ type Flow struct {
 	Timing     *Timing
 	Err        string
 	Pinned     bool // M5 置顶：固定顶部展示、不参与环形淘汰、Clear 保留、会话内不持久化（方案 §4.4）
+	Source     string // capture | composer（M6 调试重发，方案 §4.10）；空值按 capture 处理
 }
 
 func NewFlow(id string) *Flow {
-	return &Flow{ID: id, State: StatePending, Timing: &Timing{Start: time.Now()}}
+	return &Flow{ID: id, State: StatePending, Source: SourceCapture, Timing: &Timing{Start: time.Now()}}
 }
 
 // BodyCapture tee 捕获缓冲：写满 max 后丢弃后续字节并标记截断。

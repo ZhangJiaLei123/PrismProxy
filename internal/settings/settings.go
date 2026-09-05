@@ -66,6 +66,9 @@ type Settings struct {
 	// ShowSysProxySwitch 是否在顶栏显示系统代理快捷开关（默认显示）。
 	ShowSysProxySwitch bool `json:"showSysProxySwitch"`
 
+	// AutoSysProxy 启动程序时自动接管系统代理（默认关闭）。
+	AutoSysProxy bool `json:"autoSysProxy"`
+
 	// BypassList 系统代理 ProxyOverride 绕过列表（内置默认，可增删并持久化）。
 	// 语义：裸域名匹配自身+全部子域；代理崩溃残留时这些域名仍直连（方案 §4.6）。
 	BypassList []string `json:"bypassList"`

@@ -9,9 +9,18 @@
     <div v-if="sys.state === 'occupied'" class="hint">
       系统代理当前指向 {{ sys.server }}（其他程序占用），开启将接管，关闭恢复。
     </div>
-    <div v-if="sys.state === 'on' && sys.override" class="hint break">
-      生效中的绕过列表：{{ sys.override }}
+    <div v-if="sys.state === 'on' && overrideItems.length" class="override-box">
+      <div class="override-title">生效中的绕过列表（{{ overrideItems.length }} 项）</div>
+      <div class="override-tags">
+        <n-tag v-for="item in overrideItems" :key="item" size="small" :bordered="false" class="override-tag">
+          {{ item }}
+        </n-tag>
+      </div>
     </div>
+    <n-checkbox v-model:checked="form.autoSysProxy" size="small" style="margin-top: 8px">
+      自动开启系统代理
+    </n-checkbox>
+    <div class="hint">保存后生效；下次启动程序并成功监听后自动接管系统代理。</div>
   </section>
 
   <section class="sec">
@@ -44,6 +53,14 @@ const emit = defineEmits<{ (e: 'changed'): void }>()
 // ---- 系统代理状态 ----
 const sys = ref<main.SystemProxyStatus>({ state: 'off', server: '', override: '' } as main.SystemProxyStatus)
 const sysBusy = ref(false)
+
+// ProxyOverride 注册表值为分号分隔的单行字符串，拆成条目用于标签展示
+const overrideItems = computed(() =>
+  (sys.value.override || '')
+    .split(';')
+    .map((s) => s.trim())
+    .filter(Boolean),
+)
 
 const sysTagType = computed(() => (sys.value.state === 'on' ? 'success' : sys.value.state === 'occupied' ? 'warning' : 'default'))
 const sysTagText = computed(() =>
@@ -91,4 +108,14 @@ onMounted(loadSysStatus)
 .sec-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
 .hint { opacity: 0.5; font-size: 11px; margin-top: 4px; }
 .hint.break { word-break: break-all; }
+.override-box {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--n-border-color, rgba(128, 128, 128, 0.2));
+  border-radius: 4px;
+  background: rgba(128, 128, 128, 0.06);
+}
+.override-title { font-size: 11px; opacity: 0.6; margin-bottom: 6px; }
+.override-tags { display: flex; flex-wrap: wrap; gap: 4px; max-height: 96px; overflow-y: auto; }
+.override-tag { font-family: var(--n-font-family-mono, monospace); font-size: 11px; }
 </style>

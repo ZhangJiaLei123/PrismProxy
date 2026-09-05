@@ -10,6 +10,9 @@ export const useFlowsStore = defineStore('flows', {
     index: new Map<string, number>(), // ID → flows 下标
     selectedId: '',
     inited: false,
+    // M6 调试重发 Composer：show=窗口开关，prefillId=从哪条流预填（空=空白请求）
+    composerShow: false,
+    composerPrefillId: '',
     // 展示过滤（方案验收 #8）：与 Go 侧捕获规则相互独立，仅影响列表显示
     filter: { keyword: '', regex: false, method: '', status: '' },
   }),
@@ -82,6 +85,15 @@ export const useFlowsStore = defineStore('flows', {
     },
     select(id: string) {
       this.selectedId = id
+    },
+    // M6：打开 Composer；flowId 非空时从该流预填请求（method/URL/headers/body）
+    openComposer(flowId = '') {
+      this.composerPrefillId = flowId
+      this.composerShow = true
+    },
+    closeComposer() {
+      this.composerShow = false
+      this.composerPrefillId = ''
     },
     async clear() {
       await ClearFlows() // Go 侧 evict 事件会同步清空前端

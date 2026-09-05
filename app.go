@@ -22,6 +22,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"prismproxy/internal/capture"
+	"prismproxy/internal/compose"
 	"prismproxy/internal/domains"
 	"prismproxy/internal/mitm"
 	"prismproxy/internal/procs"
@@ -52,7 +53,8 @@ type FlowMeta struct {
 	ClientAddr  string
 	StartedAt   int64 // unix 毫秒
 	Err         string
-	Pinned      bool // M5 置顶：固定顶部、不参与淘汰、Clear 保留（会话内不持久化）
+	Pinned      bool   // M5 置顶：固定顶部、不参与淘汰、Clear 保留（会话内不持久化）
+	Source      string // capture | composer（M6 调试重发标记）
 }
 
 // FlowDetail 详情面板：Meta + 首部 + TLS + 进程全量
@@ -170,6 +172,9 @@ func NewApp(addr string, noMITM bool) *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	// 系统关机/注销/重启：隐藏窗口接收 WM_ENDSESSION，同步还原系统代理
+	// （Wails 主窗口不处理该消息，OnShutdown 在关机时不触发；见 session_windows.go）
+	go watchSessionEnd(a.restoreSystemProxy)
 	// 崩溃自愈（验收 #13）：上次接管系统代理期间被强杀 → 按备份还原
 	if healed, err := sysproxy.SelfHeal(a.backupFile()); err != nil {
 		runtime.LogErrorf(ctx, "系统代理自愈失败: %v", err)
@@ -183,20 +188,35 @@ func (a *App) startup(ctx context.Context) {
 		a.startErr = err.Error()
 		a.mu.Unlock()
 		runtime.EventsEmit(ctx, "proxy:start-error", err.Error())
+		return
+	}
+	// 配置要求时自动接管系统代理（代理已监听；失败仅记录，不影响使用）
+	a.mu.Lock()
+	autoSys := a.cfg.AutoSysProxy
+	a.mu.Unlock()
+	if autoSys {
+		if err := a.SetSystemProxy(true); err != nil {
+			runtime.LogErrorf(ctx, "自动接管系统代理失败: %v", err)
+		}
 	}
 }
 
-// shutdown 退出清理：若系统代理正指向本工具则按备份恢复（OnShutdown 钩子）
+// shutdown 退出清理：若系统代理正指向本工具则按备份恢复（OnShutdown 钩子，关窗口/退出时触发）
 func (a *App) shutdown(ctx context.Context) {
+	a.restoreSystemProxy()
+	_ = a.StopProxy()
+}
+
+// restoreSystemProxy 若系统代理正指向本工具则按备份恢复（幂等，干净退出与系统关机清理共用）
+func (a *App) restoreSystemProxy() {
 	a.mu.Lock()
 	addr := a.addr
 	a.mu.Unlock()
 	if st, _, err := sysproxy.Status(addr); err == nil && st == sysproxy.StateOn {
-		if err := sysproxy.Disable(addr, a.backupFile()); err != nil {
-			runtime.LogErrorf(ctx, "恢复系统代理失败: %v", err)
+		if err := sysproxy.Disable(addr, a.backupFile()); err != nil && a.ctx != nil {
+			runtime.LogErrorf(a.ctx, "恢复系统代理失败: %v", err)
 		}
 	}
-	_ = a.StopProxy()
 }
 
 func (a *App) backupFile() string { return filepath.Join(a.cfgDir, "sysproxy-backup.json") }
@@ -324,6 +344,11 @@ func (a *App) GetFlowDetail(id string) (*FlowDetail, error) {
 	if !ok {
 		return nil, fmt.Errorf("flow %s not found（可能已淘汰）", id)
 	}
+	return flowDetail(f), nil
+}
+
+// flowDetail Flow → 详情 DTO（GetFlowDetail 与 M6 SendComposed 共用）
+func flowDetail(f *capture.Flow) *FlowDetail {
 	d := &FlowDetail{FlowMeta: toMeta(f), ServerAddr: f.ServerAddr, TLS: f.TLS}
 	if f.Request != nil {
 		d.ReqURL = f.Request.URL
@@ -339,7 +364,78 @@ func (a *App) GetFlowDetail(id string) (*FlowDetail, error) {
 	if f.Process != nil {
 		d.ProcessPath = f.Process.Path
 	}
-	return d, nil
+	return d
+}
+
+// ComposedHeader Composer 请求首部行（前端逐行编辑，顺序保留）
+type ComposedHeader struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// ComposedRequest 调试重发请求（方案 §4.10）
+type ComposedRequest struct {
+	Method     string          `json:"method"` // 空=GET
+	URL        string          `json:"url"`
+	Headers    []ComposedHeader `json:"headers"`
+	Body       string          `json:"body"`
+	SkipVerify bool            `json:"skipVerify"` // 跳过 HTTPS 证书校验（默认校验）
+}
+
+// SendComposed 执行调试重发（M6，方案 §4.10）：独立 http.Client 直连目标（不经自身代理防回环，
+// 跟随配置的上游代理），结果以 Source=composer 的新 Flow 入 store 进列表。
+// 网络/校验失败也会落一条 error 态 Flow（返回的 err 供前端即时提示）。
+func (a *App) SendComposed(req *ComposedRequest) (*FlowDetail, error) {
+	if req == nil {
+		return nil, fmt.Errorf("请求为空")
+	}
+	a.mu.Lock()
+	upstream := proxy.GuardUpstreamLoop(a.resolveUpstream(a.addr), hostOfAddr(a.addr), portOfAddr(a.addr))
+	rec := a.rec
+	st := a.st
+	a.mu.Unlock()
+
+	sender := &compose.Sender{
+		NewID:    rec.NewID,
+		Store:    st,
+		Upstream: upstream,
+	}
+	hdrs := make([]compose.KV, 0, len(req.Headers))
+	for _, h := range req.Headers {
+		hdrs = append(hdrs, compose.KV{Key: h.Key, Value: h.Value})
+	}
+	flow, err := sender.Send(context.Background(), compose.Request{
+		Method:     req.Method,
+		URL:        req.URL,
+		Headers:    hdrs,
+		Body:       req.Body,
+		SkipVerify: req.SkipVerify,
+	})
+	if err != nil {
+		// 参数校验失败（无落库 Flow）时 flow 为 nil；网络失败已落一条 error 态 Flow
+		if flow != nil {
+			return flowDetail(flow), err
+		}
+		return nil, err
+	}
+	return flowDetail(flow), nil
+}
+
+// hostOfAddr / portOfAddr 从监听地址拆出 host/port（供上游代理环路防护；失败返回零值由 Guard 容错）
+func hostOfAddr(addr string) string {
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		return h
+	}
+	return ""
+}
+
+func portOfAddr(addr string) uint16 {
+	if _, p, err := net.SplitHostPort(addr); err == nil {
+		if u, err := strconv.ParseUint(p, 10, 16); err == nil {
+			return uint16(u)
+		}
+	}
+	return 0
 }
 
 // GetFlowBody 取消息体：which = "req" | "resp"；展示层解压（方案 §4.1）
@@ -1392,6 +1488,7 @@ func toMeta(f *capture.Flow) FlowMeta {
 		ClientAddr: f.ClientAddr,
 		Err:        f.Err,
 		Pinned:     f.Pinned,
+		Source:     f.Source,
 	}
 	if f.Timing != nil {
 		m.StartedAt = f.Timing.Start.UnixMilli()

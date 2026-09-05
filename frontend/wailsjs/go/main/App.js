@@ -110,6 +110,10 @@ export function SaveDomainGroupText(arg1, arg2) {
   return window['go']['main']['App']['SaveDomainGroupText'](arg1, arg2);
 }
 
+export function SendComposed(arg1) {
+  return window['go']['main']['App']['SendComposed'](arg1);
+}
+
 export function SaveSettings(arg1) {
   return window['go']['main']['App']['SaveSettings'](arg1);
 }

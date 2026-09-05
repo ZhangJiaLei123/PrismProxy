@@ -61,7 +61,7 @@ func NewServerOpts(addr string, rec *capture.Recorder, ca *mitm.CA, opts *Option
 	s := &Server{addr: addr, port: uint16(p), rec: rec, bypass: make(map[string]struct{})}
 	if opts != nil {
 		s.eng = opts.Engine
-		s.upstream = guardUpstreamLoop(opts.UpstreamProxy, host, uint16(p))
+		s.upstream = GuardUpstreamLoop(opts.UpstreamProxy, host, uint16(p))
 	}
 	if ca != nil {
 		s.certs = mitm.NewCertCache(ca)
@@ -96,8 +96,9 @@ func (s *Server) ListenAndServe() error      { return s.srv.ListenAndServe() }
 func (s *Server) Serve(l net.Listener) error { return s.srv.Serve(l) }
 func (s *Server) Close() error               { return s.srv.Close() }
 
-// guardUpstreamLoop 自身环路防护（方案 §4.5）：上游代理指向本工具监听地址时降级直连
-func guardUpstreamLoop(upstream, selfHost string, selfPort uint16) string {
+// GuardUpstreamLoop 自身环路防护（方案 §4.5）：上游代理指向本工具监听地址时降级直连。
+// 代理 Server 与 M6 调试重发（compose）共用。
+func GuardUpstreamLoop(upstream, selfHost string, selfPort uint16) string {
 	if upstream == "" {
 		return ""
 	}
