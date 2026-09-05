@@ -187,6 +187,194 @@ func TestSetLimitsShrinkCapacity(t *testing.T) {
 	}
 }
 
+func TestPinnedSkippedByRingEvict(t *testing.T) {
+	s := New(3)
+	events := collect(s)
+
+	s.Add(flow("a"))
+	s.Add(flow("b"))
+	s.Add(flow("c"))
+	if _, err := s.SetPinned("a", true); err != nil {
+		t.Fatal(err)
+	}
+	s.Add(flow("d")) // 满环：最旧非置顶是 b（a 置顶跳过）
+
+	if _, ok := s.Get("a"); !ok {
+		t.Fatal("置顶的 a 不应被淘汰")
+	}
+	if _, ok := s.Get("b"); ok {
+		t.Fatal("b 应被淘汰")
+	}
+	if _, ok := s.Get("d"); !ok {
+		t.Fatal("d 应存在")
+	}
+	// 淘汰事件应指向 b 而非 a
+	var evicted string
+	for _, ev := range *events {
+		if ev.Type == "evict" {
+			evicted = ev.IDs[0]
+		}
+	}
+	if evicted != "b" {
+		t.Fatalf("evict 事件应淘汰 b，实际 %s（事件 %+v）", evicted, *events)
+	}
+
+	s.Add(flow("e")) // 下次淘汰 c
+	if _, ok := s.Get("c"); ok {
+		t.Fatal("c 应被淘汰")
+	}
+	if _, ok := s.Get("a"); !ok {
+		t.Fatal("置顶的 a 仍应保留")
+	}
+	if _, ok := s.Get("e"); !ok {
+		t.Fatal("e 应存在")
+	}
+}
+
+func TestPinnedAllFullDropsNew(t *testing.T) {
+	s := New(2)
+	s.Add(flow("a"))
+	s.Add(flow("b"))
+	if _, err := s.SetPinned("a", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetPinned("b", true); err != nil {
+		t.Fatal(err)
+	}
+	events := collect(s)
+
+	s.Add(flow("c")) // 全部置顶 → 丢弃
+	if got := len(s.List()); got != 2 {
+		t.Fatalf("全置顶满环时新流应丢弃，len = %d", got)
+	}
+	if _, ok := s.Get("c"); ok {
+		t.Fatal("c 应被丢弃")
+	}
+	if len(*events) != 0 {
+		t.Fatalf("丢弃新流不应产生事件，events = %+v", *events)
+	}
+
+	// 取消 a 置顶后新流可入库，淘汰 a
+	if _, err := s.SetPinned("a", false); err != nil {
+		t.Fatal(err)
+	}
+	s.Add(flow("c"))
+	if _, ok := s.Get("a"); ok {
+		t.Fatal("取消置顶的 a 应可被淘汰")
+	}
+	if _, ok := s.Get("c"); !ok {
+		t.Fatal("c 应存在")
+	}
+}
+
+func TestClearKeepsPinned(t *testing.T) {
+	s := New(5)
+	s.Add(flow("a"))
+	s.Add(flow("b"))
+	s.Add(flow("c"))
+	if _, err := s.SetPinned("b", true); err != nil {
+		t.Fatal(err)
+	}
+	events := collect(s)
+
+	s.Clear()
+	if got := len(s.List()); got != 1 {
+		t.Fatalf("Clear 应仅保留 1 条置顶流，len = %d", got)
+	}
+	if _, ok := s.Get("b"); !ok {
+		t.Fatal("置顶的 b 应在 Clear 后保留")
+	}
+	if _, ok := s.Get("a"); ok {
+		t.Fatal("非置顶的 a 应被清除")
+	}
+	if len(*events) != 1 || (*events)[0].Type != "evict" {
+		t.Fatalf("events = %+v", *events)
+	}
+	gotIDs := map[string]bool{}
+	for _, id := range (*events)[0].IDs {
+		gotIDs[id] = true
+	}
+	if !gotIDs["a"] || !gotIDs["c"] || gotIDs["b"] {
+		t.Fatalf("evict 应含 a,c 不含 b，实际 %v", gotIDs)
+	}
+
+	// Clear 后继续写入正常
+	s.Add(flow("d"))
+	if got := len(s.List()); got != 2 {
+		t.Fatalf("Clear 后追加应正常，len = %d", got)
+	}
+}
+
+func TestSetPinned(t *testing.T) {
+	s := New(MaxPinned + 10)
+	if _, err := s.SetPinned("nope", true); err == nil {
+		t.Fatal("置顶不存在的流应报错")
+	}
+
+	s.Add(flow("a"))
+	events := collect(s)
+
+	f, err := s.SetPinned("a", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.Pinned {
+		t.Fatal("返回的 flow 应 Pinned=true")
+	}
+	if len(*events) != 1 || (*events)[0].Type != "update" || (*events)[0].Flow.ID != "a" {
+		t.Fatalf("置顶应发 update 事件，events = %+v", *events)
+	}
+
+	// 重复置顶 = no-op
+	if _, err := s.SetPinned("a", true); err != nil {
+		t.Fatal(err)
+	}
+	if len(*events) != 1 {
+		t.Fatalf("重复置顶不应再发事件，events = %+v", *events)
+	}
+
+	// 取消置顶发 update
+	if _, err := s.SetPinned("a", false); err != nil {
+		t.Fatal(err)
+	}
+	if len(*events) != 2 {
+		t.Fatalf("取消置顶应再发 update 事件，events = %+v", *events)
+	}
+
+	// 上限
+	for i := 0; i < MaxPinned; i++ {
+		s.Add(flow(fmt.Sprintf("p%d", i)))
+		if _, err := s.SetPinned(fmt.Sprintf("p%d", i), true); err != nil {
+			t.Fatalf("置顶第 %d 条失败：%v", i+1, err)
+		}
+	}
+	s.Add(flow("overflow"))
+	if _, err := s.SetPinned("overflow", true); err == nil {
+		t.Fatalf("置顶达 %d 上限应报错", MaxPinned)
+	}
+}
+
+func TestUpdatePreservesPinned(t *testing.T) {
+	s := New(3)
+	s.Add(flow("a"))
+	if _, err := s.SetPinned("a", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// recorder 重发同 ID 的 flow（Pinned 位为 false），store 不应丢失置顶状态
+	f := flow("a")
+	f.State = capture.StateDone
+	s.Add(f)
+
+	got, _ := s.Get("a")
+	if !got.Pinned {
+		t.Fatal("upsert 更新不应清掉置顶位")
+	}
+	if got.State != capture.StateDone {
+		t.Fatal("upsert 更新应生效")
+	}
+}
+
 func TestByteBudgetRingInteraction(t *testing.T) {
 	s := New(3)
 	s.SetLimits(3, 50)

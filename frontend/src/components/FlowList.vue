@@ -29,14 +29,15 @@
           :key="f.ID"
           class="row item"
           :style="gridStyle"
-          :class="{ selected: f.ID === store.selectedId, error: f.State === 'error' }"
+          :class="{ selected: f.ID === store.selectedId, error: f.State === 'error', pinned: f.Pinned }"
           @click="store.select(f.ID)"
+          @contextmenu.prevent="onContextMenu($event, f)"
         >
           <span class="c-state"><i class="dot" :class="f.State"></i></span>
           <span class="c-time" @dblclick.stop="copyCell(fmtTime(f.StartedAt))">{{ fmtTime(f.StartedAt) }}</span>
           <span class="c-method" :class="'m-' + f.Method" @dblclick.stop="copyCell(f.Method)">{{ f.Method }}</span>
           <span class="c-status" :class="statusClass(f)" @dblclick.stop="copyCell(f.Status ? String(f.Status) : '')">{{ f.Status || '—' }}</span>
-          <span class="c-host ellipsis" :title="f.Host" @dblclick.stop="copyCell(f.Host)">{{ f.Host }}</span>
+          <span class="c-host ellipsis" :title="f.Host" @dblclick.stop="copyCell(f.Host)"><svg v-if="f.Pinned" class="pin-ic" viewBox="0 0 24 24" title="已置顶"><path fill="currentColor" d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"/></svg>{{ f.Host }}</span>
           <span class="c-path ellipsis" :title="f.URL" @dblclick.stop="copyCell(f.Path || f.URL)">{{ f.Path || f.URL }}</span>
           <span class="c-dur" @dblclick.stop="copyCell(fmtDuration(f.DurationMS))">{{ fmtDuration(f.DurationMS) }}</span>
           <span class="c-size" @dblclick.stop="copyCell(fmtBytes(f.BytesDown))">{{ fmtBytes(f.BytesDown) }}</span>
@@ -47,6 +48,17 @@
         </div>
       </div>
     </div>
+    <!-- 右键上下文菜单（manual 定位，渲染在虚拟列表外层，避免行回收导致菜单消失） -->
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :x="ctxX"
+      :y="ctxY"
+      :options="ctxOptions"
+      :show="ctxShow"
+      :on-clickoutside="() => (ctxShow = false)"
+      @select="onCtxSelect"
+    />
     <transition name="fade">
       <div v-if="copiedText !== null" class="copy-toast">已复制：{{ copiedText }}</div>
     </transition>
@@ -56,11 +68,16 @@
 <script setup lang="ts">
 import { useVirtualList } from '@vueuse/core'
 import { computed, ref } from 'vue'
+import { NDropdown, useMessage } from 'naive-ui'
+import type { DropdownOption } from 'naive-ui'
 import { useFlowsStore } from '../stores/flows'
 import { fmtBytes, fmtDuration, fmtTime } from '../lib/format'
+import { copyText } from '../lib/clip'
+import { AddQuickIgnore, BuildCurl, SetFlowPinned } from '../../wailsjs/go/main/App'
 import type { main } from '../../wailsjs/go/models'
 
 const store = useFlowsStore()
+const message = useMessage()
 
 type SortKey = 'time' | 'method' | 'status' | 'host' | 'path' | 'dur' | 'size' | 'proc'
 type SortDir = 'asc' | 'desc'
@@ -143,6 +160,8 @@ const sortedFlows = computed(() => {
   const get = valOf[sortKey.value]
   const dir = sortDir.value === 'asc' ? 1 : -1
   return [...store.filtered].sort((a, b) => {
+    // 置顶流恒在最前（置顶组内仍按选定排序）
+    if (!!a.Pinned !== !!b.Pinned) return a.Pinned ? -1 : 1
     const va = get(a)
     const vb = get(b)
     const c = typeof va === 'string' ? va.localeCompare(vb as string) : (va as number) - (vb as number)
@@ -157,20 +176,90 @@ let copyTimer: ReturnType<typeof setTimeout> | undefined
 
 async function copyCell(text: string) {
   if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
-    // 剪贴板 API 不可用（非安全上下文）时降级
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.position = 'fixed'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    ta.remove()
-  }
+  await copyText(text)
   copiedText.value = text.length > 40 ? text.slice(0, 40) + '…' : text
+  clearTimeout(copyTimer)
+  copyTimer = setTimeout(() => (copiedText.value = null), 1500)
+}
+
+// ---- 右键上下文菜单：复制 URL / cURL、置顶、快捷忽略（M5） ----
+const ctxShow = ref(false)
+const ctxX = ref(0)
+const ctxY = ref(0)
+const ctxFlow = ref<main.FlowMeta | null>(null)
+// 右键落点列：决定是否给出「忽略此域名/进程」入口
+const ctxCol = ref<'host' | 'proc' | null>(null)
+
+function onContextMenu(e: MouseEvent, f: main.FlowMeta) {
+  const cell = (e.target as HTMLElement).closest('span')
+  ctxCol.value = cell?.classList.contains('c-proc') ? 'proc' : cell?.classList.contains('c-host') ? 'host' : null
+  ctxFlow.value = f
+  ctxX.value = e.clientX
+  ctxY.value = e.clientY
+  ctxShow.value = true
+}
+
+const ctxOptions = computed<DropdownOption[]>(() => {
+  const f = ctxFlow.value
+  if (!f) return []
+  const opts: DropdownOption[] = [
+    { label: '复制 URL', key: 'copy-url' },
+    { label: '复制 cURL (cmd)', key: 'curl-cmd' },
+    { label: '复制 cURL (PowerShell)', key: 'curl-ps' },
+    { label: '复制 cURL (bash / Git Bash)', key: 'curl-bash' },
+    { type: 'divider', key: 'd1' },
+    { label: f.Pinned ? '取消置顶' : '置顶（固定顶部、不被淘汰）', key: 'pin' },
+    { type: 'divider', key: 'd2' },
+  ]
+  // 仅在域名列/进程列右键时给对应忽略入口；无进程名（隧道/未知）则忽略进程禁用
+  if (ctxCol.value === 'host' && f.Host) {
+    opts.push({ label: `忽略此域名（${f.Host} 及其子域）`, key: 'ignore-host' })
+  }
+  if (ctxCol.value === 'proc') {
+    opts.push({
+      label: f.ProcessName ? `忽略此进程（${f.ProcessName}）` : '忽略此进程（进程未知）',
+      key: 'ignore-proc',
+      disabled: !f.ProcessName,
+    })
+  }
+  if (ctxCol.value) opts.push({ type: 'divider', key: 'd3' })
+  opts.push({ label: '调试重发（M6 支持，敬请期待）', key: 'composer', disabled: true })
+  return opts
+})
+
+async function onCtxSelect(key: string) {
+  const f = ctxFlow.value
+  ctxShow.value = false
+  if (!f) return
+  try {
+    if (key === 'copy-url') {
+      await copyText(f.URL)
+      copyToast(f.URL)
+    } else if (key === 'curl-cmd' || key === 'curl-ps' || key === 'curl-bash') {
+      const shell = key === 'curl-cmd' ? 'cmd' : key === 'curl-ps' ? 'powershell' : 'bash'
+      const shellName = shell === 'cmd' ? 'cmd' : shell === 'powershell' ? 'PowerShell' : 'bash'
+      const r = await BuildCurl(f.ID, shell)
+      await copyText(r.command)
+      copyToast('cURL 命令（' + shellName + '）')
+      if (r.bodyOmitted) message.info('请求体为二进制或超过 64KB，未内联到 cURL（请手动补充）', { duration: 5000, closable: true })
+    } else if (key === 'pin') {
+      await SetFlowPinned(f.ID, !f.Pinned)
+    } else if (key === 'ignore-host' && f.Host) {
+      const added = await AddQuickIgnore('host', f.Host)
+      if (added) message.success(`已忽略域名 ${f.Host}（含全部子域），后续流量不再显示`, { duration: 4000, closable: true })
+      else message.info(`域名 ${f.Host} 已在忽略列表中`, { duration: 3000, closable: true })
+    } else if (key === 'ignore-proc' && f.ProcessName) {
+      const added = await AddQuickIgnore('process', f.ProcessName)
+      if (added) message.success(`已忽略进程 ${f.ProcessName}，该进程后续流量不再显示`, { duration: 4000, closable: true })
+      else message.info(`进程 ${f.ProcessName} 已在忽略列表中`, { duration: 3000, closable: true })
+    }
+  } catch (e) {
+    message.error(String(e), { duration: 6000, closable: true })
+  }
+}
+
+function copyToast(label: string) {
+  copiedText.value = label.length > 40 ? label.slice(0, 40) + '…' : label
   clearTimeout(copyTimer)
   copyTimer = setTimeout(() => (copiedText.value = null), 1500)
 }
@@ -260,6 +349,10 @@ function statusClass(f: main.FlowMeta): string {
 .item:hover { background: rgba(255, 255, 255, 0.06); }
 .item.selected { background: rgba(32, 128, 240, 0.25); }
 .item.error { color: #e88080; }
+/* 置顶行：琥珀色左侧条 + 略深背景 */
+.item.pinned { background: rgba(229, 192, 123, 0.10); box-shadow: inset 2px 0 0 #e5c07b; }
+.item.pinned.selected { background: rgba(32, 128, 240, 0.28); }
+.pin-ic { width: 11px; height: 11px; margin-right: 3px; vertical-align: -1px; color: #e5c07b; flex: none; }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .c-time { font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.65); }
 .list-head .c-time { color: inherit; }

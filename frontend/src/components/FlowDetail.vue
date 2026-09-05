@@ -26,6 +26,11 @@
         </n-tab-pane>
 
         <n-tab-pane name="request" tab="请求">
+          <div class="copy-bar">
+            <n-button size="tiny" quaternary @click="copyRaw('req', 'headers')">复制 Headers 原文</n-button>
+            <n-button size="tiny" quaternary @click="copyRaw('req', 'body')">复制 Body</n-button>
+            <n-button size="tiny" quaternary @click="copyRaw('req', 'all')">复制完整报文</n-button>
+          </div>
           <h4 class="sec">Headers</h4>
           <header-table :header="detail?.ReqHeader" />
           <h4 class="sec">Body <span class="size">({{ fmtBytes(detail?.ReqBodySize ?? 0) }})</span></h4>
@@ -33,6 +38,11 @@
         </n-tab-pane>
 
         <n-tab-pane name="response" tab="响应" :disabled="!store.selected.Status && store.selected.State === 'pending'">
+          <div class="copy-bar">
+            <n-button size="tiny" quaternary @click="copyRaw('resp', 'headers')">复制 Headers 原文</n-button>
+            <n-button size="tiny" quaternary @click="copyRaw('resp', 'body')">复制 Body</n-button>
+            <n-button size="tiny" quaternary @click="copyRaw('resp', 'all')">复制完整报文</n-button>
+          </div>
           <h4 class="sec">Headers</h4>
           <header-table :header="detail?.RespHeader" />
           <h4 class="sec">Body <span class="size">({{ fmtBytes(detail?.RespBodySize ?? 0) }})</span></h4>
@@ -62,14 +72,34 @@
 
 <script setup lang="ts">
 import { computed, h, ref, watch } from 'vue'
-import { NDescriptions, NDescriptionsItem, NTabPane, NTabs, NTag } from 'naive-ui'
+import { NButton, NDescriptions, NDescriptionsItem, NTabPane, NTabs, NTag, useMessage } from 'naive-ui'
 import BodyViewer from './BodyViewer.vue'
-import { GetFlowDetail } from '../../wailsjs/go/main/App'
+import { GetFlowDetail, GetFlowRawText } from '../../wailsjs/go/main/App'
 import type { main } from '../../wailsjs/go/models'
 import { useFlowsStore } from '../stores/flows'
 import { fmtBytes, fmtDuration, fmtDateTime } from '../lib/format'
+import { copyText } from '../lib/clip'
 
 const store = useFlowsStore()
+const message = useMessage()
+
+// 复制请求/响应原文（Headers / Body 解压后 / 完整报文），文本由 Go 侧生成
+async function copyRaw(part: 'req' | 'resp', kind: 'headers' | 'body' | 'all') {
+  const id = store.selectedId
+  if (!id) return
+  try {
+    const text = await GetFlowRawText(id, part, kind)
+    if (await copyText(text)) {
+      const partName = part === 'req' ? '请求' : '响应'
+      const kindName = kind === 'headers' ? 'Headers 原文' : kind === 'body' ? 'Body' : '完整报文'
+      message.success(`已复制${partName}${kindName}`, { duration: 2000, closable: true })
+    } else {
+      message.error('剪贴板写入失败', { duration: 4000, closable: true })
+    }
+  } catch (e) {
+    message.error(String(e), { duration: 5000, closable: true })
+  }
+}
 const detail = ref<main.FlowDetail | null>(null)
 const reqBody = ref<InstanceType<typeof BodyViewer> | null>(null)
 const respBody = ref<InstanceType<typeof BodyViewer> | null>(null)
@@ -149,6 +179,7 @@ const HeaderTable = (props: { header?: Record<string, string[]> }) => {
 .url { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sec { margin: 10px 0 4px; font-size: 12px; color: rgba(255, 255, 255, 0.6); }
 .sec .size { font-weight: normal; opacity: 0.7; }
+.copy-bar { display: flex; gap: 4px; margin: 2px 0 6px; }
 .proc-path { font-size: 11px; color: rgba(255, 255, 255, 0.45); word-break: break-all; }
 .cert { margin-bottom: 10px; font-size: 12px; line-height: 1.7; }
 .ck { display: inline-block; width: 64px; color: rgba(255, 255, 255, 0.5); }

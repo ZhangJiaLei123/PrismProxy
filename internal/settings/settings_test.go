@@ -179,6 +179,42 @@ func TestMigratePersistedIdempotent(t *testing.T) {
 	}
 }
 
+// M5 早期混合内置组 _quick_ignore（hosts+processes 同组）须拆分为两个独立组（组间 OR）
+func TestMigrateSplitQuickIgnore(t *testing.T) {
+	s := Default()
+	s.FilterGroups = append(s.FilterGroups, rules.FilterGroup{
+		ID: "_quick_ignore", Name: "快捷忽略", Enabled: true, Mode: rules.ModeBlacklist,
+		Hosts: []string{"www.bilibili.com"}, Processes: []string{"curl.exe"},
+	})
+	if !s.Migrate() {
+		t.Fatal("应发生拆分迁移")
+	}
+	var hosts, procs *rules.FilterGroup
+	for i := range s.FilterGroups {
+		switch s.FilterGroups[i].ID {
+		case "_quick_ignore":
+			t.Fatal("旧混合组应已移除")
+		case "_quick_ignore_hosts":
+			hosts = &s.FilterGroups[i]
+		case "_quick_ignore_procs":
+			procs = &s.FilterGroups[i]
+		}
+	}
+	if hosts == nil || procs == nil {
+		t.Fatalf("应生成域名组与进程组: %+v", s.FilterGroups)
+	}
+	if len(hosts.Hosts) != 1 || hosts.Hosts[0] != "www.bilibili.com" || len(hosts.Processes) != 0 {
+		t.Fatalf("域名组内容异常: %+v", hosts)
+	}
+	if len(procs.Processes) != 1 || procs.Processes[0] != "curl.exe" || len(procs.Hosts) != 0 {
+		t.Fatalf("进程组内容异常: %+v", procs)
+	}
+	// 幂等：二次调用不再变化
+	if s.Migrate() {
+		t.Fatal("拆分迁移应幂等")
+	}
+}
+
 func TestValidate(t *testing.T) {
 	gmap := map[string][]string{"ai": {"trae.cn"}}
 	assertErr := func(s *Settings, msg string) {

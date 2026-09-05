@@ -19,7 +19,8 @@
 
         <!-- ============ 过滤规则：黑白名单规则组 ============ -->
         <n-tab-pane name="capture" tab="过滤规则">
-          <capture-tab :form="form" />
+          <!-- 规则导入即时落盘 + 热更新，导入后重新拉取设置刷新表单 -->
+          <capture-tab :form="form" @imported="loadSettings" />
         </n-tab-pane>
 
         <!-- ============ 域名组：导入/导出/删除（即时生效，不走表单保存） ============ -->
@@ -80,23 +81,27 @@ const saveWarnings = ref<string[]>([])
 // 保存错误用全局悬浮 message（App.vue 的 n-message-provider 提供）
 const message = useMessage()
 
-// ---- 载入 ----
+// ---- 载入（打开面板时；规则导入后由 CaptureTab @imported 触发重载） ----
+async function loadSettings() {
+  const s = await GetSettings()
+  form.value = JSON.parse(JSON.stringify(s)) as settings.Settings
+  form.value.bypassList ??= []
+  form.value.decryptRules ??= []
+  form.value.filterGroups ??= []
+  for (const g of form.value.filterGroups) {
+    g.hosts ??= []
+    g.paths ??= []
+    g.processes ??= []
+  }
+}
+
 watch(
   () => props.show,
   async (v) => {
     if (!v) return
     activeTab.value = props.initialTab || 'general'
     saveWarnings.value = []
-    const s = await GetSettings()
-    form.value = JSON.parse(JSON.stringify(s)) as settings.Settings
-    form.value.bypassList ??= []
-    form.value.decryptRules ??= []
-    form.value.filterGroups ??= []
-    for (const g of form.value.filterGroups) {
-      g.hosts ??= []
-      g.paths ??= []
-      g.processes ??= []
-    }
+    await loadSettings()
   },
 )
 

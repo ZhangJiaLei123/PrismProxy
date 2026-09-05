@@ -24,6 +24,7 @@ import (
 	"prismproxy/internal/capture"
 	"prismproxy/internal/domains"
 	"prismproxy/internal/mitm"
+	"prismproxy/internal/procs"
 	"prismproxy/internal/proxy"
 	"prismproxy/internal/rules"
 	"prismproxy/internal/settings"
@@ -51,6 +52,7 @@ type FlowMeta struct {
 	ClientAddr  string
 	StartedAt   int64 // unix 毫秒
 	Err         string
+	Pinned      bool // M5 置顶：固定顶部、不参与淘汰、Clear 保留（会话内不持久化）
 }
 
 // FlowDetail 详情面板：Meta + 首部 + TLS + 进程全量
@@ -377,6 +379,415 @@ func (a *App) GetFlowBody(id, which string) (*BodyPayload, error) {
 
 func (a *App) ClearFlows() { a.st.Clear() }
 
+// ---------- M5：cURL / 置顶 / 快捷忽略 / 规则导入导出 / 原文复制（方案 §4.7-4.9） ----------
+
+// BuildCurl 生成可直接执行的 cURL 命令：shell = cmd | powershell | bash（转义规则见 capture.BuildCurl）
+func (a *App) BuildCurl(id, shell string) (*capture.CurlResult, error) {
+	f, ok := a.st.Get(id)
+	if !ok {
+		return nil, fmt.Errorf("flow %s not found（可能已淘汰）", id)
+	}
+	return capture.BuildCurl(f, shell)
+}
+
+// SetFlowPinned 置顶/取消置顶；置顶流固定顶部、不参与淘汰、Clear 保留（方案 §4.4）
+func (a *App) SetFlowPinned(id string, pinned bool) error {
+	_, err := a.st.SetPinned(id, pinned)
+	return err
+}
+
+// 快捷忽略内置黑名单组（规则设计 §八）：域名与进程拆为两个独立组——
+// 引擎组内维度为 AND，若混放同一组会令"忽略域名 X"与"忽略进程 Y"互相收窄
+// （仅当 host=X 且 proc=Y 才过滤）；拆成两组后走组间 OR，任一命中即过滤。
+const (
+	QuickIgnoreHostGroupID = "_quick_ignore_hosts" // 快捷忽略-域名
+	QuickIgnoreProcGroupID = "_quick_ignore_procs" // 快捷忽略-进程
+)
+
+// AddQuickIgnore 一键忽略：target = host（裸域名=自身+全部子域）| process（进程名，精确不区分大小写）。
+// 分别写入内置黑名单组 _quick_ignore_hosts / _quick_ignore_procs（不存在则自动创建），幂等去重；热更新 + 落盘。
+// 返回 added=false 表示已存在未重复添加。
+func (a *App) AddQuickIgnore(target, value string) (bool, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false, fmt.Errorf("忽略内容为空")
+	}
+
+	var groupID, groupName string
+	var normalize func(string) (string, bool)
+	var exists func(rules.FilterGroup, string) bool
+	switch target {
+	case "host":
+		groupID, groupName = QuickIgnoreHostGroupID, "快捷忽略-域名"
+		normalize = func(v string) (string, bool) {
+			h := normalizeQuickIgnoreHost(v)
+			return h, h != ""
+		}
+		exists = func(g rules.FilterGroup, v string) bool {
+			for _, x := range g.Hosts {
+				if x == v {
+					return true
+				}
+			}
+			return false
+		}
+	case "process":
+		groupID, groupName = QuickIgnoreProcGroupID, "快捷忽略-进程"
+		normalize = func(v string) (string, bool) { return v, true }
+		exists = func(g rules.FilterGroup, v string) bool {
+			for _, x := range g.Processes {
+				if strings.EqualFold(x, v) {
+					return true
+				}
+			}
+			return false
+		}
+	default:
+		return false, fmt.Errorf("target 须为 host|process")
+	}
+
+	nv, ok := normalize(value)
+	if !ok {
+		return false, fmt.Errorf("域名无效：%q", value)
+	}
+
+	a.mu.Lock()
+	gi := -1
+	for i := range a.cfg.FilterGroups {
+		if a.cfg.FilterGroups[i].ID == groupID {
+			gi = i
+			break
+		}
+	}
+	if gi < 0 {
+		a.cfg.FilterGroups = append(a.cfg.FilterGroups, rules.FilterGroup{
+			ID: groupID, Name: groupName, Enabled: true, Mode: rules.ModeBlacklist,
+		})
+		gi = len(a.cfg.FilterGroups) - 1
+	}
+	g := &a.cfg.FilterGroups[gi]
+	if exists(*g, nv) {
+		a.mu.Unlock()
+		return false, nil // 幂等：已存在
+	}
+	if target == "host" {
+		g.Hosts = append(g.Hosts, nv)
+	} else {
+		g.Processes = append(g.Processes, nv)
+	}
+	cfg := a.cfg
+	a.mu.Unlock()
+
+	if err := cfg.Save(a.cfgDir); err != nil {
+		return false, err
+	}
+	if err := a.rebuildEngine(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// normalizeQuickIgnoreHost 忽略域名归一化：去端口（ServerAddr 可能带 :port）、小写、去尾点、去 *. 前缀
+func normalizeQuickIgnoreHost(h string) string {
+	h = strings.TrimSpace(h)
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
+	}
+	h = strings.ToLower(h)
+	h = strings.TrimSuffix(h, ".")
+	h = strings.TrimPrefix(h, "*.")
+	return h
+}
+
+// rulesFile 规则导入导出 JSON 结构（方案 §4.7：含 version + 导出时间 + 规则三层 + 绕过列表）
+type rulesFile struct {
+	Version      int                 `json:"version"` // 当前 1
+	ExportedAt   string              `json:"exportedAt,omitempty"`
+	FilterGroups []rules.FilterGroup `json:"filterGroups"`
+	DecryptRules []rules.DecryptRule `json:"decryptRules"`
+	BypassList   []string            `json:"bypassList"`
+	Groups       map[string][]string `json:"groups,omitempty"` // 内嵌引用域名组清单（可选）
+}
+
+// ExportRules 导出规则为 JSON 文件（弹保存对话框）；embedGroups=true 时内嵌规则 @引用到的域名组清单，
+// 便于跨机分享。返回保存路径（用户取消返回空串）。
+func (a *App) ExportRules(embedGroups bool) (string, error) {
+	a.mu.Lock()
+	fg := append([]rules.FilterGroup(nil), a.cfg.FilterGroups...)
+	dr := append([]rules.DecryptRule(nil), a.cfg.DecryptRules...)
+	bp := append([]string(nil), a.cfg.BypassList...)
+	var gmap map[string][]string
+	if a.groups != nil {
+		gmap = a.groups.Domains
+	}
+	a.mu.Unlock()
+
+	doc := rulesFile{
+		Version:      1,
+		ExportedAt:   time.Now().Format(time.RFC3339),
+		FilterGroups: fg,
+		DecryptRules: dr,
+		BypassList:   bp,
+	}
+	if embedGroups {
+		doc.Groups = map[string][]string{}
+		for _, g := range fg {
+			for _, h := range g.Hosts {
+				if !strings.HasPrefix(h, "@") {
+					continue
+				}
+				name := strings.TrimPrefix(h, "@")
+				if _, ok := doc.Groups[name]; ok {
+					continue
+				}
+				if list, ok := gmap[name]; ok {
+					doc.Groups[name] = append([]string(nil), list...)
+				}
+			}
+		}
+		if len(doc.Groups) == 0 {
+			doc.Groups = nil
+		}
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	dest, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "导出规则",
+		DefaultFilename: "prismproxy-rules.json",
+		Filters:         []runtime.FileFilter{{DisplayName: "规则文件 (*.json)", Pattern: "*.json"}},
+	})
+	if err != nil {
+		return "", err
+	}
+	if dest == "" {
+		return "", nil // 用户取消
+	}
+	if err := os.WriteFile(dest, data, 0o644); err != nil {
+		return "", fmt.Errorf("写入文件: %w", err)
+	}
+	return dest, nil
+}
+
+// ImportRulesResult 规则导入结果：Warnings 为非阻塞提示（缺组等）
+type ImportRulesResult struct {
+	Warnings []string `json:"warnings"`
+}
+
+// ImportRules 从本地文件或 http(s) URL 导入规则（整体替换 + 校验，方案 §4.7）。
+// src 为本地路径或 URL；src 为空时弹文件选择对话框。
+// 内嵌域名组清单（groups）自动补建为用户域名组；引用缺失组不阻塞、以 warnings 返回。
+func (a *App) ImportRules(src string) (*ImportRulesResult, error) {
+	var data []byte
+	src = strings.TrimSpace(src)
+	switch {
+	case src == "":
+		file, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+			Title:   "选择规则文件",
+			Filters: []runtime.FileFilter{{DisplayName: "规则文件 (*.json)", Pattern: "*.json"}, {DisplayName: "所有文件 (*.*)", Pattern: "*.*"}},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if file == "" {
+			return nil, nil // 用户取消
+		}
+		data, err = os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("读取文件: %w", err)
+		}
+	case strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://"):
+		var err error
+		data, err = httpGet(src)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		var err error
+		data, err = os.ReadFile(src)
+		if err != nil {
+			return nil, fmt.Errorf("读取文件: %w", err)
+		}
+	}
+
+	var doc rulesFile
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("不是有效的规则 JSON: %w", err)
+	}
+	if doc.Version != 1 {
+		return nil, fmt.Errorf("不支持的规则文件版本: %d（当前支持版本 1）", doc.Version)
+	}
+	// 缺字段兜底为空切片（防 null 覆盖后前端渲染/引擎编译异常）
+	if doc.FilterGroups == nil {
+		doc.FilterGroups = []rules.FilterGroup{}
+	}
+	if doc.DecryptRules == nil {
+		doc.DecryptRules = []rules.DecryptRule{}
+	}
+
+	// 内嵌域名组 → 补建用户域名组（含内嵌清单则引用不再缺失）
+	built := 0
+	for id, list := range doc.Groups {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" || len(list) == 0 {
+			continue
+		}
+		var b strings.Builder
+		b.WriteString("# 规则导入内嵌域名组：" + id + "\n")
+		for _, d := range list {
+			d = strings.TrimSpace(d)
+			if d != "" {
+				b.WriteString(d + "\n")
+			}
+		}
+		if _, err := domains.WriteUser(a.userDomainsDir(), id, []byte(b.String())); err != nil {
+			return nil, fmt.Errorf("补建内嵌域名组 %q: %w", id, err)
+		}
+		built++
+	}
+
+	// 整体替换 + 校验（沿用现有非规则字段：监听/上游/存储预算/开关）
+	a.mu.Lock()
+	nu := *a.cfg
+	a.mu.Unlock()
+	nu.FilterGroups = doc.FilterGroups
+	nu.DecryptRules = doc.DecryptRules
+	if doc.BypassList != nil {
+		nu.BypassList = doc.BypassList
+	}
+
+	var gmap map[string][]string
+	if built > 0 {
+		g, err := domains.LoadUser(a.userDomainsDir())
+		if err != nil {
+			return nil, err
+		}
+		a.mu.Lock()
+		a.groups = g
+		a.mu.Unlock()
+		gmap = g.Domains
+	} else if a.groups != nil {
+		gmap = a.groups.Domains
+	}
+	err, warns := nu.Validate(gmap)
+	if err != nil {
+		return nil, err
+	}
+	if err := nu.Save(a.cfgDir); err != nil {
+		return nil, fmt.Errorf("保存配置: %w", err)
+	}
+	a.mu.Lock()
+	needRestart := a.srv != nil && (nu.ListenAddr != a.cfg.ListenAddr ||
+		nu.UpstreamMode != a.cfg.UpstreamMode || nu.UpstreamProxy != a.cfg.UpstreamProxy)
+	a.cfg = &nu
+	a.mu.Unlock()
+
+	a.st.SetLimits(nu.MaxFlows, int64(nu.MaxBodyMB)<<20)
+	if err := a.rebuildEngine(); err != nil {
+		return nil, err
+	}
+	if needRestart {
+		if err := a.StopProxy(); err != nil {
+			return nil, err
+		}
+		if err := a.StartProxy(""); err != nil {
+			return nil, err
+		}
+	}
+	return &ImportRulesResult{Warnings: warns}, nil
+}
+
+// GetFlowRawText 生成详情复制文本（方案 §4.9）。
+// part = req | resp；kind = headers（起始行+首部原文）| body（解压后文本）| all（完整报文）。
+func (a *App) GetFlowRawText(id, part, kind string) (string, error) {
+	f, ok := a.st.Get(id)
+	if !ok {
+		return "", fmt.Errorf("flow %s not found（可能已淘汰）", id)
+	}
+	var msg *capture.Message
+	switch part {
+	case "req":
+		msg = f.Request
+	case "resp":
+		msg = f.Response
+	default:
+		return "", fmt.Errorf("part 须为 req|resp")
+	}
+	if msg == nil {
+		if part == "req" {
+			return "", fmt.Errorf("该流无请求（盲透传隧道）")
+		}
+		return "", fmt.Errorf("响应尚未到达")
+	}
+	switch kind {
+	case "headers":
+		return headerBlock(msg, part), nil
+	case "body":
+		return string(msgBodyDecoded(msg)), nil
+	case "all":
+		var b strings.Builder
+		b.WriteString(headerBlock(msg, part))
+		b.WriteString("\r\n")
+		b.Write(msgBodyDecoded(msg))
+		return b.String(), nil
+	default:
+		return "", fmt.Errorf("kind 须为 headers|body|all")
+	}
+}
+
+// headerBlock 起始行 + 首部（按 key 排序输出，CRLF）
+func headerBlock(msg *capture.Message, part string) string {
+	var b strings.Builder
+	b.WriteString(startLine(msg, part))
+	b.WriteString("\r\n")
+	keys := make([]string, 0, len(msg.Header))
+	for k := range msg.Header {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		for _, v := range msg.Header[k] {
+			b.WriteString(k)
+			b.WriteString(": ")
+			b.WriteString(v)
+			b.WriteString("\r\n")
+		}
+	}
+	return b.String()
+}
+
+// startLine 请求行 / 状态行（响应未存 reason phrase，以状态码文本兜底）
+func startLine(msg *capture.Message, part string) string {
+	proto := msg.Proto
+	if proto == "" {
+		proto = "HTTP/1.1"
+	}
+	if part == "req" {
+		target := msg.URL
+		if u, err := url.Parse(msg.URL); err == nil && u != nil {
+			target = u.RequestURI()
+		}
+		method := msg.Method
+		if method == "" {
+			method = "GET"
+		}
+		return method + " " + target + " " + proto
+	}
+	return proto + " " + strconv.Itoa(msg.StatusCode) + " " + http.StatusText(msg.StatusCode)
+}
+
+// msgBodyDecoded 展示层解压后的消息体（解压失败回退原始字节）
+func msgBodyDecoded(msg *capture.Message) []byte {
+	if len(msg.Body) == 0 {
+		return nil
+	}
+	if dec, err := capture.DecodeBody(msg.ContentEncoding, msg.Body); err == nil {
+		return dec
+	}
+	return msg.Body
+}
+
 // ---------- M4：设置 / 系统代理 / 规则 Bindings（方案 §4.8） ----------
 
 // resolveUpstream 按配置解析上游代理地址（空=直连）
@@ -537,6 +948,17 @@ func (a *App) ListDomainGroups() map[string]interface{} {
 		titles = map[string]string{}
 	}
 	return map[string]interface{}{"names": g.Names(), "meta": g.Meta, "titles": titles}
+}
+
+// ListSystemProcesses 返回系统当前运行的全部进程名（小写、去重、排序），
+// 供过滤规则「进程」维度下拉选择；枚举失败时静默返回空列表（不影响手输）。
+func (a *App) ListSystemProcesses() []string {
+	names, err := procs.List()
+	if err != nil {
+		log.Printf("枚举系统进程失败：%v", err)
+		return []string{}
+	}
+	return names
 }
 
 // ---------- 域名组管理（设置面板：导入/导出/删除，即时生效） ----------
@@ -969,6 +1391,7 @@ func toMeta(f *capture.Flow) FlowMeta {
 		BytesDown:  f.BytesDown,
 		ClientAddr: f.ClientAddr,
 		Err:        f.Err,
+		Pinned:     f.Pinned,
 	}
 	if f.Timing != nil {
 		m.StartedAt = f.Timing.Start.UnixMilli()

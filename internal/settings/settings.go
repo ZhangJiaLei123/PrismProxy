@@ -139,9 +139,75 @@ func (s *Settings) Save(dir string) error {
 // urlRe/method 维度丢弃（path glob + 展示层方法过滤替代）并 log 提示；
 // decryptRules 不迁移、不改动。
 func (s *Settings) Migrate() bool {
-	if len(s.CaptureRules) == 0 && len(s.ProcessRules) == 0 {
+	changed := false
+	if len(s.CaptureRules) > 0 || len(s.ProcessRules) > 0 {
+		changed = s.migrateLegacyRules()
+	}
+	if s.splitQuickIgnoreGroup() {
+		changed = true
+	}
+	return changed
+}
+
+// splitQuickIgnoreGroup 拆分 M5 早期的混合内置黑名单组 _quick_ignore（hosts+processes 同组，
+// 组内 AND 语义会令域名/进程忽略互相收窄）为两个独立组 _quick_ignore_hosts / _quick_ignore_procs
+// （组间 OR）。幂等：拆分后旧组不存在，二次调用无操作。
+func (s *Settings) splitQuickIgnoreGroup() bool {
+	qi := -1
+	for i := range s.FilterGroups {
+		if s.FilterGroups[i].ID == "_quick_ignore" {
+			qi = i
+			break
+		}
+	}
+	if qi < 0 {
 		return false
 	}
+	old := s.FilterGroups[qi]
+	// 移除旧组
+	s.FilterGroups = append(s.FilterGroups[:qi], s.FilterGroups[qi+1:]...)
+
+	ensureGroup := func(id, name string) *rules.FilterGroup {
+		for i := range s.FilterGroups {
+			if s.FilterGroups[i].ID == id {
+				return &s.FilterGroups[i]
+			}
+		}
+		s.FilterGroups = append(s.FilterGroups, rules.FilterGroup{
+			ID: id, Name: name, Enabled: true, Mode: rules.ModeBlacklist,
+		})
+		return &s.FilterGroups[len(s.FilterGroups)-1]
+	}
+	mergeUniq := func(dst *[]string, src []string, caseInsensitive bool) {
+		for _, v := range src {
+			exist := false
+			for _, x := range *dst {
+				if (caseInsensitive && strings.EqualFold(x, v)) || (!caseInsensitive && x == v) {
+					exist = true
+					break
+				}
+			}
+			if !exist {
+				*dst = append(*dst, v)
+			}
+		}
+	}
+	if len(old.Hosts) > 0 || len(old.Paths) > 0 {
+		g := ensureGroup("_quick_ignore_hosts", "快捷忽略-域名")
+		mergeUniq(&g.Hosts, old.Hosts, false)
+		mergeUniq(&g.Paths, old.Paths, false)
+	}
+	if len(old.Processes) > 0 {
+		g := ensureGroup("_quick_ignore_procs", "快捷忽略-进程")
+		mergeUniq(&g.Processes, old.Processes, true)
+	}
+	log.Printf("settings migrate: 已将混合组 _quick_ignore 拆分为 _quick_ignore_hosts / _quick_ignore_procs")
+	return true
+}
+
+// migrateLegacyRules 旧 captureRules/processRules → filterGroups（规则设计 §六）。
+// urlRe/method 维度丢弃（path glob + 展示层方法过滤替代）并 log 提示；decryptRules 不迁移、不改动。
+func (s *Settings) migrateLegacyRules() bool {
 	// 来源 × 模式 四个迁移桶：同 action 旧条目合并进同一组（语义聚合）
 	type bucket struct {
 		name      string

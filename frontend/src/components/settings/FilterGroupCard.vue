@@ -37,47 +37,47 @@
       </div>
       <div v-else class="hint empty-hint">此规则组暂无条目，不会匹配任何流量</div>
 
-      <!-- 添加条目：先选类型，再填值 -->
+      <!-- 添加条目：先选维度（域名/路径/进程），再填值 -->
       <div class="add-row">
         <n-select v-model:value="newType" size="small" class="type-ctl" :options="typeOptions" />
+        <!-- 域名：域名组下拉 / 手输域名 二合一（域名组引用只在此维度出现） -->
         <n-select
-          v-if="newType === 'processes'"
+          v-if="newType === 'hosts'"
           size="small"
           filterable
           tag
           class="value-ctl"
-          placeholder="选择已见进程或输入进程名"
-          :options="processOptions"
-          :value="null"
-          @update:value="(v: string | null) => addEntry(v ?? undefined)"
-        />
-        <n-input
-          v-else
-          v-model:value="newValue"
-          size="small"
-          class="value-ctl"
-          :placeholder="newType === 'hosts' ? 'example.com 或 *.example.com' : '/api/v1/*'"
-          @keydown.enter="addEntry()"
-        />
-        <n-button v-if="newType !== 'processes'" size="small" :disabled="!newValue.trim()" @click="addEntry()">
-          添加
-        </n-button>
-      </div>
-
-      <!-- 域名类型的快捷入口：引用内置域名组 -->
-      <div v-if="newType === 'hosts'" class="ref-row">
-        <n-select
-          size="small"
-          filterable
-          clearable
-          placeholder="引用域名组（追加 @组名）"
+          placeholder="选择域名组（@组名），或直接输入域名后回车"
           :options="groupOptions"
           :value="null"
-          @update:value="(v: string | null) => addEntry(v ?? undefined)"
+          @update:value="(v: string | null) => addEntry('hosts', v ?? undefined)"
+        />
+        <!-- 路径：输入框 + 添加按钮 -->
+        <template v-else-if="newType === 'paths'">
+          <n-input
+            v-model:value="newPath"
+            size="small"
+            class="value-ctl"
+            placeholder="/api/v1/*"
+            @keydown.enter="addEntry('paths')"
+          />
+          <n-button size="small" :disabled="!newPath.trim()" @click="addEntry('paths')">添加</n-button>
+        </template>
+        <!-- 进程：已见进程下拉 / 手输进程名 -->
+        <n-select
+          v-else
+          size="small"
+          filterable
+          tag
+          class="value-ctl"
+          placeholder="选择系统进程或输入进程名（如 chrome.exe）"
+          :options="processOptions"
+          :value="null"
+          @update:value="(v: string | null) => addEntry('processes', v ?? undefined)"
         />
       </div>
-      <div v-if="newType === 'paths'" class="hint dim-hint">
-        支持通配符：/api/v1/*；不含通配符按“精确或子路径”匹配；单个 / 匹配所有路径
+      <div class="hint dim-hint">
+        域名：裸域名匹配自身与全部子域（*.example.com 等价），@开头为域名组引用；路径：支持 * 通配，无通配符按“精确或子路径”匹配，单个 / 匹配所有路径。
       </div>
     </div>
   </section>
@@ -141,21 +141,22 @@ function removeEntry(e: Entry) {
   props.g[e.dim]?.splice(e.idx, 1)
 }
 
-// ---- 添加条目 ----
+// ---- 添加条目（先选维度再填值；域名/进程走 tag 下拉即时添加，路径走输入框 + 添加按钮） ----
 const newType = ref<Dim>('hosts')
-const newValue = ref('')
+const newPath = ref('')
 const typeOptions: { label: string; value: Dim }[] = [
   { label: '域名', value: 'hosts' },
   { label: '路径', value: 'paths' },
   { label: '进程', value: 'processes' },
 ]
 
-function addEntry(v?: string) {
-  const val = (v ?? newValue.value).trim()
+function addEntry(dim: Dim, v?: string) {
+  let val = (v ?? (dim === 'paths' ? newPath.value : '')).trim()
+  if (dim === 'hosts') val = val.replace(/。/g, '.') // 中文句号自动纠正为域名点号
   if (!val) return
-  const arr = (props.g[newType.value] ??= [])
+  const arr = (props.g[dim] ??= [])
   if (!arr.includes(val)) arr.push(val)
-  newValue.value = ''
+  if (dim === 'paths') newPath.value = ''
 }
 </script>
 
@@ -173,7 +174,6 @@ function addEntry(v?: string) {
 .add-row { display: flex; align-items: center; gap: 8px; }
 .type-ctl { width: 84px; flex-shrink: 0; }
 .value-ctl { flex: 1; min-width: 0; }
-.ref-row { margin-top: 6px; max-width: 260px; }
 .hint { opacity: 0.5; font-size: 11px; }
-.dim-hint { margin-top: 6px; }
+.dim-hint { margin-top: 6px; line-height: 1.6; }
 </style>

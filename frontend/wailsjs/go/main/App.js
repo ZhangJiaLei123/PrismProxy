@@ -6,6 +6,14 @@ export function AddDecryptBypass(arg1) {
   return window['go']['main']['App']['AddDecryptBypass'](arg1);
 }
 
+export function AddQuickIgnore(arg1, arg2) {
+  return window['go']['main']['App']['AddQuickIgnore'](arg1, arg2);
+}
+
+export function BuildCurl(arg1, arg2) {
+  return window['go']['main']['App']['BuildCurl'](arg1, arg2);
+}
+
 export function ClearFlows() {
   return window['go']['main']['App']['ClearFlows']();
 }
@@ -16,6 +24,10 @@ export function DeleteDomainGroup(arg1) {
 
 export function ExportDomainGroup(arg1) {
   return window['go']['main']['App']['ExportDomainGroup'](arg1);
+}
+
+export function ExportRules(arg1) {
+  return window['go']['main']['App']['ExportRules'](arg1);
 }
 
 export function FindFreePort(arg1, arg2) {
@@ -32,6 +44,10 @@ export function GetFlowBody(arg1, arg2) {
 
 export function GetFlowDetail(arg1) {
   return window['go']['main']['App']['GetFlowDetail'](arg1);
+}
+
+export function GetFlowRawText(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetFlowRawText'](arg1, arg2, arg3);
 }
 
 export function GetLocalAddrs() {
@@ -62,6 +78,10 @@ export function ImportDomainGroupsFromIndex(arg1, arg2, arg3) {
   return window['go']['main']['App']['ImportDomainGroupsFromIndex'](arg1, arg2, arg3);
 }
 
+export function ImportRules(arg1) {
+  return window['go']['main']['App']['ImportRules'](arg1);
+}
+
 export function InstallRootCA() {
   return window['go']['main']['App']['InstallRootCA']();
 }
@@ -78,6 +98,10 @@ export function ListFlows() {
   return window['go']['main']['App']['ListFlows']();
 }
 
+export function ListSystemProcesses() {
+  return window['go']['main']['App']['ListSystemProcesses']();
+}
+
 export function ProbeURLImport(arg1) {
   return window['go']['main']['App']['ProbeURLImport'](arg1);
 }
@@ -88,6 +112,10 @@ export function SaveDomainGroupText(arg1, arg2) {
 
 export function SaveSettings(arg1) {
   return window['go']['main']['App']['SaveSettings'](arg1);
+}
+
+export function SetFlowPinned(arg1, arg2) {
+  return window['go']['main']['App']['SetFlowPinned'](arg1, arg2);
 }
 
 export function SetSystemProxy(arg1) {

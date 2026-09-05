@@ -1,5 +1,19 @@
 export namespace capture {
 	
+	export class CurlResult {
+	    command: string;
+	    bodyOmitted: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CurlResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.command = source["command"];
+	        this.bodyOmitted = source["bodyOmitted"];
+	    }
+	}
 	export class PeerCert {
 	    Subject: string;
 	    Issuer: string;
@@ -172,6 +186,7 @@ export namespace main {
 	    ClientAddr: string;
 	    StartedAt: number;
 	    Err: string;
+	    Pinned: boolean;
 	    ReqURL: string;
 	    ReqProto: string;
 	    ReqHeader: Record<string, Array<string>>;
@@ -205,6 +220,7 @@ export namespace main {
 	        this.ClientAddr = source["ClientAddr"];
 	        this.StartedAt = source["StartedAt"];
 	        this.Err = source["Err"];
+	        this.Pinned = source["Pinned"];
 	        this.ReqURL = source["ReqURL"];
 	        this.ReqProto = source["ReqProto"];
 	        this.ReqHeader = source["ReqHeader"];
@@ -252,6 +268,7 @@ export namespace main {
 	    ClientAddr: string;
 	    StartedAt: number;
 	    Err: string;
+	    Pinned: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new FlowMeta(source);
@@ -275,6 +292,19 @@ export namespace main {
 	        this.ClientAddr = source["ClientAddr"];
 	        this.StartedAt = source["StartedAt"];
 	        this.Err = source["Err"];
+	        this.Pinned = source["Pinned"];
+	    }
+	}
+	export class ImportRulesResult {
+	    warnings: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ImportRulesResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.warnings = source["warnings"];
 	    }
 	}
 	export class IndexImportResult {

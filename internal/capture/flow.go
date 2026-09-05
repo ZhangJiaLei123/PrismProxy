@@ -75,6 +75,7 @@ type Flow struct {
 	BytesDown  int64
 	Timing     *Timing
 	Err        string
+	Pinned     bool // M5 置顶：固定顶部展示、不参与环形淘汰、Clear 保留、会话内不持久化（方案 §4.4）
 }
 
 func NewFlow(id string) *Flow {
