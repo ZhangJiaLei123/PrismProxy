@@ -58,9 +58,9 @@ export function ProbeURLImport(arg1:string):Promise<main.URLImportProbe>;
 
 export function SaveDomainGroupText(arg1:string,arg2:string):Promise<main.DomainGroupImportResult>;
 
-export function SendComposed(arg1:main.ComposedRequest):Promise<main.FlowDetail>;
-
 export function SaveSettings(arg1:settings.Settings):Promise<main.SaveSettingsResult>;
+
+export function SendComposed(arg1:main.ComposedRequest):Promise<main.FlowDetail>;
 
 export function SetFlowPinned(arg1:string,arg2:boolean):Promise<void>;
 

@@ -57,6 +57,19 @@ var composerHopHeaders = map[string]struct{}{
 	"Content-Length":   {},
 }
 
+// respHopHeaders 响应记录前剥离的逐跳首部（同 proxy.removeHopHeaders；响应不剥 Content-Length）
+var respHopHeaders = []string{
+	"Connection",
+	"Proxy-Connection",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Keep-Alive",
+	"Te",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
 // Send 执行一次重发：请求/响应/失败均落为 Source=composer 的 Flow；网络错误也返回 err 供前端提示
 func (s *Sender) Send(ctx context.Context, req Request) (*capture.Flow, error) {
 	rawURL := strings.TrimSpace(req.URL)
@@ -73,11 +86,14 @@ func (s *Sender) Send(ctx context.Context, req Request) (*capture.Flow, error) {
 	flow.Source = capture.SourceComposer
 	flow.Scheme = u.Scheme
 	flow.ServerAddr = u.Host
+	// 重发由本进程发出，进程标记为 PrismProxy 自身（pid=os.Getpid）
 	procName := "PrismProxy"
-	if name, err := os.Executable(); err == nil {
-		procName = filepath.Base(name)
+	procPath := ""
+	if exe, err := os.Executable(); err == nil {
+		procPath = exe
+		procName = filepath.Base(exe)
 	}
-	flow.Process = &capture.ProcessInfo{Name: procName}
+	flow.Process = &capture.ProcessInfo{PID: uint32(os.Getpid()), Name: procName, Path: procPath}
 
 	reqHeader := http.Header{}
 	for _, h := range req.Headers {
@@ -133,6 +149,10 @@ func (s *Sender) Send(ctx context.Context, req Request) (*capture.Flow, error) {
 		return fail(flow, s, err), err
 	}
 	defer resp.Body.Close()
+	// 记录前剥逐跳首部，与抓包链路 removeHopHeaders 同口径（响应保留 Content-Length）
+	for _, h := range respHopHeaders {
+		resp.Header.Del(h)
+	}
 
 	flow.Response = &capture.Message{
 		Proto:           resp.Proto,

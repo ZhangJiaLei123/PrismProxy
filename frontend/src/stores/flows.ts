@@ -15,6 +15,8 @@ export const useFlowsStore = defineStore('flows', {
     composerPrefillId: '',
     // 展示过滤（方案验收 #8）：与 Go 侧捕获规则相互独立，仅影响列表显示
     filter: { keyword: '', regex: false, method: '', status: '' },
+    // 暂停列表刷新：true 时丢弃 flow:upsert/flow:evict 事件（后端抓包继续，恢复后不补发）
+    paused: false,
   }),
   getters: {
     selected(s): main.FlowMeta | null {
@@ -61,6 +63,7 @@ export const useFlowsStore = defineStore('flows', {
       EventsOn('flow:evict', (ids: string[]) => this.evict(ids ?? []))
     },
     upsert(metas: main.FlowMeta[]) {
+      if (this.paused) return
       const news: main.FlowMeta[] = []
       for (const m of metas) {
         const i = this.index.get(m.ID)
@@ -74,6 +77,7 @@ export const useFlowsStore = defineStore('flows', {
       }
     },
     evict(ids: string[]) {
+      if (this.paused) return
       const dead = new Set(ids)
       this.flows = this.flows.filter((f) => !dead.has(f.ID))
       this.rebuildIndex()
@@ -96,7 +100,11 @@ export const useFlowsStore = defineStore('flows', {
       this.composerPrefillId = ''
     },
     async clear() {
-      await ClearFlows() // Go 侧 evict 事件会同步清空前端
+      await ClearFlows()
+      // 暂停期间 evict 事件被丢弃，本地手动同步：仅保留置顶流（与后端 Clear 语义一致）
+      this.flows = this.flows.filter((f) => f.Pinned)
+      this.rebuildIndex()
+      if (!this.index.has(this.selectedId)) this.selectedId = ''
     },
   },
 })

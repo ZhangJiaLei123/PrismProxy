@@ -12,9 +12,7 @@
     <div v-if="sys.state === 'on' && overrideItems.length" class="override-box">
       <div class="override-title">生效中的绕过列表（{{ overrideItems.length }} 项）</div>
       <div class="override-tags">
-        <n-tag v-for="item in overrideItems" :key="item" size="small" :bordered="false" class="override-tag">
-          {{ item }}
-        </n-tag>
+        <span v-for="item in overrideItems" :key="item" class="override-chip">{{ item }}</span>
       </div>
     </div>
     <n-checkbox v-model:checked="form.autoSysProxy" size="small" style="margin-top: 8px">
@@ -116,6 +114,14 @@ onMounted(loadSysStatus)
   background: rgba(128, 128, 128, 0.06);
 }
 .override-title { font-size: 11px; opacity: 0.6; margin-bottom: 6px; }
-.override-tags { display: flex; flex-wrap: wrap; gap: 4px; max-height: 96px; overflow-y: auto; }
-.override-tag { font-family: var(--n-font-family-mono, monospace); font-size: 11px; }
+.override-tags { display: flex; flex-wrap: wrap; gap: 6px; max-height: 96px; overflow-y: auto; }
+.override-chip {
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: var(--n-color-embedded, rgba(128, 128, 128, 0.14));
+  color: var(--n-text-color-3, rgba(128, 128, 128, 0.95));
+  font-family: var(--n-font-family-mono, monospace);
+  font-size: 11px;
+  line-height: 18px;
+}
 </style>

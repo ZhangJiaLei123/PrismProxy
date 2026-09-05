@@ -223,7 +223,12 @@ const ctxOptions = computed<DropdownOption[]>(() => {
     })
   }
   if (ctxCol.value) opts.push({ type: 'divider', key: 'd3' })
-  opts.push({ label: '调试重发（M6 支持，敬请期待）', key: 'composer', disabled: true })
+  // 仅可编辑的请求（有 URL）支持调试重发；盲透传隧道无请求不可重发
+  opts.push({
+    label: '调试重发（编辑后重新发送）',
+    key: 'composer',
+    disabled: !f.URL || f.Method === 'CONNECT',
+  })
   return opts
 })
 
@@ -252,6 +257,8 @@ async function onCtxSelect(key: string) {
       const added = await AddQuickIgnore('process', f.ProcessName)
       if (added) message.success(`已忽略进程 ${f.ProcessName}，该进程后续流量不再显示`, { duration: 4000, closable: true })
       else message.info(`进程 ${f.ProcessName} 已在忽略列表中`, { duration: 3000, closable: true })
+    } else if (key === 'composer') {
+      store.openComposer(f.ID)
     }
   } catch (e) {
     message.error(String(e), { duration: 6000, closable: true })

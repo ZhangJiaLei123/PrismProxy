@@ -23,6 +23,7 @@ import (
 
 	"prismproxy/internal/capture"
 	"prismproxy/internal/compose"
+	"prismproxy/internal/ctlapi"
 	"prismproxy/internal/domains"
 	"prismproxy/internal/mitm"
 	"prismproxy/internal/procs"
@@ -110,6 +111,7 @@ type App struct {
 	addr     string
 	noMITM   bool
 	startErr string // 启动自动抓包失败原因（GetProxyStatus 暴露给前端，事件竞态兜底）
+	ctl      *ctlapi.Server // M8 本地控制 API（cli 子命令连接目标；GUI/headless 均启动）
 
 	// 事件合帧缓冲（~50ms 窗口，方案 §4.4）
 	pendMu   sync.Mutex
@@ -172,6 +174,13 @@ func NewApp(addr string, noMITM bool) *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	// 本地控制 API（M8 cli 子命令）：GUI 在线，ui:* 界面事件可用
+	a.startCtlAPI()
+	a.mu.Lock()
+	if a.ctl != nil {
+		a.ctl.SetUI(true)
+	}
+	a.mu.Unlock()
 	// 系统关机/注销/重启：隐藏窗口接收 WM_ENDSESSION，同步还原系统代理
 	// （Wails 主窗口不处理该消息，OnShutdown 在关机时不触发；见 session_windows.go）
 	go watchSessionEnd(a.restoreSystemProxy)
@@ -205,6 +214,7 @@ func (a *App) startup(ctx context.Context) {
 func (a *App) shutdown(ctx context.Context) {
 	a.restoreSystemProxy()
 	_ = a.StopProxy()
+	a.stopCtlAPI()
 }
 
 // restoreSystemProxy 若系统代理正指向本工具则按备份恢复（幂等，干净退出与系统关机清理共用）

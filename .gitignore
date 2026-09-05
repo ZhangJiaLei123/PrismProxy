@@ -2,6 +2,7 @@
 /build/bin/
 /build/tmp/
 /frontend/dist/
+/dist/
 *.exe
 *.exe~
 

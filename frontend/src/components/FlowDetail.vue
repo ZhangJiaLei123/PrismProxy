@@ -5,6 +5,7 @@
       <div class="title">
         <n-tag size="small" :type="stateTagType">{{ store.selected.State }}</n-tag>
         <span class="url" :title="store.selected.URL">{{ store.selected.Method }} {{ store.selected.URL }}</span>
+        <n-button size="tiny" type="primary" secondary class="resend-btn" :disabled="!store.selected.URL || store.selected.Method === 'CONNECT'" @click="store.openComposer(store.selected.ID)">调试重发</n-button>
       </div>
       <n-tabs type="line" size="small" style="flex: 1; min-height: 0" pane-style="height:100%;overflow:auto;padding:8px 12px">
         <n-tab-pane name="overview" tab="概览">
@@ -177,6 +178,7 @@ const HeaderTable = (props: { header?: Record<string, string[]> }) => {
 .empty { padding: 40px 16px; text-align: center; color: rgba(255, 255, 255, 0.4); }
 .title { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.1); flex: none; }
 .url { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.resend-btn { margin-left: auto; flex: none; }
 .sec { margin: 10px 0 4px; font-size: 12px; color: rgba(255, 255, 255, 0.6); }
 .sec .size { font-weight: normal; opacity: 0.7; }
 .copy-bar { display: flex; gap: 4px; margin: 2px 0 6px; }
