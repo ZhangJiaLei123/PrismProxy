@@ -83,7 +83,7 @@ import { computed, ref, watch } from 'vue'
 import {
   NButton, NCheckbox, NInput, NModal, NSelect, NTag, useMessage,
 } from 'naive-ui'
-import BodyViewer from './BodyViewer.vue'
+import BodyViewer from '../components/BodyViewer.vue'
 import { GetFlowBody, GetFlowDetail, SendComposed } from '../../wailsjs/go/main/App'
 import type { main } from '../../wailsjs/go/models'
 import { useFlowsStore } from '../stores/flows'

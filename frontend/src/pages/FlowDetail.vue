@@ -74,7 +74,7 @@
 <script setup lang="ts">
 import { computed, h, ref, watch } from 'vue'
 import { NButton, NDescriptions, NDescriptionsItem, NTabPane, NTabs, NTag, useMessage } from 'naive-ui'
-import BodyViewer from './BodyViewer.vue'
+import BodyViewer from '../components/BodyViewer.vue'
 import { GetFlowDetail, GetFlowRawText } from '../../wailsjs/go/main/App'
 import type { main } from '../../wailsjs/go/models'
 import { useFlowsStore } from '../stores/flows'
