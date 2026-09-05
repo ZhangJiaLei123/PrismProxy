@@ -9,7 +9,7 @@ import (
 // Shell 类型：决定转义与换行风格
 const (
 	ShellCmd        = "cmd"        // Windows cmd：双引号包裹，"" 转义（MSVC CRT 解析为字面 "）
-	ShellPowerShell = "powershell" // PowerShell：双引号包裹，"" 转义 + `/$ 专属转义，反引号续行
+	ShellPowerShell = "powershell" // PowerShell：双引号包裹，"" 转义 + `/$ 专属转义
 	ShellBash       = "bash"       // bash / zsh / Git Bash：单引号包裹，'\'' 转义
 )
 
@@ -38,18 +38,14 @@ func BuildCurl(f *Flow, shell string) (*CurlResult, error) {
 	}
 
 	var quote func(string) string
-	var cont string // 换行续行符
 	switch shell {
 	case ShellCmd:
 		// Windows 10+ curl 为 curl.exe 别名占位，显式 curl.exe 最稳
 		quote = quoteCmd
-		cont = " ^"
 	case ShellPowerShell:
 		quote = quotePowerShell
-		cont = " `" // PowerShell 续行符（行尾反引号后不能有空格）
 	case ShellBash:
 		quote = quoteBash
-		cont = " \\"
 	}
 
 	var parts []string
@@ -92,12 +88,10 @@ func BuildCurl(f *Flow, shell string) (*CurlResult, error) {
 		}
 	}
 
-	// 仅 exe + URL 的简单命令输出一行；带参数时用续行符多行排版
-	sep := " "
-	if len(parts) > 2 {
-		sep = cont + "\n  "
-	}
-	result.Command = strings.Join(parts, sep)
+	// 单行输出（Chrome DevTools 等工具导出的 cURL 均为单行）：续行符（cmd ^ /
+	// PowerShell ` / bash \）在不同终端的粘贴兼容性差异大，单行彻底规避，
+	// 且任何环境直接粘贴即可执行
+	result.Command = strings.Join(parts, " ")
 	return result, nil
 }
 

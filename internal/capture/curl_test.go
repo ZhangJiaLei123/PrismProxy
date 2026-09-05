@@ -99,17 +99,20 @@ func TestBuildCurl_MethodAndHeaders(t *testing.T) {
 	if ai < 0 || au < 0 || ai > au {
 		t.Fatalf("header 应按 key 排序输出: %q", cmd.Command)
 	}
-	// 多参数应有续行
-	if !strings.Contains(cmd.Command, " ^\n  ") {
-		t.Fatalf("cmd 多参数应用 ^ 续行: %q", cmd.Command)
+	// 单行输出：任何终端直接粘贴执行
+	if strings.Contains(cmd.Command, "\n") {
+		t.Fatalf("命令应为单行输出: %q", cmd.Command)
+	}
+	if !strings.Contains(cmd.Command, `"POST" -H "Accept: application/json"`) {
+		t.Fatalf("cmd 参数间应以单空格连接: %q", cmd.Command)
 	}
 
 	bash, err := BuildCurl(f, ShellBash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(bash.Command, " \\\n  ") {
-		t.Fatalf("bash 多参数应用 \\ 续行: %q", bash.Command)
+	if strings.Contains(bash.Command, "\n") {
+		t.Fatalf("命令应为单行输出: %q", bash.Command)
 	}
 }
 
@@ -143,9 +146,9 @@ func TestBuildCurl_PowerShell(t *testing.T) {
 	if !strings.HasPrefix(ps.Command, `"curl.exe"`) {
 		t.Fatalf("PowerShell 应显式 curl.exe（规避 Invoke-WebRequest 别名）: %q", ps.Command)
 	}
-	// 多参数用反引号续行
-	if !strings.Contains(ps.Command, " `\n  ") {
-		t.Fatalf("PowerShell 多参数应用反引号续行: %q", ps.Command)
+	// 单行输出，无续行符
+	if strings.Contains(ps.Command, "\n") {
+		t.Fatalf("命令应为单行输出: %q", ps.Command)
 	}
 	// 双引号 → ""
 	if !strings.Contains(ps.Command, `"X-Quote: say ""yo"""`) {
