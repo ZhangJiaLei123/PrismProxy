@@ -124,7 +124,7 @@ import SettingsPanel from './pages/SettingsPanel.vue'
 import Composer from './pages/Composer.vue'
 import { useFlowsStore } from './stores/flows'
 import { GetProxyStatus, StartProxy, StopProxy, GetSystemProxyStatus, SetSystemProxy, GetSettings } from '../wailsjs/go/main/App'
-import { EventsOn } from '../wailsjs/runtime/runtime'
+import { EventsOn, WindowUnminimise } from '../wailsjs/runtime/runtime'
 import type { main } from '../wailsjs/go/models'
 
 const store = useFlowsStore()
@@ -200,6 +200,13 @@ function openSettings() {
   showSettings.value = true
 }
 
+// M8：AI CLI `cli ui settings [tab]` 经 ctlapi → Wails ui:open-settings 事件驱动
+function onUIOpenSettings(tab?: string) {
+  settingsTab.value = tab || 'general'
+  showSettings.value = true
+  WindowUnminimise() // 窗口最小化时恢复，用户才能看到抽屉
+}
+
 const GITHUB_URL = 'https://github.com/ZhangJiaLei123/PrismProxy'
 function openGithub() {
   // Wails 桌面端：调系统默认浏览器（应用外新窗口）；纯浏览器预览环境降级为新标签页打开
@@ -258,6 +265,10 @@ onMounted(async () => {
     startError.value = '代理启动失败：' + msg
     refreshStatus()
   })
+  // 后端 startup 完成自动启动/接管后推送；onMounted 首次刷新可能更早（startCtlAPI 等耗时），
+  // 事件到达时再刷一次，避免顶栏开关恒显"已停止"（M8 时序竞态修复）
+  EventsOn('proxy:ready', () => refreshStatus())
+  EventsOn('ui:open-settings', (tab?: string) => onUIOpenSettings(tab))
   await store.init()
   await refreshStatus()
   await loadPrefs()

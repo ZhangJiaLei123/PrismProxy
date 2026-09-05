@@ -62,12 +62,7 @@
           </div>
           <template v-if="resp">
             <div class="cp-resp-headers">
-              <template v-for="(vs, k) in resp.RespHeader" :key="k">
-                <div v-for="(v, vi) in vs" :key="k + '-' + vi" class="cp-rh">
-                  <span class="cp-rhk">{{ k }}</span>
-                  <span class="cp-rhv">{{ v }}</span>
-                </div>
-              </template>
+              <header-table :header="resp.RespHeader" />
             </div>
             <body-viewer :flow-id="resp.ID" which="resp" class="cp-resp-body" />
           </template>
@@ -84,6 +79,7 @@ import {
   NButton, NCheckbox, NInput, NModal, NSelect, NTag, useMessage,
 } from 'naive-ui'
 import BodyViewer from '../components/BodyViewer.vue'
+import HeaderTable from '../components/HeaderTable.vue'
 import { GetFlowBody, GetFlowDetail, SendComposed } from '../../wailsjs/go/main/App'
 import type { main } from '../../wailsjs/go/models'
 import { useFlowsStore } from '../stores/flows'
@@ -222,10 +218,10 @@ function statusCls(status: number): string {
 .cp-body { flex: 1; min-height: 0; display: flex; }
 .cp-body :deep(.n-input) { height: 100%; }
 .cp-body :deep(.n-input__textarea-el) { font-family: Consolas, 'Courier New', monospace; font-size: 12px; }
-.cp-resp-headers { max-height: 32%; overflow-y: auto; flex: none; font-family: Consolas, 'Courier New', monospace; font-size: 11px; margin-bottom: 6px; }
-.cp-rh { display: flex; gap: 6px; padding: 1px 0; }
-.cp-rhk { color: #9cdcfe; white-space: nowrap; }
-.cp-rhv { word-break: break-all; color: rgba(255, 255, 255, 0.8); }
+.cp-resp-headers { max-height: 32%; overflow-y: auto; flex: none; margin-bottom: 6px; }
+.cp-resp-headers :deep(table) { font-family: Consolas, 'Courier New', monospace; font-size: 11px; }
+.cp-resp-headers :deep(.ht-k) { padding-top: 1px; padding-bottom: 1px; }
+.cp-resp-headers :deep(.ht-v) { padding-top: 1px; padding-bottom: 1px; }
 .cp-resp-body { flex: 1; min-height: 0; }
 .cp-empty { color: rgba(255, 255, 255, 0.35); padding: 8px 0; }
 .cp-resp-empty { display: flex; align-items: center; justify-content: center; height: 100%; }

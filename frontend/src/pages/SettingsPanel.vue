@@ -95,13 +95,18 @@ async function loadSettings() {
   }
 }
 
+// M8：面板打开时加载配置并定位 tab；面板已打开时外部（cli ui settings <tab>）
+// 改 initialTab 只切 tab，不重载表单（避免丢失用户正在编辑的内容）。
 watch(
-  () => props.show,
-  async (v) => {
-    if (!v) return
-    activeTab.value = props.initialTab || 'general'
-    saveWarnings.value = []
-    await loadSettings()
+  () => [props.show, props.initialTab] as const,
+  async ([v], [was]) => {
+    if (v && !was) {
+      activeTab.value = props.initialTab || 'general'
+      saveWarnings.value = []
+      await loadSettings()
+    } else if (v && props.initialTab) {
+      activeTab.value = props.initialTab
+    }
   },
 )
 

@@ -5,6 +5,7 @@
         <n-radio-button value="auto">自动</n-radio-button>
         <n-radio-button value="json">JSON</n-radio-button>
         <n-radio-button value="text">文本</n-radio-button>
+        <n-radio-button value="web">网页</n-radio-button>
         <n-radio-button value="image">图片</n-radio-button>
         <n-radio-button value="form">表单</n-radio-button>
         <n-radio-button value="hex">Hex</n-radio-button>
@@ -29,6 +30,18 @@
 
       <pre v-else-if="activeView === 'text'" class="text">{{ text }}</pre>
 
+      <div v-else-if="activeView === 'web'" class="web-wrap">
+        <iframe
+          v-if="webDoc"
+          class="web-frame"
+          :srcdoc="webDoc"
+          sandbox="allow-same-origin"
+          referrerpolicy="no-referrer"
+          title="网页预览"
+        />
+        <span v-else>无法识别为 HTML 网页</span>
+      </div>
+
       <div v-else-if="activeView === 'image'" class="image-wrap">
         <img v-if="imageUrl" :src="imageUrl" alt="response image" />
         <span v-else>无法识别为图片</span>
@@ -49,13 +62,14 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { NAlert, NRadioButton, NRadioGroup, NTable, NTag } from 'naive-ui'
 import JsonTree from './JsonTree.vue'
-import { GetFlowBody } from '../../wailsjs/go/main/App'
+import { GetFlowBody, GetFlowDetail } from '../../wailsjs/go/main/App'
 import type { main } from '../../wailsjs/go/models'
 import { b64ToBytes, bytesToText, fmtBytes } from '../lib/format'
 
 const props = defineProps<{ flowId: string; which: 'req' | 'resp' }>()
 
 const payload = ref<main.BodyPayload | null>(null)
+const detail = ref<main.FlowDetail | null>(null)
 const view = ref('auto')
 const imageUrl = ref('')
 const HEX_LIMIT = 64 * 1024
@@ -63,9 +77,16 @@ const HEX_LIMIT = 64 * 1024
 async function load() {
   revokeImage()
   payload.value = null
+  detail.value = null
   if (!props.flowId) return
   try {
-    payload.value = await GetFlowBody(props.flowId, props.which)
+    // body 与详情并行拉取；详情提供网页预览的相对资源基址（ReqURL）
+    const [b, d] = await Promise.all([
+      GetFlowBody(props.flowId, props.which),
+      GetFlowDetail(props.flowId).catch(() => null),
+    ])
+    payload.value = b
+    detail.value = d
   } catch {
     payload.value = null
   }
@@ -90,11 +111,27 @@ const activeView = computed(() => {
   if (ct.startsWith('image/')) return 'image'
   if (ct.includes('json')) return 'json'
   if (ct.includes('x-www-form-urlencoded')) return 'form'
-  if (ct.startsWith('text/') || ct.includes('xml') || ct.includes('javascript') || ct.includes('html')) return 'text'
-  // 无 content-type 时试探 JSON
+  if (ct.includes('html') || ct.includes('xhtml')) return 'web'
+  if (ct.startsWith('text/') || ct.includes('xml') || ct.includes('javascript')) return 'text'
+  // 无 content-type 时试探 JSON / HTML
   const t = text.value.trimStart()
   if (t.startsWith('{') || t.startsWith('[')) return 'json'
+  if (t.startsWith('<') && /<html[\s>]/i.test(t.slice(0, 1024))) return 'web'
   return 'hex'
+})
+
+/** 网页预览：srcdoc 注入 <base> 让相对资源按原 URL 解析；sandbox 禁脚本 */
+const webDoc = computed(() => {
+  const html = text.value
+  if (!html.trimStart().startsWith('<')) return ''
+  let base = ''
+  try {
+    if (detail.value?.ReqURL) base = new URL(detail.value.ReqURL).href
+  } catch { /* 非法基址不注入 */ }
+  const baseTag = base ? `<base href="${base.replace(/"/g, '&quot;')}">` : ''
+  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (m) => `${m}${baseTag}`)
+  if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, (m) => `${m}<head>${baseTag}</head>`)
+  return `<!doctype html><html><head>${baseTag}</head><body>${html}</body></html>`
 })
 
 const jsonData = computed(() => {
@@ -154,6 +191,8 @@ defineExpose({ reload: load })
 }
 .hex { white-space: pre; }
 .empty { color: rgba(255, 255, 255, 0.35); padding: 12px 0; }
+.web-wrap { height: 100%; display: flex; flex-direction: column; background: #fff; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 4px; overflow: hidden; }
+.web-frame { flex: 1; width: 100%; border: 0; background: #fff; }
 .image-wrap img { max-width: 100%; background: repeating-conic-gradient(#333 0 25%, #222 0 50%) 0 0 / 16px 16px; }
 .fk { width: 35%; color: #9cdcfe; word-break: break-all; }
 .fv { word-break: break-all; }

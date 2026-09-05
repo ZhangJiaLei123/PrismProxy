@@ -208,6 +208,10 @@ func (a *App) startup(ctx context.Context) {
 			runtime.LogErrorf(ctx, "自动接管系统代理失败: %v", err)
 		}
 	}
+	// 自动启动 + 自动接管均完成后通知前端刷新顶栏状态。
+	// 前端 onMounted 的首次刷新可能早于本函数（startCtlAPI/自愈/注册表操作耗时），
+	// 成功路径此前无事件（仅失败发 proxy:start-error），会导致开关恒显"已停止"。
+	runtime.EventsEmit(ctx, "proxy:ready")
 }
 
 // shutdown 退出清理：若系统代理正指向本工具则按备份恢复（OnShutdown 钩子，关窗口/退出时触发）
