@@ -30,6 +30,31 @@
   </section>
 
   <section class="sec">
+    <div class="sec-title">流量持久化（本地数据库）</div>
+    <div class="form-row">
+      <n-switch v-model:value="form.persist.enabled" />
+      <span>开启后流量异步保存到本地 SQLite，不影响转发；重启后加载最近历史</span>
+    </div>
+    <template v-if="form.persist.enabled">
+      <div class="form-row">
+        <span class="label">保留天数</span>
+        <n-input-number v-model:value="form.persist.retainDays" :min="0" :max="3650" :show-button="false" style="width: 120px">
+          <template #suffix>天</template>
+        </n-input-number>
+        <span class="label" style="width: 84px">体积上限</span>
+        <n-input-number v-model:value="form.persist.maxMB" :min="0" :max="100000" :show-button="false" style="width: 140px">
+          <template #suffix>MB</template>
+        </n-input-number>
+      </div>
+      <div class="form-row">
+        <span class="label">数据库路径</span>
+        <n-input v-model:value="form.persist.dbPath" placeholder="留空 = config/prism.db（便携目录）" style="width: 360px" />
+      </div>
+      <div class="hint">保留天数/体积上限为 0 表示不限；超龄或超限的旧记录启动后及运行中每 10 分钟自动清理。保存即生效，关闭开关停止落盘（已存数据库文件保留）。</div>
+    </template>
+  </section>
+
+  <section class="sec">
     <div class="sec-title">根证书</div>
     <div style="display: flex; align-items: center; gap: 10px">
       <n-button size="small" secondary :loading="caBusy" @click="installCA">安装根证书（当前用户）</n-button>
@@ -41,7 +66,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NSwitch, NTag, NButton, NCheckbox } from 'naive-ui'
+import { NSwitch, NTag, NButton, NCheckbox, NInputNumber, NInput } from 'naive-ui'
 import { GetSystemProxyStatus, SetSystemProxy, InstallRootCA } from '../../../wailsjs/go/app/App'
 import type { app, settings } from '../../../wailsjs/go/models'
 
@@ -104,6 +129,8 @@ onMounted(loadSysStatus)
 .sec { font-size: 12px; }
 .sec + .sec { margin-top: 20px; }
 .sec-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
+.form-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.label { width: 56px; flex: none; opacity: 0.7; }
 .hint { opacity: 0.5; font-size: 11px; margin-top: 4px; }
 .hint.break { word-break: break-all; }
 .override-box {

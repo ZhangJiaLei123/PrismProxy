@@ -548,6 +548,7 @@ export namespace settings {
 	export class ADBDevice {
 	    name: string;
 	    path: string;
+	    serial?: string;
 	    autoSet: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -558,6 +559,7 @@ export namespace settings {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.path = source["path"];
+	        this.serial = source["serial"];
 	        this.autoSet = source["autoSet"];
 	    }
 	}

@@ -109,9 +109,12 @@ type ADBConfig struct {
 
 // ADBDevice 一条 adb 配置：名称 + adb 可执行文件路径；
 // AutoSet=true 时，PrismProxy 启动代理自动对该设备设置 http_proxy，停止代理自动清除。
+// Serial 为可选设备序列号（adb devices 第一列）：同一 adb server 下有多台设备
+// （模拟器多开/真机+模拟器）时必须指定，命令拼 `adb -s <serial> ...`；留空=仅一台设备。
 type ADBDevice struct {
 	Name    string `json:"name"`
 	Path    string `json:"path"`
+	Serial  string `json:"serial,omitempty"`
 	AutoSet bool   `json:"autoSet"`
 }
 

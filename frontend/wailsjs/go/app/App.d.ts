@@ -4,9 +4,9 @@ import {capture} from '../models';
 import {app} from '../models';
 import {settings} from '../models';
 
-export function AdbClearProxy(arg1:string):Promise<string>;
+export function AdbClearProxy(arg1:string,arg2:string):Promise<string>;
 
-export function AdbSetProxy(arg1:string,arg2:string):Promise<string>;
+export function AdbSetProxy(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function AdbTest(arg1:string):Promise<string>;
 

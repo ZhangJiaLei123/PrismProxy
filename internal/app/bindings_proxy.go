@@ -68,9 +68,12 @@ func (a *App) startProxy(addr string) error {
 
 	a.srv, a.ca, a.addr = srv, ca, addr
 	a.startErr = "" // 任何一次成功启动都清除此前的启动失败标记（含手动重启）
-	// 代理已监听：自动设置 AutoSet 设备的 http_proxy。异步触发（goroutine 等本函数
-	// defer 解锁后才拿快照/执行命令，避免重入死锁），覆盖 GUI 自启/手动/设置重启所有路径。
-	go a.autoSetAdbProxies()
+	// 代理代际自增：worker 只会执行最新代际的自动任务（热重启时 stop 的 clear 为旧代际，
+	// 直接丢弃，杜绝 clear/set 并发乱序落盘的竞态）。
+	gen := a.adbGen.Add(1)
+	// 代理已监听：自动设置 AutoSet 设备的 http_proxy。异步入队（goroutine 等 defer 解锁后
+	// 才拿快照，避免重入死锁），worker 串行执行且只认最新代际——覆盖 GUI 自启/手动/设置重启。
+	go a.enqueueAdbOps(gen, true)
 	return nil
 }
 
@@ -82,6 +85,16 @@ func (a *App) StopProxy() error {
 }
 
 func (a *App) stopProxy() error {
+	return a.stopProxyWithOpt(true)
+}
+
+// stopProxyNoHooks 停止代理但不触发 AutoSet 清除挂钩：Shutdown 已先做同步清除，
+// 避免停止后再起一批注定被进程退出截断的冗余 clear goroutine。
+func (a *App) stopProxyNoHooks() error {
+	return a.stopProxyWithOpt(false)
+}
+
+func (a *App) stopProxyWithOpt(autoClear bool) error {
 	a.mu.Lock()
 	if a.srv == nil {
 		a.mu.Unlock()
@@ -89,11 +102,19 @@ func (a *App) stopProxy() error {
 	}
 	err := a.srv.Close()
 	a.srv = nil
+	gen := uint64(0)
+	if autoClear {
+		// 代际自增：热重启时紧接的 start 会再自增，本批 clear 因旧代际被 worker 丢弃；
+		// 普通停止后没有 start，clear 保持最新代际正常执行。
+		gen = a.adbGen.Add(1)
+	}
 	a.mu.Unlock()
 	// 代理已停：清除 AutoSet 设备的 http_proxy，避免设备仍指向失效代理导致断网。
-	// 异步触发（goroutine 等解锁后拿快照），覆盖手动停止/设置重启路径；退出路径另在
-	// Shutdown 中同步清除，不依赖本 fire-and-forget。
-	go a.autoClearAdbProxies()
+	// 异步入队（goroutine 等解锁后拿快照），worker 串行执行；退出路径另在 Shutdown
+	// 中同步清除（stopProxyNoHooks 不再触发本挂钩）。
+	if autoClear {
+		go a.enqueueAdbOps(gen, false)
+	}
 	return err
 }
 

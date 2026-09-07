@@ -36,8 +36,11 @@ func RunHeadless(addr string, noMITM bool) {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 	log.Printf("shutting down")
+	// 同步清除 AutoSet 设备的 http_proxy（异步 worker 会随进程退出被截断；并行 8s 超时），
+	// 与 GUI Shutdown 同口径，避免设备仍指向失效代理导致断网。
+	a.clearAdbProxiesSync(adbSessionTimeout)
 	a.restoreSystemProxy()
-	_ = a.StopProxy()
+	_ = a.stopProxyNoHooks()
 	a.stopCtlAPI()
 	a.stopPersist() // M7：刷盘剩余队列并关闭数据库
 }

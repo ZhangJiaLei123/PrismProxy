@@ -59,6 +59,7 @@ func (a *App) SaveSettings(nu *settings.Settings) (*SaveSettingsResult, error) {
 	a.mu.Lock()
 	needRestart := a.srv != nil && (nu.ListenAddr != a.cfg.ListenAddr ||
 		nu.UpstreamMode != a.cfg.UpstreamMode || nu.UpstreamProxy != a.cfg.UpstreamProxy)
+	oldADB := a.cfg.ADB // 保存旧 ADB 配置用于自动挂钩收敛
 	a.cfg = nu
 	a.mu.Unlock()
 
@@ -82,6 +83,9 @@ func (a *App) SaveSettings(nu *settings.Settings) (*SaveSettingsResult, error) {
 		}
 		a.publishStatus()
 	}
+	// ADB 配置热更新收敛：被删除/取消 AutoSet 的设备补 clear（防代理残留断网）；
+	// 代理运行中新开启 AutoSet 的设备补 set（热重启场景由启动挂钩统一处理，见 convergeAdbConfigs）。
+	a.convergeAdbConfigs(oldADB, nu.ADB, needRestart)
 	return &SaveSettingsResult{Warnings: warns}, nil
 }
 

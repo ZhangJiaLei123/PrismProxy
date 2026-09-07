@@ -5,6 +5,7 @@ import (
 	"log"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -46,6 +47,11 @@ type App struct {
 	pmu          sync.Mutex
 	persist      *persist.Writer
 	persistSubbed bool // store 持久化订阅是否已挂（订阅一次，靠 writer 启停控制写入）
+
+	// ADB 自动代理：启停代际号（每次启动/停止自增）+ 单 worker 串行任务队列，
+	// worker 只执行最新代际的任务，收敛热重启/快速启停时 clear 与 set 的乱序竞态。
+	adbGen atomic.Uint64
+	adbCh  chan adbOp
 
 	// 事件合帧缓冲（~50ms 窗口，方案 §4.4）
 	pendMu   sync.Mutex
@@ -104,6 +110,7 @@ func NewApp(addr string, noMITM bool) *App {
 	proxy.ApplyRulesFilter(a.rec, a.eng) // 捕获/进程规则 exclude → 不记录
 	a.st.Subscribe(a.onStoreEvent)
 	a.initPersist() // M7：按配置开启 SQLite 持久化（默认关）并加载历史
+	a.startAdbWorker() // ADB 自动代理任务 worker（串行 + 代际收敛）
 	return a
 }
 
@@ -117,9 +124,9 @@ func (a *App) Startup(ctx context.Context) {
 		a.ctl.SetUI(true)
 	}
 	a.mu.Unlock()
-	// 系统关机/注销/重启：隐藏窗口接收 WM_ENDSESSION，同步还原系统代理
+	// 系统关机/注销/重启：隐藏窗口接收 WM_ENDSESSION，同步还原系统代理并清除设备代理
 	// （Wails 主窗口不处理该消息，OnShutdown 在关机时不触发；见 session_windows.go）
-	go watchSessionEnd(a.restoreSystemProxy)
+	go watchSessionEnd(a.onSessionEnd)
 	// 崩溃自愈（验收 #13）：上次接管系统代理期间被强杀 → 按备份还原
 	if healed, err := sysproxy.SelfHeal(a.backupFile()); err != nil {
 		runtime.LogErrorf(ctx, "系统代理自愈失败: %v", err)
@@ -153,12 +160,21 @@ func (a *App) Startup(ctx context.Context) {
 
 // Shutdown 退出清理：若系统代理正指向本工具则按备份恢复（OnShutdown 钩子，关窗口/退出时触发）
 func (a *App) Shutdown(ctx context.Context) {
+	// 同步清除 AutoSet 设备的 http_proxy（多设备并行、8s 超时；异步 worker 不保证
+	// 在进程退出前完成）。随后 stopProxyNoHooks 停止监听但不再触发清除挂钩（避免冗余 clear）。
+	a.clearAdbProxiesSync(adbSessionTimeout)
 	a.restoreSystemProxy()
-	// 同步清除 AutoSet 设备的 http_proxy（stopProxy 的异步清除不保证在进程退出前完成）。
-	a.clearAdbProxiesSync()
-	_ = a.StopProxy()
+	_ = a.stopProxyNoHooks()
 	a.stopCtlAPI()
 	a.stopPersist() // M7：刷盘剩余队列并关闭数据库
+}
+
+// onSessionEnd 系统关机/注销/重启回调（WM_ENDSESSION，见 session_windows.go）：
+// OnShutdown 此时不触发，故系统代理还原与设备代理清除都在此同步完成（短超时，
+// 关机时限紧迫；设备代理不清会在下次开机 PrismProxy 未启动前让模拟器/真机断网）。
+func (a *App) onSessionEnd() {
+	a.clearAdbProxiesSync(adbSessionTimeout)
+	a.restoreSystemProxy()
 }
 
 // restoreSystemProxy 若系统代理正指向本工具则按备份恢复（幂等，干净退出与系统关机清理共用）
