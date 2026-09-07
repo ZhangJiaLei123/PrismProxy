@@ -39,4 +39,5 @@ func RunHeadless(addr string, noMITM bool) {
 	a.restoreSystemProxy()
 	_ = a.StopProxy()
 	a.stopCtlAPI()
+	a.stopPersist() // M7：刷盘剩余队列并关闭数据库
 }

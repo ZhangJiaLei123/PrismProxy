@@ -18,10 +18,11 @@ const (
 // MaxBodyCapture 单条消息体捕获上限（2MB，超出截断，转发不受影响）
 const MaxBodyCapture = 2 << 20
 
-// 流来源（方案 §五）：抓包代理产生 vs 调试重发（M6 Composer）
+// 流来源（方案 §五）：抓包代理产生 vs 调试重发（M6 Composer）vs 历史库加载（M7）
 const (
 	SourceCapture  = "capture"
 	SourceComposer = "composer"
+	SourceHistory  = "history" // M7：从 SQLite 历史库加载到内存的流（body 惰性回查 DB）
 )
 
 // ProcessInfo 发起连接的本地进程
@@ -47,6 +48,9 @@ type Message struct {
 	ContentEncoding string // gzip|deflate|br|zstd|""
 	Body            []byte // 捕获部分，可能被截断
 	BodyTruncated   bool
+	// BodyLen 原始捕获 body 字节数（M7 持久化）：历史流 body 不入内存、惰性回查 DB，
+	// 详情展示正文大小时以此为准；内存流 Body 非空时此值与 len(Body) 一致。
+	BodyLen int
 }
 
 // PeerCert 上游真实证书链中一张证书的摘要（存原始 x509.Certificate 不便序列化）

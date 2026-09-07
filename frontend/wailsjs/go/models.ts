@@ -145,6 +145,7 @@ export namespace app {
 	    Err: string;
 	    Pinned: boolean;
 	    Source: string;
+	    Historical: boolean;
 	    ReqURL: string;
 	    ReqProto: string;
 	    ReqHeader: Record<string, Array<string>>;
@@ -180,6 +181,7 @@ export namespace app {
 	        this.Err = source["Err"];
 	        this.Pinned = source["Pinned"];
 	        this.Source = source["Source"];
+	        this.Historical = source["Historical"];
 	        this.ReqURL = source["ReqURL"];
 	        this.ReqProto = source["ReqProto"];
 	        this.ReqHeader = source["ReqHeader"];
@@ -229,6 +231,7 @@ export namespace app {
 	    Err: string;
 	    Pinned: boolean;
 	    Source: string;
+	    Historical: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new FlowMeta(source);
@@ -254,6 +257,7 @@ export namespace app {
 	        this.Err = source["Err"];
 	        this.Pinned = source["Pinned"];
 	        this.Source = source["Source"];
+	        this.Historical = source["Historical"];
 	    }
 	}
 	export class ImportRulesResult {
@@ -541,6 +545,73 @@ export namespace rules {
 
 export namespace settings {
 	
+	export class ADBDevice {
+	    name: string;
+	    path: string;
+	    autoSet: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ADBDevice(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.path = source["path"];
+	        this.autoSet = source["autoSet"];
+	    }
+	}
+	export class ADBConfig {
+	    deviceProxyHost: string;
+	    configs: ADBDevice[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ADBConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deviceProxyHost = source["deviceProxyHost"];
+	        this.configs = this.convertValues(source["configs"], ADBDevice);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class PersistConfig {
+	    enabled: boolean;
+	    dbPath: string;
+	    retainDays: number;
+	    maxMB: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PersistConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.dbPath = source["dbPath"];
+	        this.retainDays = source["retainDays"];
+	        this.maxMB = source["maxMB"];
+	    }
+	}
 	export class Settings {
 	    listenAddr: string;
 	    upstreamMode: string;
@@ -552,6 +623,8 @@ export namespace settings {
 	    bypassList: string[];
 	    filterGroups: rules.FilterGroup[];
 	    decryptRules: rules.DecryptRule[];
+	    persist: PersistConfig;
+	    adb: ADBConfig;
 	    captureRules?: rules.CaptureRule[];
 	    processRules?: rules.ProcessRule[];
 	
@@ -571,6 +644,8 @@ export namespace settings {
 	        this.bypassList = source["bypassList"];
 	        this.filterGroups = this.convertValues(source["filterGroups"], rules.FilterGroup);
 	        this.decryptRules = this.convertValues(source["decryptRules"], rules.DecryptRule);
+	        this.persist = this.convertValues(source["persist"], PersistConfig);
+	        this.adb = this.convertValues(source["adb"], ADBConfig);
 	        this.captureRules = this.convertValues(source["captureRules"], rules.CaptureRule);
 	        this.processRules = this.convertValues(source["processRules"], rules.ProcessRule);
 	    }

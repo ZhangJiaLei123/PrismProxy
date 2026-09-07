@@ -68,6 +68,9 @@ func (a *App) startProxy(addr string) error {
 
 	a.srv, a.ca, a.addr = srv, ca, addr
 	a.startErr = "" // 任何一次成功启动都清除此前的启动失败标记（含手动重启）
+	// 代理已监听：自动设置 AutoSet 设备的 http_proxy。异步触发（goroutine 等本函数
+	// defer 解锁后才拿快照/执行命令，避免重入死锁），覆盖 GUI 自启/手动/设置重启所有路径。
+	go a.autoSetAdbProxies()
 	return nil
 }
 
@@ -80,12 +83,17 @@ func (a *App) StopProxy() error {
 
 func (a *App) stopProxy() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.srv == nil {
+		a.mu.Unlock()
 		return nil
 	}
 	err := a.srv.Close()
 	a.srv = nil
+	a.mu.Unlock()
+	// 代理已停：清除 AutoSet 设备的 http_proxy，避免设备仍指向失效代理导致断网。
+	// 异步触发（goroutine 等解锁后拿快照），覆盖手动停止/设置重启路径；退出路径另在
+	// Shutdown 中同步清除，不依赖本 fire-and-forget。
+	go a.autoClearAdbProxies()
 	return err
 }
 

@@ -4,6 +4,12 @@ import {capture} from '../models';
 import {app} from '../models';
 import {settings} from '../models';
 
+export function AdbClearProxy(arg1:string):Promise<string>;
+
+export function AdbSetProxy(arg1:string,arg2:string):Promise<string>;
+
+export function AdbTest(arg1:string):Promise<string>;
+
 export function AddDecryptBypass(arg1:string):Promise<void>;
 
 export function AddQuickIgnore(arg1:string,arg2:string):Promise<boolean>;
@@ -53,6 +59,8 @@ export function ListDomainGroups():Promise<Record<string, any>>;
 export function ListFlows():Promise<Array<app.FlowMeta>>;
 
 export function ListSystemProcesses():Promise<Array<string>>;
+
+export function PickAdbPath():Promise<string>;
 
 export function ProbeURLImport(arg1:string):Promise<app.URLImportProbe>;
 

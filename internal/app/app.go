@@ -13,6 +13,7 @@ import (
 	"prismproxy/internal/ctlapi"
 	"prismproxy/internal/domains"
 	"prismproxy/internal/mitm"
+	"prismproxy/internal/persist"
 	"prismproxy/internal/proxy"
 	"prismproxy/internal/rules"
 	"prismproxy/internal/settings"
@@ -40,6 +41,11 @@ type App struct {
 	noMITM   bool
 	startErr string // 启动自动抓包失败原因（GetProxyStatus 暴露给前端，事件竞态兜底）
 	ctl      *ctlapi.Server // M8 本地控制 API（cli 子命令连接目标；GUI/headless 均启动）
+
+	// M7 SQLite 持久化（方案 §4.11）：pmu 保护 writer 生命周期；落盘为旁路异步队列
+	pmu          sync.Mutex
+	persist      *persist.Writer
+	persistSubbed bool // store 持久化订阅是否已挂（订阅一次，靠 writer 启停控制写入）
 
 	// 事件合帧缓冲（~50ms 窗口，方案 §4.4）
 	pendMu   sync.Mutex
@@ -97,6 +103,7 @@ func NewApp(addr string, noMITM bool) *App {
 	a.rec = capture.NewRecorder(a.st)
 	proxy.ApplyRulesFilter(a.rec, a.eng) // 捕获/进程规则 exclude → 不记录
 	a.st.Subscribe(a.onStoreEvent)
+	a.initPersist() // M7：按配置开启 SQLite 持久化（默认关）并加载历史
 	return a
 }
 
@@ -147,8 +154,11 @@ func (a *App) Startup(ctx context.Context) {
 // Shutdown 退出清理：若系统代理正指向本工具则按备份恢复（OnShutdown 钩子，关窗口/退出时触发）
 func (a *App) Shutdown(ctx context.Context) {
 	a.restoreSystemProxy()
+	// 同步清除 AutoSet 设备的 http_proxy（stopProxy 的异步清除不保证在进程退出前完成）。
+	a.clearAdbProxiesSync()
 	_ = a.StopProxy()
 	a.stopCtlAPI()
+	a.stopPersist() // M7：刷盘剩余队列并关闭数据库
 }
 
 // restoreSystemProxy 若系统代理正指向本工具则按备份恢复（幂等，干净退出与系统关机清理共用）

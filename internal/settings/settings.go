@@ -76,10 +76,47 @@ type Settings struct {
 	FilterGroups []rules.FilterGroup `json:"filterGroups"`
 	DecryptRules []rules.DecryptRule `json:"decryptRules"`
 
+	// Persist 流量 SQLite 持久化（M7，方案 §4.11）。默认关闭；
+	// 开启后流量异步落盘、启动加载最近历史，落盘是旁路不影响转发与内存 store 语义。
+	Persist PersistConfig `json:"persist"`
+
+	// ADB 安卓模拟器/真机自动代理配置：多条 adb 路径 + 一键设置/清除设备全局 http_proxy。
+	ADB ADBConfig `json:"adb"`
+
 	// 旧字段仅作迁移用途：Migrate 迁移后清空并重写落盘（规则设计 §六）
 	CaptureRules []rules.CaptureRule `json:"captureRules,omitempty"`
 	ProcessRules []rules.ProcessRule `json:"processRules,omitempty"`
 }
+
+// PersistConfig 流量持久化配置（M7，方案 §4.11）
+type PersistConfig struct {
+	Enabled    bool   `json:"enabled"`    // 是否开启落盘（默认关）
+	DBPath     string `json:"dbPath"`     // SQLite 文件路径；空=配置目录下 prism.db（便携模式）
+	RetainDays int    `json:"retainDays"` // 保留天数；0=不限天数
+	MaxMB      int    `json:"maxMB"`      // DB 体积上限（MB）；0=不限体积
+}
+
+// DefaultDBPath 默认数据库文件名（落在 exe 同级 config 目录，便携模式）
+const DefaultDBPath = "prism.db"
+
+// ADBConfig ADB 自动代理配置（设置面板「ADB 代理」）。
+// DeviceProxyHost 为设备侧访问宿主机 PrismProxy 的 IP：雷电模拟器 NAT 默认 172.16.1.2，
+// 端口自动取代理实际监听端口；Configs 为多条 adb 配置（不同模拟器/多开各一条）。
+type ADBConfig struct {
+	DeviceProxyHost string      `json:"deviceProxyHost"` // 设备侧访问宿主机的 IP，默认 172.16.1.2（雷电 NAT）
+	Configs         []ADBDevice `json:"configs"`
+}
+
+// ADBDevice 一条 adb 配置：名称 + adb 可执行文件路径；
+// AutoSet=true 时，PrismProxy 启动代理自动对该设备设置 http_proxy，停止代理自动清除。
+type ADBDevice struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	AutoSet bool   `json:"autoSet"`
+}
+
+// DefaultDeviceProxyHost 设备侧访问宿主机的默认 IP（雷电模拟器 VBox NAT 回环地址）
+const DefaultDeviceProxyHost = "172.16.1.2"
 
 // BuiltinBypass 内置绕过列表（方案 §4.6：开发工具自身/常见 AI 与本机服务）
 var BuiltinBypass = []string{
@@ -102,6 +139,15 @@ func Default() *Settings {
 		BypassList:         append([]string(nil), BuiltinBypass...),
 		FilterGroups:       []rules.FilterGroup{},
 		DecryptRules:       []rules.DecryptRule{},
+		Persist: PersistConfig{
+			Enabled:    false,
+			RetainDays: 7,   // 默认保留 7 天
+			MaxMB:      500, // 默认 DB 体积上限 500MB
+		},
+		ADB: ADBConfig{
+			DeviceProxyHost: DefaultDeviceProxyHost,
+			Configs:         []ADBDevice{},
+		},
 	}
 }
 
@@ -295,6 +341,12 @@ func (s *Settings) Validate(knownGroups map[string][]string) (error, []string) {
 	}
 	if s.MaxBodyMB < 0 {
 		return fmt.Errorf("MaxBodyMB 须 >= 0"), nil
+	}
+	if s.Persist.RetainDays < 0 {
+		return fmt.Errorf("persist.retainDays 须 >= 0"), nil
+	}
+	if s.Persist.MaxMB < 0 {
+		return fmt.Errorf("persist.maxMB 须 >= 0"), nil
 	}
 	// 规则可编译性（mode/组名/host 条目/glob 由 NewEngine 统一把关）
 	if _, err := rules.NewEngine(s.FilterGroups, s.DecryptRules, knownGroups); err != nil {

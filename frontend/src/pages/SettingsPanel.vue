@@ -12,6 +12,11 @@
           <network-tab :form="form" />
         </n-tab-pane>
 
+        <!-- ============ ADB 代理：模拟器/真机一键设置 http_proxy ============ -->
+        <n-tab-pane name="adb" tab="ADB 代理">
+          <adb-tab :form="form" />
+        </n-tab-pane>
+
         <!-- ============ 解密规则 ============ -->
         <n-tab-pane name="decrypt" tab="解密规则">
           <decrypt-tab :form="form" />
@@ -48,6 +53,7 @@ import { ref, watch } from 'vue'
 import { NDrawer, NDrawerContent, NTabs, NTabPane, NButton, NAlert, useMessage } from 'naive-ui'
 import GeneralTab from './settings/GeneralTab.vue'
 import NetworkTab from './settings/NetworkTab.vue'
+import AdbTab from './settings/AdbTab.vue'
 import DecryptTab from './settings/DecryptTab.vue'
 import CaptureTab from './settings/CaptureTab.vue'
 import DomainsTab from './settings/DomainsTab.vue'
@@ -72,6 +78,8 @@ const emptyForm = (): settings.Settings =>
     bypassList: [],
     filterGroups: [],
     decryptRules: [],
+    persist: { enabled: false, dbPath: '', retainDays: 7, maxMB: 500 },
+    adb: { deviceProxyHost: '172.16.1.2', configs: [] },
   }) as settings.Settings
 
 const form = ref<settings.Settings>(emptyForm())
@@ -88,6 +96,10 @@ async function loadSettings() {
   form.value.bypassList ??= []
   form.value.decryptRules ??= []
   form.value.filterGroups ??= []
+  form.value.persist ??= { enabled: false, dbPath: '', retainDays: 7, maxMB: 500 }
+  form.value.adb ??= { deviceProxyHost: '172.16.1.2', configs: [] }
+  form.value.adb.configs ??= []
+  if (!form.value.adb.deviceProxyHost) form.value.adb.deviceProxyHost = '172.16.1.2'
   for (const g of form.value.filterGroups) {
     g.hosts ??= []
     g.paths ??= []

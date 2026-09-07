@@ -39,11 +39,36 @@
     <n-dynamic-tags v-model:value="form.bypassList" />
     <div class="hint">裸域名匹配自身+全部子域；&lt;-loopback&gt; 绕过本地回环。接管状态下需重新开关系统代理生效。</div>
   </section>
+
+  <section class="sec">
+    <div class="sec-title">流量持久化（本地数据库）</div>
+    <div class="form-row">
+      <n-switch v-model:value="form.persist.enabled" />
+      <span>开启后流量异步保存到本地 SQLite，不影响转发；重启后加载最近历史</span>
+    </div>
+    <template v-if="form.persist.enabled">
+      <div class="form-row">
+        <span class="label">保留天数</span>
+        <n-input-number v-model:value="form.persist.retainDays" :min="0" :max="3650" :show-button="false" style="width: 120px">
+          <template #suffix>天</template>
+        </n-input-number>
+        <span class="label" style="width: 84px">体积上限</span>
+        <n-input-number v-model:value="form.persist.maxMB" :min="0" :max="100000" :show-button="false" style="width: 140px">
+          <template #suffix>MB</template>
+        </n-input-number>
+      </div>
+      <div class="form-row">
+        <span class="label">数据库路径</span>
+        <n-input v-model:value="form.persist.dbPath" placeholder="留空 = config/prism.db（便携目录）" style="width: 360px" />
+      </div>
+      <div class="hint">保留天数/体积上限为 0 表示不限；超龄或超限的旧记录启动后及运行中每 10 分钟自动清理。保存即生效，关闭开关停止落盘（已存数据库文件保留）。</div>
+    </template>
+  </section>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import { NSelect, NInputNumber, NInput, NButton, NDynamicTags } from 'naive-ui'
+import { NSelect, NInputNumber, NInput, NButton, NDynamicTags, NSwitch } from 'naive-ui'
 import { GetLocalAddrs, FindFreePort } from '../../../wailsjs/go/app/App'
 import type { settings } from '../../../wailsjs/go/models'
 

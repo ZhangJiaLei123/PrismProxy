@@ -1,9 +1,9 @@
 <template>
   <div class="flow-list">
-    <div class="list-head row" :style="gridStyle">
+    <div class="list-head row" :style="gridStyle" @contextmenu.prevent="onHeaderMenu($event)">
       <span class="c-state"></span>
       <span
-        v-for="col in columns"
+        v-for="col in visColumns"
         :key="col.key"
         :class="[col.cls, 'th', { active: sortKey === col.key }]"
       >
@@ -34,14 +34,18 @@
           @contextmenu.prevent="onContextMenu($event, f)"
         >
           <span class="c-state"><i class="dot" :class="f.State"></i></span>
-          <span class="c-time" @dblclick.stop="copyCell(fmtTime(f.StartedAt))">{{ fmtTime(f.StartedAt) }}</span>
-          <span class="c-method" :class="'m-' + f.Method" @dblclick.stop="copyCell(f.Method)">{{ f.Method }}</span>
-          <span class="c-status" :class="statusClass(f)" @dblclick.stop="copyCell(f.Status ? String(f.Status) : '')">{{ f.Status || '—' }}</span>
-          <span class="c-host ellipsis" :title="f.Host" @dblclick.stop="copyCell(f.Host)"><svg v-if="f.Pinned" class="pin-ic" viewBox="0 0 24 24" title="已置顶"><path fill="currentColor" d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"/></svg>{{ f.Host }}</span>
-          <span class="c-path ellipsis" :title="f.URL" @dblclick.stop="copyCell(f.Path || f.URL)">{{ f.Path || f.URL }}</span>
-          <span class="c-dur" @dblclick.stop="copyCell(fmtDuration(f.DurationMS))">{{ fmtDuration(f.DurationMS) }}</span>
-          <span class="c-size" @dblclick.stop="copyCell(fmtBytes(f.BytesDown))">{{ fmtBytes(f.BytesDown) }}</span>
-          <span class="c-proc ellipsis" :title="f.ProcessName + ' (' + f.PID + ')'" @dblclick.stop="copyCell(f.ProcessName)">{{ f.ProcessName }}</span>
+          <span
+            v-for="col in visColumns"
+            :key="col.key"
+            :class="cellCls(col, f)"
+            :title="col.key === 'host' ? f.Host : col.key === 'path' ? f.URL : col.key === 'proc' ? f.ProcessName + ' (' + f.PID + ')' : ''"
+            @dblclick.stop="copyCell(cellText(col, f))"
+          >
+            <template v-if="col.key === 'host'">
+              <svg v-if="f.Pinned" class="pin-ic" viewBox="0 0 24 24" title="已置顶"><path fill="currentColor" d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"/></svg><span v-if="f.Historical" class="hist-badge" title="从本地数据库加载的历史流量">历史</span>{{ f.Host }}
+            </template>
+            <template v-else>{{ cellText(col, f) }}</template>
+          </span>
         </div>
         <div v-if="!store.filtered.length" class="empty">
           {{ store.flows.length ? '无匹配流量 —— 调整底部过滤条件' : '暂无流量 —— 将系统代理指向 9090 端口或配置应用代理后开始抓包' }}
@@ -58,6 +62,17 @@
       :show="ctxShow"
       :on-clickoutside="() => (ctxShow = false)"
       @select="onCtxSelect"
+    />
+    <!-- 表头右键菜单：列显示勾选 / 左右调整列顺序 / 重置（仅列布局，首列状态点不可隐藏） -->
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :x="headCtxX"
+      :y="headCtxY"
+      :options="headCtxOptions"
+      :show="headCtxShow"
+      :on-clickoutside="() => (headCtxShow = false)"
+      @select="onHeadCtxSelect"
     />
     <transition name="fade">
       <div v-if="copiedText !== null" class="copy-toast">已复制：{{ copiedText }}</div>
@@ -100,16 +115,57 @@ const colMins = [22, 52, 44, 40, 60, 60, 48, 48, 60]
 const COL_MAX = 400
 const resizingWi = ref<number | null>(null)
 
+// 列顺序：元素为 colWidths 的索引（0=固定状态点列，1-8=数据列），仅可见列出现在序中
+const DEFAULT_ORDER = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+const colOrder = ref<number[]>([...DEFAULT_ORDER])
+const visColumns = computed(() => colOrder.value.filter((w) => w >= 1).map((w) => columns[w - 1]))
+
+// ---- 列布局持久化（顺序 + 列宽）到 localStorage，损坏/非法配置静默回退默认 ----
+const LAYOUT_KEY = 'prismproxy:flowlist-col-layout-v1'
+
+function saveLayout() {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ order: colOrder.value, widths: colWidths.value }))
+  } catch {
+    // 存储不可用（隐私模式/配额）静默失败，布局仅本会话生效
+  }
+}
+
+function loadLayout() {
+  try {
+    const raw = localStorage.getItem(LAYOUT_KEY)
+    if (!raw) return
+    const v = JSON.parse(raw) as { order?: unknown; widths?: unknown }
+    // 校验 order：数组、首项恒为 0（状态点列）、其余为 1-8 且不重复
+    const order = v.order
+    if (!Array.isArray(order) || order[0] !== 0 || order.length < 2) return
+    const rest = order.slice(1) as unknown[]
+    if (!rest.every((n) => Number.isInteger(n) && n >= 1 && n <= 8) || new Set(rest).size !== rest.length) return
+    // 校验 widths：长度 9，每项 null 或落在 [colMins, COL_MAX] 的数字
+    const widths = v.widths
+    if (!Array.isArray(widths) || widths.length !== colMins.length) return
+    for (let i = 0; i < widths.length; i++) {
+      const w = widths[i]
+      if (w !== null && (typeof w !== 'number' || w < colMins[i] || w > COL_MAX)) return
+    }
+    colOrder.value = order as number[]
+    colWidths.value = widths as (number | null)[]
+  } catch {
+    // JSON 损坏等：保持默认布局
+  }
+}
+
+loadLayout()
+
 const gridStyle = computed(() => ({
-  gridTemplateColumns: colWidths.value.map((w) => (w === null ? '1fr' : w + 'px')).join(' '),
+  gridTemplateColumns: colOrder.value.map((w) => (colWidths.value[w] === null ? '1fr' : colWidths.value[w] + 'px')).join(' '),
 }))
 
 function startResize(e: PointerEvent, wi: number) {
-  const head = (e.target as HTMLElement).closest('.list-head')
-  if (!head) return
+  const th = (e.target as HTMLElement).closest('.th') as HTMLElement | null
+  if (!th) return
   const startX = e.clientX
-  const colEl = head.children[wi] as HTMLElement
-  const startW = colEl.getBoundingClientRect().width
+  const startW = th.getBoundingClientRect().width
   // 弹性列（路径）被拖时固化为当前像素宽
   if (colWidths.value[wi] === null) colWidths.value[wi] = startW
   const min = colMins[wi]
@@ -127,6 +183,7 @@ function startResize(e: PointerEvent, wi: number) {
     document.body.style.userSelect = ''
     window.removeEventListener('pointermove', onMove)
     window.removeEventListener('pointerup', onUp)
+    saveLayout() // 拖动过程不写存储，松手时一次性持久化
   }
   window.addEventListener('pointermove', onMove)
   window.addEventListener('pointerup', onUp)
@@ -285,6 +342,104 @@ function statusClass(f: app.FlowMeta): string {
   if (s >= 200) return 's-2xx'
   return ''
 }
+
+// ---- 动态列：单元格展示文本 / 附加 class（隐藏列不渲染；列宽/顺序与表头共用 colOrder） ----
+function cellText(col: { key: SortKey }, f: app.FlowMeta): string {
+  switch (col.key) {
+    case 'time': return fmtTime(f.StartedAt)
+    case 'method': return f.Method
+    case 'status': return f.Status ? String(f.Status) : '—'
+    case 'host': return f.Host
+    case 'path': return f.Path || f.URL
+    case 'dur': return fmtDuration(f.DurationMS)
+    case 'size': return fmtBytes(f.BytesDown)
+    case 'proc': return f.ProcessName
+  }
+}
+
+function cellCls(col: { key: SortKey; cls: string }, f: app.FlowMeta): string {
+  const base = col.cls + (col.key === 'host' || col.key === 'path' || col.key === 'proc' ? ' ellipsis' : '')
+  if (col.key === 'method') return base + ' m-' + f.Method
+  if (col.key === 'status') return base + ' ' + statusClass(f)
+  return base
+}
+
+// ---- 表头右键菜单：勾选显示列 / 左右调整顺序 / 重置列布局 ----
+const headCtxShow = ref(false)
+const headCtxX = ref(0)
+const headCtxY = ref(0)
+// 右键落点的数据列 wi（colWidths 索引 1-8）；null=点在空白/状态列
+const headCtxWi = ref<number | null>(null)
+
+function onHeaderMenu(e: MouseEvent) {
+  const th = (e.target as HTMLElement).closest('.th') as HTMLElement | null
+  // 点在排序按钮/拖宽手柄上也归属所在列（th 的首个 class 即列 cls，如 c-time）；点状态列/空白为 null
+  headCtxWi.value = th ? columns.findIndex((c) => c.cls === th.classList[0]) + 1 : null
+  headCtxX.value = e.clientX
+  headCtxY.value = e.clientY
+  headCtxShow.value = true
+}
+
+const headCtxOptions = computed<DropdownOption[]>(() => {
+  const wi = headCtxWi.value
+  const idx = wi === null ? -1 : colOrder.value.indexOf(wi)
+  const opts: DropdownOption[] = [
+    { label: '左移此列', key: 'col-left', disabled: wi === null || idx <= 1 },
+    { label: '右移此列', key: 'col-right', disabled: wi === null || idx < 1 || idx >= colOrder.value.length - 1 },
+    { type: 'divider', key: 'hd1' },
+    {
+      label: '显示/隐藏列',
+      key: 'col-vis',
+      children: columns.map((c) => ({
+        label: (colOrder.value.includes(c.wi) ? '✓ ' : '　') + c.label,
+        key: 'vis-' + c.wi,
+        // 至少保留一列，最后一个可见列禁止取消勾选
+        disabled: colOrder.value.includes(c.wi) && colOrder.value.length <= 2,
+      })),
+    },
+    { label: '重置列布局', key: 'col-reset' },
+  ]
+  return opts
+})
+
+function onHeadCtxSelect(key: string) {
+  headCtxShow.value = false
+  if (key === 'col-reset') {
+    colOrder.value = [...DEFAULT_ORDER]
+    colWidths.value = [22, 92, 56, 56, 150, null, 66, 64, 100]
+  } else if (key === 'col-left' || key === 'col-right') {
+    const order = colOrder.value
+    const wi = headCtxWi.value
+    if (wi === null) return
+    const i = order.indexOf(wi)
+    if (i < 1) return
+    const j = key === 'col-left' ? i - 1 : i + 1
+    if (j < 1 || j >= order.length) return
+    // 与相邻可见列交换位置（colOrder[0] 恒为固定状态点列，不参与交换）
+    ;[order[i], order[j]] = [order[j], order[i]]
+    colOrder.value = [...order]
+  } else if (key.startsWith('vis-')) {
+    const order = colOrder.value
+    const wi = Number(key.slice(4))
+    const i = order.indexOf(wi)
+    if (i >= 0) {
+      if (order.length <= 2) return // 至少保留状态点 + 一个数据列
+      order.splice(i, 1)
+    } else {
+      // 恢复显示：按默认相对顺序插回（排在默认序中前一个仍可见列之后，找不到则置于数据列首位）
+      let at = 1
+      for (let k = wi - 1; k >= 1; k--) {
+        const p = order.indexOf(k)
+        if (p >= 0) { at = p + 1; break }
+      }
+      order.splice(at, 0, wi)
+    }
+    colOrder.value = [...order]
+  } else {
+    return
+  }
+  saveLayout()
+}
 </script>
 
 <style scoped>
@@ -360,6 +515,7 @@ function statusClass(f: app.FlowMeta): string {
 .item.pinned { background: rgba(229, 192, 123, 0.10); box-shadow: inset 2px 0 0 #e5c07b; }
 .item.pinned.selected { background: rgba(32, 128, 240, 0.28); }
 .pin-ic { width: 11px; height: 11px; margin-right: 3px; vertical-align: -1px; color: #e5c07b; flex: none; }
+.hist-badge { flex: none; margin-right: 4px; padding: 0 4px; border-radius: 3px; font-size: 10px; line-height: 16px; color: #56b6c2; background: rgba(86, 182, 194, 0.14); }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .c-time { font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.65); }
 .list-head .c-time { color: inherit; }

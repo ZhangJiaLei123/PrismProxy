@@ -27,7 +27,8 @@ type FlowMeta struct {
 	StartedAt   int64 // unix 毫秒
 	Err         string
 	Pinned      bool   // M5 置顶：固定顶部、不参与淘汰、Clear 保留（会话内不持久化）
-	Source      string // capture | composer（M6 调试重发标记）
+	Source      string // capture | composer（M6 调试重发标记）| history（M7 历史库加载）
+	Historical  bool   // M7：是否为从 SQLite 历史库加载的历史流（正文惰性回查 DB）
 }
 
 // FilterFields 实现 ctlapi.Filterable：供 SSE Hub 按订阅者 filter 过滤 flows upsert
@@ -84,6 +85,7 @@ func toMeta(f *capture.Flow) FlowMeta {
 		Err:        f.Err,
 		Pinned:     f.Pinned,
 		Source:     f.Source,
+		Historical: f.Source == capture.SourceHistory,
 	}
 	if f.Timing != nil {
 		m.StartedAt = f.Timing.Start.UnixMilli()
@@ -116,12 +118,21 @@ func flowDetail(f *capture.Flow) *FlowDetail {
 		d.ReqURL = f.Request.URL
 		d.ReqProto = f.Request.Proto
 		d.ReqHeader = f.Request.Header
-		d.ReqBodySize = len(f.Request.Body)
+		// 历史流 body 不在内存（M7 惰性回查），用落盘时记录的 BodyLen 显示正文大小
+		if n := len(f.Request.Body); n > 0 {
+			d.ReqBodySize = n
+		} else {
+			d.ReqBodySize = f.Request.BodyLen
+		}
 	}
 	if f.Response != nil {
 		d.RespProto = f.Response.Proto
 		d.RespHeader = f.Response.Header
-		d.RespBodySize = len(f.Response.Body)
+		if n := len(f.Response.Body); n > 0 {
+			d.RespBodySize = n
+		} else {
+			d.RespBodySize = f.Response.BodyLen
+		}
 	}
 	if f.Process != nil {
 		d.ProcessPath = f.Process.Path

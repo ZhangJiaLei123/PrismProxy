@@ -66,6 +66,10 @@ func (a *App) SaveSettings(nu *settings.Settings) (*SaveSettingsResult, error) {
 	if err := a.rebuildEngine(); err != nil {
 		return nil, err // 理论上 Validate 已拦截，双保险
 	}
+	// M7：持久化开关/参数热应用（开启即加载历史，关闭则停写保留 DB 文件）
+	if err := a.applyPersist(nu.Persist); err != nil {
+		return nil, err
+	}
 	if needRestart {
 		// settings 热应用重启代理：内部方法连调（避免重复推 status），重启完成后推一次
 		if err := a.stopProxy(); err != nil {

@@ -22,7 +22,7 @@ import (
 const DefaultAddr = "127.0.0.1:9595"
 
 // UISettingsTabs 合法的设置面板 tab（cli ui settings 校验用）
-var UISettingsTabs = []string{"general", "network", "decrypt", "capture", "domains"}
+var UISettingsTabs = []string{"general", "network", "adb", "decrypt", "capture", "domains"}
 
 // Service 控制面服务层：接线层（main 包）实现，ctlapi 不依赖 Wails/具体业务包。
 // 返回值以可 JSON 序列化类型为主；error 非空时 HTTP 响应 4xx/5xx。

@@ -123,6 +123,12 @@ func (a *App) GetFlowBody(id, which string) (*BodyPayload, error) {
 	if msg == nil {
 		return &BodyPayload{}, nil // 响应尚未到达
 	}
+	// M7：历史流 body 不在内存，惰性回查 SQLite 并缓存到该消息（后续请求走内存）；
+	// 回查失败/持久化已关闭时给出提示而非静默空白
+	histHint := ""
+	if len(msg.Body) == 0 && msg.BodyLen > 0 && f.Source == capture.SourceHistory {
+		histHint = a.loadHistBody(msg, id, which)
+	}
 	p := &BodyPayload{
 		Encoding:    msg.ContentEncoding,
 		ContentType: msg.Header.Get("Content-Type"),
@@ -136,6 +142,8 @@ func (a *App) GetFlowBody(id, which string) (*BodyPayload, error) {
 		} else {
 			p.Body = dec
 		}
+	} else if histHint != "" {
+		p.DecodeErr = histHint
 	}
 	return p, nil
 }
@@ -179,16 +187,29 @@ func (a *App) GetFlowRawText(id, part, kind string) (string, error) {
 		}
 		return "", fmt.Errorf("响应尚未到达")
 	}
+	// M7：历史流 body 惰性回查 SQLite（同 GetFlowBody 口径）；回查失败/持久化关闭时
+	// 在 body/all 文本中给出提示，headers 不受影响（头已随元数据加载）
+	histHint := ""
+	if len(msg.Body) == 0 && msg.BodyLen > 0 && f.Source == capture.SourceHistory {
+		histHint = a.loadHistBody(msg, id, part)
+	}
 	switch kind {
 	case "headers":
 		return headerBlock(msg, part), nil
 	case "body":
+		if histHint != "" {
+			return "【" + histHint + "】", nil
+		}
 		return string(msgBodyDecoded(msg)), nil
 	case "all":
 		var b strings.Builder
 		b.WriteString(headerBlock(msg, part))
 		b.WriteString("\r\n")
-		b.Write(msgBodyDecoded(msg))
+		if histHint != "" {
+			b.WriteString("【" + histHint + "】")
+		} else {
+			b.Write(msgBodyDecoded(msg))
+		}
 		return b.String(), nil
 	default:
 		return "", fmt.Errorf("kind 须为 headers|body|all")

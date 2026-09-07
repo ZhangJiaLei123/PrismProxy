@@ -104,7 +104,7 @@ func printCLIUsage(w io.Writer) {
   settings get                           读取全部配置（JSON）
   settings set <key> <value>             改单项配置（maxFlows/listenAddr/upstreamMode 等）
   ui clear                               清除 GUI 记录列表（headless 下仅清数据）
-  ui settings [tab]                      打开 GUI 设置面板（tab: general|network|decrypt|capture|domains）
+  ui settings [tab]                      打开 GUI 设置面板（tab: general|network|adb|decrypt|capture|domains）
 
 全局参数:
   --pretty   人类可读缩进输出（默认单行 JSON，便于 AI/脚本解析）
