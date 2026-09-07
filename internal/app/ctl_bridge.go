@@ -26,8 +26,11 @@ func newCtlService(a *App) *ctlService { return &ctlService{app: a} }
 
 // ---------- 状态与流量 ----------
 
-func (s *ctlService) Status() map[string]any {
-	a := s.app
+func (s *ctlService) Status() map[string]any { return s.app.ctlStatusSnapshot() }
+
+// ctlStatusSnapshot 构造控制面状态快照：ctlService.Status()（GET /status）与
+// SSE status 频道（seed 帧 + 各发布点）共用，避免双份构造漂移。
+func (a *App) ctlStatusSnapshot() map[string]any {
 	ps := a.GetProxyStatus()
 	sys := a.GetSystemProxyStatus()
 	a.mu.Lock()

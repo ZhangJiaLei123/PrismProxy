@@ -98,7 +98,7 @@ func (f *fakeService) UISettings(tab string) bool {
 	return f.uiOn
 }
 
-func startTestServer(t *testing.T, svc *fakeService) (*Server, string, string) {
+func startTestServer(t *testing.T, svc Service) (*Server, string, string) {
 	t.Helper()
 	dir := t.TempDir()
 	epFile := filepath.Join(dir, endpointFileName)
@@ -195,6 +195,23 @@ func TestUIEndpoints(t *testing.T) {
 	code, m = doRequest(t, "POST", addr, token, "/ui/settings", strings.NewReader(`{}`))
 	if code != 200 || m["ui"] != false {
 		t.Fatalf("headless ui/settings 应 200+ui:false，得 %d %v", code, m)
+	}
+}
+
+// POST /flows/clear → ClearFlows（回归：ServeMux 精确模式 /flows 不匹配 /flows/clear，须显式注册）
+func TestFlowsClearEndpoint(t *testing.T) {
+	svc := &fakeService{}
+	_, addr, token := startTestServer(t, svc)
+
+	code, m := doRequest(t, "POST", addr, token, "/flows/clear", nil)
+	if code != 200 {
+		t.Fatalf("POST /flows/clear 应 200，得 %d (%v)", code, m)
+	}
+	if m["cleared"] == nil || m["pinnedKept"] != true {
+		t.Fatalf("clear 响应异常: %v", m)
+	}
+	if svc.cleared != 1 {
+		t.Fatalf("ClearFlows 应被调用 1 次，得 %d", svc.cleared)
 	}
 }
 

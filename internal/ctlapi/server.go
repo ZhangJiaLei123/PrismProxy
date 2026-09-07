@@ -54,10 +54,12 @@ type Server struct {
 	endpoint string // 落盘文件（endpoint.json）
 	svc      Service
 
-	mu      sync.Mutex
-	listener net.Listener
-	httpSrv *http.Server
-	uiOn    bool // 当前是否有 GUI（影响 ui:* 事件回调可用性）
+	mu         sync.Mutex
+	listener   net.Listener
+	httpSrv    *http.Server
+	uiOn       bool   // 当前是否有 GUI（影响 ui:* 事件回调可用性）
+	hub        *Hub   // SSE 推送总线（Start 时创建）
+	instanceID string // 实例标识（启动时间戳毫秒），open 帧携带，重启即变
 }
 
 // NewServer 创建控制服务；addr 为空用 DefaultAddr，token 为空则生成新随机 token。
@@ -70,6 +72,22 @@ func NewServer(addr, token, endpointFile string, svc Service) *Server {
 	}
 	return &Server{addr: addr, token: token, endpoint: endpointFile, svc: svc}
 }
+
+// Addr 返回实际监听地址（Start 之后有效）。
+func (s *Server) Addr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listener != nil {
+		return s.listener.Addr().String()
+	}
+	return s.addr
+}
+
+// Hub 返回 SSE 推送总线（Start 之后非 nil）。接线层向它 Publish flows/status 事件。
+func (s *Server) Hub() *Hub { return s.hub }
+
+// InstanceID 返回实例标识（启动时间戳毫秒），实例重启即变。
+func (s *Server) InstanceID() string { return s.instanceID }
 
 // Token 返回当前 token（接线层据此落盘）
 func (s *Server) Token() string { return s.token }
@@ -91,7 +109,10 @@ func (s *Server) Start() error {
 	}
 	s.mu.Lock()
 	s.listener = ln
+	s.hub = NewHub()
+	s.instanceID = strconv.FormatInt(time.Now().UnixMilli(), 10)
 	s.httpSrv = &http.Server{Handler: s.routes(), ReadHeaderTimeout: 10 * time.Second}
+	// 注意：不得设置 WriteTimeout/IdleTimeout——会掐断 SSE 长连接（设计 §4.3）
 	s.mu.Unlock()
 
 	if err := WriteEndpoint(s.endpoint, Endpoint{Addr: ln.Addr().String(), Token: s.token}); err != nil {
@@ -106,12 +127,18 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Close 停止服务并删除 endpoint 文件
+// Close 停止服务并删除 endpoint 文件。
+// 顺序：先 Hub.Close() 关闭全部 SSE 订阅者（Shutdown 不会主动断开活跃长连接，
+// 先关 Hub 让 handler 写完余帧退出、客户端立即收 EOF），再 Shutdown HTTP server。
 func (s *Server) Close() {
 	s.mu.Lock()
 	srv, ln := s.httpSrv, s.listener
+	hub := s.hub
 	s.httpSrv, s.listener = nil, nil
 	s.mu.Unlock()
+	if hub != nil {
+		hub.Close()
+	}
 	if srv != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_ = srv.Shutdown(ctx)
@@ -135,28 +162,154 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/status", s.auth(s.handleStatus))
 	mux.HandleFunc("/api/v1/flows", s.auth(s.handleFlows))
+	// /flows/clear 须显式注册：ServeMux 精确模式 /flows 只匹配该路径，
+	// /flows/clear 会落到 /flows/ 子树 handler，故不能只靠 handleFlows 内的路径判断
+	mux.HandleFunc("/api/v1/flows/clear", s.auth(s.handleFlows))
 	mux.HandleFunc("/api/v1/flows/", s.auth(s.handleFlowSub))
 	mux.HandleFunc("/api/v1/rules", s.auth(s.handleRules))
 	mux.HandleFunc("/api/v1/rules/", s.auth(s.handleRulesSub))
 	mux.HandleFunc("/api/v1/sysproxy", s.auth(s.handleSysProxy))
 	mux.HandleFunc("/api/v1/settings", s.auth(s.handleSettings))
 	mux.HandleFunc("/api/v1/ui/", s.auth(s.handleUI))
+	// SSE 推送（query token 仅此端点接受：EventSource 无法自定义请求头）
+	mux.HandleFunc("/api/v1/events", s.auth(s.handleEvents, true))
 	return mux
 }
 
-// auth 校验 Bearer token（常量时间比较防侧信道）
-func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
+// auth 校验 Bearer token（常量时间比较防侧信道）。
+// allowQuery=true 时（仅 /events）额外接受 ?token=（浏览器 EventSource 兜底，
+// 其余端点只认 header，避免 token 随 URL 扩散）。
+func (s *Server) auth(next http.HandlerFunc, allowQuery ...bool) http.HandlerFunc {
 	want := "Bearer " + s.token
+	queryOK := len(allowQuery) > 0 && allowQuery[0]
 	return func(w http.ResponseWriter, r *http.Request) {
 		got := r.Header.Get("Authorization")
 		if got == "" {
 			got = "Bearer " + r.Header.Get("X-Prism-Token")
+		}
+		if got == "Bearer " && queryOK {
+			got = "Bearer " + r.URL.Query().Get("token")
 		}
 		if !secureEqual(got, want) {
 			writeErr(w, http.StatusUnauthorized, "未授权：token 缺失或错误")
 			return
 		}
 		next(w, r)
+	}
+}
+
+// allowedChannels 本期支持的 SSE 频道白名单
+var allowedChannels = map[string]bool{"flows": true, "status": true}
+
+// handleEvents SSE 实时推送：GET /api/v1/events?channels=flows,status&filter=<子串>
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	// 频道白名单校验（缺省 flows）
+	var channels []string
+	if v := r.URL.Query().Get("channels"); v != "" {
+		for _, c := range strings.Split(v, ",") {
+			c = strings.TrimSpace(c)
+			if c == "" {
+				continue
+			}
+			if !allowedChannels[c] {
+				writeErr(w, http.StatusBadRequest, "未知频道: "+c)
+				return
+			}
+			channels = append(channels, c)
+		}
+	}
+	if len(channels) == 0 {
+		channels = []string{"flows"}
+	}
+
+	unsub, sink, reset, ok := s.hub.Subscribe(channels, r.URL.Query().Get("filter"))
+	if !ok {
+		writeErr(w, http.StatusServiceUnavailable, "订阅者已满")
+		return
+	}
+	defer unsub()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, http.StatusInternalServerError, "服务端不支持流式响应")
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	writeFrame := func(event string, data any) bool {
+		b, err := json.Marshal(data)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	// open 帧（携带 instanceId，供消费者检测实例更换）
+	if !writeFrame("open", map[string]any{
+		"server":     "prismproxy-ctlapi",
+		"version":    1,
+		"instanceId": s.instanceID,
+		"channels":   channels,
+		"time":       time.Now().UnixMilli(),
+	}) {
+		return
+	}
+	// status seed 帧：订阅含 status 时立即推一帧当前状态，新订阅者无需等下一次变化
+	hasStatus := false
+	for _, c := range channels {
+		if c == "status" {
+			hasStatus = true
+		}
+	}
+	if hasStatus {
+		if !writeFrame("status", s.svc.Status()) {
+			return
+		}
+	}
+
+	// 15s 心跳（`: ping` 注释行，防中间超时断连）
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-reset:
+			// 背压溢出：通知客户端丢弃增量状态、重连重拉快照后断开
+			_, _ = fmt.Fprint(w, "event: reset\ndata: {\"reason\":\"backpressure\"}\n\n")
+			flusher.Flush()
+			return
+		case <-ticker.C:
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case frame, ok := <-sink:
+			if !ok {
+				return // Hub.Close（实例关闭）
+			}
+			if frame.ID > 0 {
+				if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", frame.ID, frame.Event, frame.Data); err != nil {
+					return
+				}
+			} else if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", frame.Event, frame.Data); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
 	}
 }
 
@@ -199,8 +352,7 @@ func (s *Server) handleFlowSub(w http.ResponseWriter, r *http.Request) {
 	// /api/v1/flows/{id} 或 /api/v1/flows/{id}/body?which=req|resp
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/flows/")
 	parts := strings.Split(rest, "/")
-	if parts[0] == "" || parts[0] == "clear" {
-		// /flows/clear 落到 handleFlows（mux 精确匹配优先，此处兜底 404）
+	if parts[0] == "" {
 		writeErr(w, http.StatusNotFound, "未知路径")
 		return
 	}

@@ -39,6 +39,11 @@ func RunCLI(configDir string, args []string) int {
 		return 0
 	}
 
+	// flows watch 是长运行流式命令（SSE），自管连接/重连与退出码，不走 newClient 主路径
+	if cmd == "flows" && subCmd(pos[1:]) == "watch" {
+		return runWatch(configDir, *addrFlag, *tokenFlag, pos)
+	}
+
 	c, err := newClient(configDir, *addrFlag, *tokenFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "错误:", err)
@@ -85,6 +90,9 @@ func printCLIUsage(w io.Writer) {
   flows get <id>                         单流详情（Headers 等）
   flows get <id> --body req|resp         单流消息体（JSON：raw/body/base64）
   flows clear                            清空记录列表（保留置顶）
+  flows watch [--filter 子串] [--status] [--format ndjson|sse]
+                                         实时监控：先输出全量 snapshot，再持续输出增量
+                                         （upsert/evict/status/reset），断线自动重连
   rules list                             过滤规则组 + 解密规则
   rules ignore host <域名>               快捷忽略域名（自身+全部子域）
   rules ignore process <进程名>          快捷忽略进程
@@ -368,9 +376,10 @@ func printResult(v any, pretty bool) {
 // ---------- HTTP client ----------
 
 type client struct {
-	base   string
-	token  string
-	http   *http.Client
+	base       string
+	token      string
+	http       *http.Client // 普通请求-响应（含快照拉取）
+	streamHTTP *http.Client // SSE 事件流长连接（watch 专用：无总超时、独立连接不复用）
 }
 
 func newClient(configDir, addr, token string) (*client, error) {

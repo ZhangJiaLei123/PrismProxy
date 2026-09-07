@@ -141,6 +141,7 @@ func (a *App) Startup(ctx context.Context) {
 	// 前端 onMounted 的首次刷新可能早于本函数（startCtlAPI/自愈/注册表操作耗时），
 	// 成功路径此前无事件（仅失败发 proxy:start-error），会导致开关恒显"已停止"。
 	runtime.EventsEmit(ctx, "proxy:ready")
+	a.publishStatus() // SSE status 频道：startup 自动启动/接管完成后（seed 之后的首帧变化）
 }
 
 // Shutdown 退出清理：若系统代理正指向本工具则按备份恢复（OnShutdown 钩子，关窗口/退出时触发）
@@ -196,8 +197,13 @@ func (a *App) flush() {
 	a.flushDue = false
 	a.pendMu.Unlock()
 
+	// SSE fan-out（M8+）：与 Wails emit 同一份合帧结果、同一批次。
+	// 必须在下面的 ctx==nil 早退之前——headless 不走 Wails startup、a.ctx 恒 nil，
+	// 放在早退之后会导致 headless 推送通道完全无数据（且 GUI 测试发现不了）。
+	a.fanOutFlows(ups, evs)
+
 	if a.ctx == nil {
-		return // 未 startup：丢弃，前端挂载后用 ListFlows 拉全量
+		return // 未 startup/headless：跳过 Wails emit，前端挂载后用 ListFlows 拉全量
 	}
 	if len(ups) > 0 {
 		runtime.EventsEmit(a.ctx, "flow:upsert", ups)
@@ -205,4 +211,44 @@ func (a *App) flush() {
 	if len(evs) > 0 {
 		runtime.EventsEmit(a.ctx, "flow:evict", evs)
 	}
+}
+
+// fanOutFlows 把一帧合帧结果推给本地控制 API 的 SSE 订阅者（无控制 API 时 no-op）。
+// 复用 flush 的 []FlowMeta/[]string，不新增 store 订阅、不新增合帧逻辑。
+func (a *App) fanOutFlows(ups []FlowMeta, evs []string) {
+	a.mu.Lock()
+	hub := a.ctlHub()
+	a.mu.Unlock()
+	if hub == nil {
+		return
+	}
+	if len(ups) > 0 {
+		fs := make([]ctlapi.Filterable, len(ups)) // FlowMeta 实现 FilterFields()
+		for i := range ups {
+			fs[i] = ups[i]
+		}
+		hub.Publish("flows", ctlapi.FlowsUpsert{Type: "upsert", Flows: fs})
+	}
+	if len(evs) > 0 {
+		hub.Publish("flows", ctlapi.FlowsEvict{Type: "evict", IDs: evs})
+	}
+}
+
+// publishStatus 向 SSE status 频道推一帧当前状态快照（无订阅者时 hub 内部快速返回）。
+// 调用点：代理启停、系统代理切换、settings 热应用重启、启动完成、启动失败（设计 §3.2）。
+func (a *App) publishStatus() {
+	a.mu.Lock()
+	hub := a.ctlHub()
+	a.mu.Unlock()
+	if hub != nil {
+		hub.Publish("status", a.ctlStatusSnapshot())
+	}
+}
+
+// ctlHub 返回当前控制 API 的 SSE Hub；控制 API 未启动（端口占用降级）时为 nil。
+func (a *App) ctlHub() *ctlapi.Hub {
+	if a.ctl == nil {
+		return nil
+	}
+	return a.ctl.Hub()
 }

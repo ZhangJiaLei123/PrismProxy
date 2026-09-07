@@ -30,6 +30,12 @@ type FlowMeta struct {
 	Source      string // capture | composer（M6 调试重发标记）
 }
 
+// FilterFields 实现 ctlapi.Filterable：供 SSE Hub 按订阅者 filter 过滤 flows upsert
+// （ctlapi 不能 import app，经此接口暴露 host/url/path；口径与 flows list --filter 一致）。
+func (m FlowMeta) FilterFields() (host, urlStr, path string) {
+	return m.Host, m.URL, m.Path
+}
+
 // FlowDetail 详情面板：Meta + 首部 + TLS + 进程全量
 type FlowDetail struct {
 	FlowMeta

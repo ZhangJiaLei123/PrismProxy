@@ -23,6 +23,10 @@ func EndpointFile(configDir string) string {
 
 // WriteEndpoint 原子写入 endpoint 文件并收紧 ACL（仅当前用户可读，防本机其他用户窃取 token）
 func WriteEndpoint(path string, ep Endpoint) error {
+	if path == "" {
+		// 测试/无落盘场景：空路径会让 tmp := path+".tmp" 写到当前工作目录，显式拒绝
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}

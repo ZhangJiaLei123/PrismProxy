@@ -6,6 +6,9 @@
 *.exe
 *.exe~
 
+# 运行时便携配置（exe 同级 config/，含 CA 私钥 prism-key.pem、token，严禁入库）
+/config/
+
 # 前端依赖
 /frontend/node_modules/
 

@@ -67,12 +67,16 @@ func (a *App) SaveSettings(nu *settings.Settings) (*SaveSettingsResult, error) {
 		return nil, err // 理论上 Validate 已拦截，双保险
 	}
 	if needRestart {
-		if err := a.StopProxy(); err != nil {
+		// settings 热应用重启代理：内部方法连调（避免重复推 status），重启完成后推一次
+		if err := a.stopProxy(); err != nil {
+			a.publishStatus()
 			return nil, err
 		}
-		if err := a.StartProxy(""); err != nil {
+		if err := a.startProxy(""); err != nil {
+			a.publishStatus()
 			return nil, err
 		}
+		a.publishStatus()
 	}
 	return &SaveSettingsResult{Warnings: warns}, nil
 }
@@ -107,13 +111,19 @@ func (a *App) SetSystemProxy(enable bool) error {
 
 	if enable {
 		if !running {
-			if err := a.StartProxy(""); err != nil {
+			// 内部连调 startProxy（不单独推 status），整个接管完成后统一推一次
+			if err := a.startProxy(""); err != nil {
+				a.publishStatus()
 				return fmt.Errorf("启动代理失败，未接管系统代理: %w", err)
 			}
 		}
-		return sysproxy.Enable(addr, bypass, a.backupFile())
+		err := sysproxy.Enable(addr, bypass, a.backupFile())
+		a.publishStatus()
+		return err
 	}
-	return sysproxy.Disable(addr, a.backupFile())
+	err := sysproxy.Disable(addr, a.backupFile())
+	a.publishStatus()
+	return err
 }
 
 // ListSystemProcesses 返回系统当前运行的全部进程名（小写、去重、排序），

@@ -17,8 +17,19 @@ import (
 
 // ---------- 代理生命周期 Bindings ----------
 
-// StartProxy 启动代理（同步 listen，端口占用立即报错）；addr 为空用配置里的监听地址
+// StartProxy 启动代理（同步 listen，端口占用立即报错）；addr 为空用配置里的监听地址。
+// 成功/失败均向 SSE status 频道推送（SetSystemProxy 内部连调时不重复推）。
 func (a *App) StartProxy(addr string) error {
+	if err := a.startProxy(addr); err != nil {
+		a.publishStatus()
+		return err
+	}
+	a.publishStatus()
+	return nil
+}
+
+// startProxy 实际启动逻辑（不发布 status，供 SetSystemProxy 内部连调避免重复推送）
+func (a *App) startProxy(addr string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.srv != nil {
@@ -60,7 +71,14 @@ func (a *App) StartProxy(addr string) error {
 	return nil
 }
 
+// StopProxy 停止代理并向 SSE status 频道推送（SetSystemProxy 内部连调时走 stopProxy 不重复推）
 func (a *App) StopProxy() error {
+	err := a.stopProxy()
+	a.publishStatus()
+	return err
+}
+
+func (a *App) stopProxy() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.srv == nil {

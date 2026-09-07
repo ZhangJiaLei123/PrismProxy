@@ -20,6 +20,9 @@ func (a *App) startCtlAPI() {
 	a.mu.Lock()
 	a.ctl = srv
 	a.mu.Unlock()
+	// 控制 API 就绪后推一帧状态：headless 下代理先于控制 API 启动（成功路径此前无发布点），
+	// GUI 下与 startup 末尾的发布重复一帧，幂等无害。
+	a.publishStatus()
 }
 
 // stopCtlAPI 停止控制 API 并清理 endpoint 文件（shutdown / headless 退出时调用，幂等）
