@@ -14,7 +14,8 @@ export const useFlowsStore = defineStore('flows', {
     composerShow: false,
     composerPrefillId: '',
     // 展示过滤（方案验收 #8）：与 Go 侧捕获规则相互独立，仅影响列表显示
-    filter: { keyword: '', regex: false, method: '', status: '' },
+    // methods/statuses 为多选数组：空数组 = 全部；选中多项时命中任一即通过
+    filter: { keyword: '', regex: false, methods: [] as string[], statuses: [] as string[] },
     // 暂停列表刷新：true 时丢弃 flow:upsert/flow:evict 事件（后端抓包继续，恢复后不补发）
     paused: false,
   }),
@@ -34,14 +35,16 @@ export const useFlowsStore = defineStore('flows', {
           re = null // 非法正则降级为子串匹配（UI 另有红色提示）
         }
       }
+      // 过滤空哨兵（「全部」项值为 ''，正常交互下不会进入数组，这里兜底剔除）
+      const methods = f.methods.filter(Boolean)
+      const statuses = f.statuses.filter(Boolean)
       return s.flows.filter((m) => {
-        if (f.method && m.Method !== f.method) return false
-        if (f.status) {
-          if (f.status === 'error') {
-            if (m.State !== 'error') return false
-          } else if (m.State === 'error' || Math.floor(m.Status / 100) + 'xx' !== f.status) {
-            return false
-          }
+        // 多选方法：选中集合非空且当前方法不在集合内则排除
+        if (methods.length && !methods.includes(m.Method)) return false
+        if (statuses.length) {
+          // 状态归类：error 流 → 'error'；正常流按百位 → 'Nxx'
+          const bucket = m.State === 'error' ? 'error' : Math.floor(m.Status / 100) + 'xx'
+          if (!statuses.includes(bucket)) return false
         }
         if (kw) {
           const hay = m.Host + ' ' + m.URL

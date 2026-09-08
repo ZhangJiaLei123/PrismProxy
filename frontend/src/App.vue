@@ -86,8 +86,30 @@
           title="正则匹配（不区分大小写；非法正则降级为子串）"
           @click="store.filter.regex = !store.filter.regex"
         >.*</n-button>
-        <n-select v-model:value="store.filter.method" size="tiny" :options="methodOptions" style="width: 92px" />
-        <n-select v-model:value="store.filter.status" size="tiny" :options="statusOptions" style="width: 92px" />
+        <n-select
+          :value="store.filter.methods"
+          class="filter-sel"
+          size="tiny"
+          multiple
+          clearable
+          max-tag-count="responsive"
+          :options="methodOptions"
+          placeholder="方法"
+          style="width: 120px"
+          @update:value="(v: string[]) => pickFilterValues('methods', v)"
+        />
+        <n-select
+          :value="store.filter.statuses"
+          class="filter-sel"
+          size="tiny"
+          multiple
+          clearable
+          max-tag-count="responsive"
+          :options="statusOptions"
+          placeholder="状态"
+          style="width: 104px"
+          @update:value="(v: string[]) => pickFilterValues('statuses', v)"
+        />
         <span v-if="filterActive" style="opacity: 0.6; white-space: nowrap">
           {{ store.filtered.length }}/{{ store.flows.length }}
         </span>
@@ -244,22 +266,35 @@ async function refreshStatus() {
   }
 }
 
-// 过滤选项（空值 = 全部）
+// 多选过滤选项：首项「全部」是空值哨兵，选中=清空具体选择；多选交互见 pickFilterValues
+const ALL_SENTINEL = ''
 const methodOptions = [
-  { label: '全部方法', value: '' },
+  { label: '全部方法', value: ALL_SENTINEL },
   ...['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'CONNECT'].map((m) => ({ label: m, value: m })),
 ]
 const statusOptions = [
-  { label: '全部状态', value: '' },
-  { label: '2xx', value: '2xx' },
-  { label: '3xx', value: '3xx' },
-  { label: '4xx', value: '4xx' },
-  { label: '5xx', value: '5xx' },
+  { label: '全部状态', value: ALL_SENTINEL },
+  ...['2xx', '3xx', '4xx', '5xx'].map((s) => ({ label: s, value: s })),
   { label: '错误', value: 'error' },
 ]
 
+// 多选值处理：点「全部」→ 清空为全部；点具体项 → 去掉哨兵只留具体值；全清空 → 全部
+function pickFilterValues(kind: 'methods' | 'statuses', v: string[]) {
+  let next = v
+  if (v.includes(ALL_SENTINEL)) {
+    // 上一态已含哨兵（点的是具体项）→ 去哨兵留具体值；否则（点的是「全部」）→ 全部
+    next = store.filter[kind].includes(ALL_SENTINEL) ? v.filter((x) => x !== ALL_SENTINEL) : []
+  }
+  store.filter[kind] = next
+}
+
 const filterActive = computed(
-  () => !!(store.filter.keyword.trim() || store.filter.method || store.filter.status),
+  () =>
+    !!(
+      store.filter.keyword.trim() ||
+      store.filter.methods.filter((m) => m !== ALL_SENTINEL).length ||
+      store.filter.statuses.filter((s) => s !== ALL_SENTINEL).length
+    ),
 )
 // 非法正则红色提示（匹配逻辑自动降级为子串）
 const regexInvalid = computed(() => {
@@ -292,4 +327,9 @@ onMounted(async () => {
 .status-tag { cursor: pointer; }
 .hdr-switch { display: flex; align-items: center; gap: 4px; }
 .hdr-label { font-size: 12px; opacity: 0.8; }
+/* 底栏 28px 固定高度：多选 tag 单行排列、溢出裁剪，禁止换行把 footer 撑高 */
+.filter-sel :deep(.n-base-selection-tags) {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
 </style>
