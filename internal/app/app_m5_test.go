@@ -152,6 +152,63 @@ func TestAddQuickIgnore_Process(t *testing.T) {
 	}
 }
 
+// TestAddQuickIgnore_Path 快捷忽略路径：写入独立 _quick_ignore_paths 组（与域名/进程组间 OR），
+// 引擎按精确 + 段边界前缀命中；带 query 的值归一化为纯路径；幂等；"/" 拒绝。
+func TestAddQuickIgnore_Path(t *testing.T) {
+	a := newTestApp(t)
+	added, err := a.AddQuickIgnore("path", "/api/health")
+	if err != nil || !added {
+		t.Fatalf("首次添加: added=%v err=%v", added, err)
+	}
+	eng := a.eng.Get()
+	// 精确命中：不显示
+	if eng.ShouldDisplay("any.com", "https://any.com/api/health", "") {
+		t.Fatal("精确路径应被忽略")
+	}
+	// 段边界前缀命中（下级路径）：不显示
+	if eng.ShouldDisplay("any.com", "https://any.com/api/health/detail", "") {
+		t.Fatal("下级路径应按前缀段边界命中忽略")
+	}
+	// 同前缀但跨段（/api/healthy）不应命中
+	if !eng.ShouldDisplay("any.com", "https://any.com/api/healthy", "") {
+		t.Fatal("字符串前缀但非段边界（/api/healthy）不应命中")
+	}
+	// 其他路径：正常显示
+	if !eng.ShouldDisplay("any.com", "https://other.com/api/v2/users", "") {
+		t.Fatal("未命中路径应显示")
+	}
+	// 归一化：带 query 的同路径重复添加 → 幂等 false
+	added, err = a.AddQuickIgnore("path", "/api/health?ts=1")
+	if err != nil || added {
+		t.Fatalf("query 应被剥离且幂等: added=%v err=%v", added, err)
+	}
+	// 与域名/进程忽略相互独立：忽略路径不影响其他域名判定
+	var hasPathGroup bool
+	for i := range a.proj.FilterGroups {
+		g := &a.proj.FilterGroups[i]
+		if g.ID == QuickIgnorePathGroupID {
+			hasPathGroup = true
+			if len(g.Paths) != 1 || g.Paths[0] != "/api/health" {
+				t.Fatalf("路径组内容异常: %+v", g.Paths)
+			}
+			if len(g.Hosts) != 0 || len(g.Processes) != 0 {
+				t.Fatal("路径组不应混入域名/进程维度")
+			}
+		}
+	}
+	if !hasPathGroup {
+		t.Fatal("应创建 _quick_ignore_paths 组")
+	}
+	// 裸 "/" 拒绝（引擎中 "/" 等价匹配所有路径）
+	if _, err := a.AddQuickIgnore("path", "/"); err == nil {
+		t.Fatal("裸 / 应拒绝")
+	}
+	// 空值拒绝
+	if _, err := a.AddQuickIgnore("path", "  ?x=1"); err == nil {
+		t.Fatal("空路径应拒绝")
+	}
+}
+
 func TestImportRules_FileReplaceAndValidate(t *testing.T) {
 	a := newTestApp(t)
 	// 现有一条规则，导入后应被整体替换

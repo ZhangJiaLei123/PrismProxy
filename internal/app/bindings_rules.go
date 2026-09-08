@@ -26,10 +26,11 @@ import (
 const (
 	QuickIgnoreHostGroupID = "_quick_ignore_hosts" // 快捷忽略-域名
 	QuickIgnoreProcGroupID = "_quick_ignore_procs" // 快捷忽略-进程
+	QuickIgnorePathGroupID = "_quick_ignore_paths" // 快捷忽略-路径
 )
 
-// AddQuickIgnore 一键忽略：target = host（裸域名=自身+全部子域）| process（进程名，精确不区分大小写）。
-// 分别写入内置黑名单组 _quick_ignore_hosts / _quick_ignore_procs（不存在则自动创建），幂等去重；热更新 + 落盘。
+// AddQuickIgnore 一键忽略：target = host（裸域名=自身+全部子域）| process（进程名，精确不区分大小写）| path（路径，精确+段边界前缀，支持 *? 通配）。
+// 分别写入内置黑名单组 _quick_ignore_hosts / _quick_ignore_procs / _quick_ignore_paths（不存在则自动创建），幂等去重；热更新 + 落盘。
 // 返回 added=false 表示已存在未重复添加。
 func (a *App) AddQuickIgnore(target, value string) (bool, error) {
 	a.projMu.Lock()
@@ -87,13 +88,24 @@ func addQuickIgnoreTo(pc *settings.ProjectConfig, target, value string) (bool, e
 			}
 			return false
 		}
+	case "path":
+		groupID, groupName = QuickIgnorePathGroupID, "快捷忽略-路径"
+		normalize = normalizeQuickIgnorePath
+		exists = func(g rules.FilterGroup, v string) bool {
+			for _, x := range g.Paths {
+				if x == v {
+					return true
+				}
+			}
+			return false
+		}
 	default:
-		return false, fmt.Errorf("target 须为 host|process")
+		return false, fmt.Errorf("target 须为 host|process|path")
 	}
 
 	nv, ok := normalize(value)
 	if !ok {
-		return false, fmt.Errorf("域名无效：%q", value)
+		return false, fmt.Errorf("忽略内容无效：%q", value)
 	}
 
 	gi := -1
@@ -113,10 +125,13 @@ func addQuickIgnoreTo(pc *settings.ProjectConfig, target, value string) (bool, e
 	if exists(*g, nv) {
 		return false, nil // 幂等：已存在
 	}
-	if target == "host" {
+	switch target {
+	case "host":
 		g.Hosts = append(g.Hosts, nv)
-	} else {
+	case "process":
 		g.Processes = append(g.Processes, nv)
+	case "path":
+		g.Paths = append(g.Paths, nv)
 	}
 	return true, nil
 }
@@ -131,6 +146,25 @@ func normalizeQuickIgnoreHost(h string) string {
 	h = strings.TrimSuffix(h, ".")
 	h = strings.TrimPrefix(h, "*.")
 	return h
+}
+
+// normalizeQuickIgnorePath 忽略路径归一化：去空白、去 query/fragment、确保以 / 开头。
+// "/" 单独一条在引擎里等价「匹配所有路径」，快捷忽略场景下拒绝以免一键过滤全部流量。
+func normalizeQuickIgnorePath(p string) (string, bool) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", false
+	}
+	if i := strings.IndexAny(p, "?#"); i >= 0 {
+		p = p[:i]
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	if p == "/" {
+		return "", false
+	}
+	return p, true
 }
 
 // rulesFile 规则导入导出 JSON 结构（方案 §4.7：含 version + 导出时间 + 规则三层 + 绕过列表）

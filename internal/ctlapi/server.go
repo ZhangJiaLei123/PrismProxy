@@ -35,7 +35,7 @@ type Service interface {
 	ClearFlows() int // 返回清除条数（置顶保留）
 	// 规则（过滤规则组 / 解密规则）；project 空=当前项目，否则按 id|名称解析（设计 §6.3）
 	ListRules(project string) (any, error)
-	RuleIgnore(project, target, value string) (bool, error) // target=host|process；added=false 表示幂等已存在
+	RuleIgnore(project, target, value string) (bool, error) // target=host|path|process；added=false 表示幂等已存在
 	RuleGroupSetEnabled(project, id string, enabled bool) error
 	RuleDecrypt(project, action, host string) error // action=mitm|bypass
 	// 系统代理 / 设置
@@ -480,8 +480,8 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var req struct {
 			Action string `json:"action"` // ignore | decrypt
-			Target string `json:"target"` // host | process（ignore）
-			Value  string `json:"value"`  // 域名 / 进程名
+			Target string `json:"target"` // host | path | process（ignore）
+			Value  string `json:"value"`  // 域名 / 路径 / 进程名
 			Host   string `json:"host"`   // decrypt 用
 			Kind   string `json:"kind"`   // mitm | bypass（decrypt 用）
 		}

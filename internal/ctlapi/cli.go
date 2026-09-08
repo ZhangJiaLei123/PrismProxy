@@ -150,6 +150,7 @@ func printCLIUsage(w io.Writer) {
   project close                         关闭当前项目（不删除），进入欢迎页态
   rules list                             过滤规则组 + 解密规则
   rules ignore host <域名>               快捷忽略域名（自身+全部子域）
+  rules ignore path <路径>               快捷忽略路径（精确+下级路径，支持 *? 通配，自动去 query）
   rules ignore process <进程名>          快捷忽略进程
   rules group <id> enable|disable        启用/停用过滤规则组
   rules decrypt mitm|bypass <域名>       添加解密规则（mitm 解密 / bypass 透传）
@@ -301,11 +302,11 @@ func cliRules(c *client, pos []string) (any, error) {
 		return c.get(c.withProject("/rules"))
 	case "ignore":
 		if len(args) < 2 {
-			return nil, fmt.Errorf("用法: rules ignore host|process <值>")
+			return nil, fmt.Errorf("用法: rules ignore host|path|process <值>")
 		}
 		target, value := args[0], strings.Join(args[1:], " ")
-		if target != "host" && target != "process" {
-			return nil, fmt.Errorf("ignore 目标须为 host|process")
+		if target != "host" && target != "path" && target != "process" {
+			return nil, fmt.Errorf("ignore 目标须为 host|path|process")
 		}
 		return c.post(c.withProject("/rules"), map[string]any{"action": "ignore", "target": target, "value": value})
 	case "group":

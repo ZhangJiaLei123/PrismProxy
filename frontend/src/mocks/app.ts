@@ -127,6 +127,7 @@ const state = {
   flows: [] as FlowRec[],
   ignoreHosts: new Set<string>(),
   ignoreProcs: new Set<string>(),
+  ignorePaths: new Set<string>(),
   settings: null as any,
 }
 
@@ -227,6 +228,12 @@ setInterval(() => {
   if (!state.proxyRunning || !state.currentProjectId) return
   const rec = makeFlow(now(), liveSeq++, 'live-' + Date.now())
   if (state.ignoreHosts.has(rec.meta.Host) || state.ignoreProcs.has(rec.meta.ProcessName)) return
+  // 路径忽略：精确或段边界前缀（与引擎 pathMatcher 非通配形态一致；引擎按不含 query 的 u.Path 判定）
+  const rawPath = rec.meta.Path || ''
+  const p = rawPath.split('?')[0]
+  for (const ip of state.ignorePaths) {
+    if (p === ip || p.startsWith(ip + '/')) return
+  }
   pushFlow(rec)
   if (state.flows.length > 2000) state.flows.length = 2000
 }, 8000)
@@ -409,6 +416,15 @@ const handlers: Record<string, (...args: any[]) => any> = {
     return { command: cmd, bodyOmitted: false }
   },
   AddQuickIgnore: async (kind: string, value: string) => {
+    if (kind === 'path') {
+      // 与后端 normalizeQuickIgnorePath 对齐：去 query/fragment、补前导 /，拒绝裸 "/"
+      let p = (value || '').trim().split(/[?#]/)[0]
+      if (p && !p.startsWith('/')) p = '/' + p
+      if (!p || p === '/') throw new Error('忽略内容无效：路径不能为空或为 /')
+      if (state.ignorePaths.has(p)) return false
+      state.ignorePaths.add(p)
+      return true
+    }
     const set = kind === 'host' ? state.ignoreHosts : state.ignoreProcs
     if (set.has(value)) return false
     set.add(value)

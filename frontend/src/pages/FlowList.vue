@@ -244,12 +244,18 @@ const ctxShow = ref(false)
 const ctxX = ref(0)
 const ctxY = ref(0)
 const ctxFlow = ref<app.FlowMeta | null>(null)
-// 右键落点列：决定是否给出「忽略此域名/进程」入口
-const ctxCol = ref<'host' | 'proc' | null>(null)
+// 右键落点列：决定是否给出「忽略此域名/路径/进程」入口
+const ctxCol = ref<'host' | 'path' | 'proc' | null>(null)
 
 function onContextMenu(e: MouseEvent, f: app.FlowMeta) {
   const cell = (e.target as HTMLElement).closest('span')
-  ctxCol.value = cell?.classList.contains('c-proc') ? 'proc' : cell?.classList.contains('c-host') ? 'host' : null
+  ctxCol.value = cell?.classList.contains('c-proc')
+    ? 'proc'
+    : cell?.classList.contains('c-host')
+      ? 'host'
+      : cell?.classList.contains('c-path')
+        ? 'path'
+        : null
   ctxFlow.value = f
   ctxX.value = e.clientX
   ctxY.value = e.clientY
@@ -268,9 +274,19 @@ const ctxOptions = computed<DropdownOption[]>(() => {
     { label: f.Pinned ? '取消置顶' : '置顶（固定顶部、不被淘汰）', key: 'pin' },
     { type: 'divider', key: 'd2' },
   ]
-  // 仅在域名列/进程列右键时给对应忽略入口；无进程名（隧道/未知）则忽略进程禁用
+  // 仅在域名列/路径列/进程列右键时给对应忽略入口；无进程名（隧道/未知）则忽略进程禁用
   if (ctxCol.value === 'host' && f.Host) {
     opts.push({ label: `忽略此域名（${f.Host} 及其子域）`, key: 'ignore-host' })
+  }
+  if (ctxCol.value === 'path') {
+    // 隧道流（CONNECT）无路径；Path 含 query 时后端归一化会自动剥离
+    const p = f.Path || ''
+    const short = p.length > 32 ? p.slice(0, 32) + '…' : p
+    opts.push({
+      label: p ? `忽略此路径（${short} 及其下级路径）` : '忽略此路径（隧道流无路径）',
+      key: 'ignore-path',
+      disabled: !p || f.Method === 'CONNECT',
+    })
   }
   if (ctxCol.value === 'proc') {
     opts.push({
@@ -314,6 +330,10 @@ async function onCtxSelect(key: string) {
       const added = await AddQuickIgnore('process', f.ProcessName)
       if (added) message.success(`已忽略进程 ${f.ProcessName}，该进程后续流量不再显示`, { duration: 4000, closable: true })
       else message.info(`进程 ${f.ProcessName} 已在忽略列表中`, { duration: 3000, closable: true })
+    } else if (key === 'ignore-path' && f.Path) {
+      const added = await AddQuickIgnore('path', f.Path)
+      if (added) message.success('已忽略该路径（含下级路径，通配符 *? 可用），后续流量不再显示', { duration: 4000, closable: true })
+      else message.info('该路径已在忽略列表中', { duration: 3000, closable: true })
     } else if (key === 'composer') {
       store.openComposer(f.ID)
     }
