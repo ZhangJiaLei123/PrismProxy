@@ -10,24 +10,6 @@
         <!-- <span style="font-weight: 600">PrismProxy</span> -->
         <!-- M9：项目切换器（规则/历史随项目隔离，运行中热切换） -->
         <project-switcher />
-        <n-tag
-          size="small"
-          :type="status.Running ? 'success' : 'error'"
-          class="status-tag"
-          title="点击打开代理设置"
-          @click="openProxySettings"
-        >
-          {{ status.Running ? `代理运行中 ${status.Addr}` : '代理已停止' }}
-        </n-tag>
-        <n-tag v-if="status.Running" size="small" type="info">{{ status.Mode }}</n-tag>
-        <span class="hdr-switch" title="启动/停止代理监听">
-          <span class="hdr-label">监听</span>
-          <n-switch size="small" :value="status.Running" :loading="listenBusy" @update:value="toggleListen" />
-        </span>
-        <span v-if="showSysSwitch" class="hdr-switch" title="一键接管/恢复系统代理（接管时若监听未启动会自动拉起）">
-          <span class="hdr-label">系统代理</span>
-          <n-switch size="small" :value="sysOn" :loading="sysBusy" @update:value="toggleSysProxy" />
-        </span>
         <span style="flex: 1"></span>
         <span :style="{ opacity: store.paused ? 0.95 : 0.7, fontSize: '12px', color: store.paused ? '#e8c864' : undefined }">
           {{ store.flows.length }} 条流{{ store.paused ? '（已暂停刷新）' : '' }}
@@ -87,7 +69,7 @@
           </template>
         </n-split>
       </n-layout-content>
-      <!-- 底部工具栏：过滤搜索（验收 #8） + 设置入口 -->
+      <!-- 底部工具栏：过滤搜索（验收 #8） + 代理状态/快捷开关 + 设置入口 -->
       <n-layout-footer bordered style="height: 28px; display: flex; align-items: center; padding: 0 8px; gap: 6px; font-size: 12px">
         <n-input
           v-model:value="store.filter.keyword"
@@ -110,6 +92,25 @@
           {{ store.filtered.length }}/{{ store.flows.length }}
         </span>
         <span style="flex: 1"></span>
+        <!-- 代理状态与快捷开关（自顶栏迁入） -->
+        <n-tag
+          size="small"
+          :type="status.Running ? 'success' : 'error'"
+          class="status-tag"
+          title="点击打开代理设置"
+          @click="openProxySettings"
+        >
+          {{ status.Running ? `代理运行中 ${status.Addr}` : '代理已停止' }}
+        </n-tag>
+        <n-tag v-if="status.Running" size="small" type="info">{{ status.Mode }}</n-tag>
+        <span class="hdr-switch" title="启动/停止代理监听">
+          <span class="hdr-label">监听</span>
+          <n-switch size="small" :value="status.Running" :loading="listenBusy" @update:value="toggleListen" />
+        </span>
+        <span v-if="showSysSwitch" class="hdr-switch" title="一键接管/恢复系统代理（接管时若监听未启动会自动拉起）">
+          <span class="hdr-label">系统代理</span>
+          <n-switch size="small" :value="sysOn" :loading="sysBusy" @update:value="toggleSysProxy" />
+        </span>
         <n-button size="tiny" secondary @click="openSettings">设置</n-button>
       </n-layout-footer>
       </template>
@@ -144,14 +145,14 @@ const showSettings = ref(false)
 // 设置抽屉初始标签：状态标签入口定位到「网络」（代理服务），底部按钮默认「常规」
 const settingsTab = ref('general')
 // 启动自动抓包失败（如端口占用）的错误条，后端 proxy:start-error 事件驱动
-// 顶栏快捷开关的动作失败也复用该错误条（消息自带上下文前缀）
+// 底栏快捷开关的动作失败也复用该错误条（消息自带上下文前缀）
 const startError = ref('')
-// 顶栏快捷开关：系统代理状态（on/occupied/off）与两个开关的 busy 态
+// 底栏快捷开关：系统代理状态（on/occupied/off）与两个开关的 busy 态
 const sysState = ref('off')
 const sysOn = computed(() => sysState.value === 'on')
 const listenBusy = ref(false)
 const sysBusy = ref(false)
-// 顶栏系统代理开关可见性（设置-常规-工具栏，默认显示）
+// 底栏系统代理开关可见性（设置-常规-工具栏，默认显示）
 const showSysSwitch = ref(true)
 
 async function loadPrefs() {
@@ -277,7 +278,7 @@ onMounted(async () => {
     refreshStatus()
   })
   // 后端 startup 完成自动启动/接管后推送；onMounted 首次刷新可能更早（startCtlAPI 等耗时），
-  // 事件到达时再刷一次，避免顶栏开关恒显"已停止"（M8 时序竞态修复）
+  // 事件到达时再刷一次，避免底栏开关恒显"已停止"（M8 时序竞态修复）
   EventsOn('proxy:ready', () => refreshStatus())
   EventsOn('ui:open-settings', (tab?: string) => onUIOpenSettings(tab))
   await store.init()
