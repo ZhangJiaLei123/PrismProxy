@@ -1,6 +1,7 @@
 package domains
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,6 +63,22 @@ func TestWriteUser(t *testing.T) {
 	}
 	if _, err := WriteUser(dir, "ok", []byte("# 只有注释\n")); err == nil {
 		t.Fatal("empty parse should fail")
+	}
+}
+
+// TestWriteUser_UTF8BOM 回归：Windows PowerShell 5.1 落盘文件带 UTF-8 BOM，
+// 首行域名若含 BOM 会解析失败；WriteUser 须剥离 BOM（真机实测发现）。
+func TestWriteUser_UTF8BOM(t *testing.T) {
+	dir := t.TempDir()
+	bom := []byte{0xEF, 0xBB, 0xBF}
+	data := append(append([]byte{}, bom...), []byte("a.com\nb.com\n")...)
+	n, err := WriteUser(dir, "bomgrp", data)
+	if err != nil || n != 2 {
+		t.Fatalf("BOM 文件应解析出 2 个域名，n=%d err=%v", n, err)
+	}
+	saved, _ := os.ReadFile(filepath.Join(dir, "bomgrp.txt"))
+	if bytes.HasPrefix(saved, bom) {
+		t.Fatalf("落盘文件不应残留 BOM: %q", saved)
 	}
 }
 

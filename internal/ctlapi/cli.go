@@ -138,8 +138,9 @@ func printCLIUsage(w io.Writer) {
   domains delete <id>                    删除自定义域名组
   rules export [--embed]                 导出规则 JSON（原文直出 stdout，可 > 文件）
   rules import <文件路径|URL>            导入规则（整体替换，内嵌域名组自动补建）
-  compose <URL> [--method M] [--header 'K: V; K2: V2'] [--body 文本] [--insecure]
+  compose <URL> [--method M] [--header 'K: V']... [--body 文本] [--insecure]
                                          调试重发：独立直连目标，结果作为新流入列表
+                                         （--header 可重复；值可含分号如 Cookie，每个 --header 一个头）
   processes                              枚举系统运行中进程名（ignore process 候选）
   project list                           项目列表 + 当前项目
   project switch <id|名称>               切换当前项目（运行中热切换，规则与流量历史随之切换）
@@ -581,8 +582,8 @@ func cliDomains(c *client, pos []string) (any, error) {
 
 // ---------- 调试重发（Composer，M10 补面） ----------
 
-// repeatHeader 支持 --header 可重复传入（每次一个 "Key: Value"）；
-// 单次传值内也可用分号分隔多个头（值本身含分号时请拆成多次 --header，如 Cookie）。
+// repeatHeader 支持 --header 可重复传入，每个值整体作为一个 "Key: Value" 请求头；
+// 值本身可含分号（如 Cookie: a=1; b=2），只按第一个冒号切分键值。
 type repeatHeader []string
 
 func (h *repeatHeader) String() string { return strings.Join(*h, "; ") }
@@ -591,12 +592,27 @@ func (h *repeatHeader) Set(v string) error {
 	return nil
 }
 
+// parseComposeHeaders 把每个 --header 值整体解析为一个请求头。
+// 只按第一个冒号切分键值，值本身可含分号（如 Cookie: a=1; b=2）与冒号；
+// 多个头请重复传入 --header。
+func parseComposeHeaders(headers []string) ([]map[string]string, error) {
+	var hs []map[string]string
+	for _, h := range headers {
+		k, v, ok := strings.Cut(h, ":")
+		if !ok {
+			return nil, fmt.Errorf("--header 格式须为 'Key: Value'（多个头请重复传入 --header）: %q", h)
+		}
+		hs = append(hs, map[string]string{"key": strings.TrimSpace(k), "value": strings.TrimSpace(v)})
+	}
+	return hs, nil
+}
+
 func cliCompose(c *client, pos []string) (any, error) {
 	args := pos[1:]
 	fs := flag.NewFlagSet("compose", flag.ContinueOnError)
 	method := fs.String("method", "GET", "HTTP 方法")
 	var headers repeatHeader
-	fs.Var(&headers, "header", "请求头，可重复：--header 'Key: Value'（单次传值内也可用 ; 分隔多个）")
+	fs.Var(&headers, "header", "请求头，可重复：--header 'Key: Value'（值可含分号如 Cookie）")
 	body := fs.String("body", "", "请求体（字符串）")
 	insecure := fs.Bool("insecure", false, "跳过 HTTPS 证书校验（等同 --skip-verify）")
 	skipVerify := fs.Bool("skip-verify", false, "跳过 HTTPS 证书校验")
@@ -607,15 +623,9 @@ func cliCompose(c *client, pos []string) (any, error) {
 	if len(rem) < 1 {
 		return nil, fmt.Errorf("用法: compose <URL> [--method GET] [--header 'Key: Value']... [--body 内容] [--insecure]")
 	}
-	var hs []map[string]string
-	for _, group := range headers {
-		for _, h := range strings.Split(group, ";") {
-			k, v, ok := strings.Cut(h, ":")
-			if !ok {
-				return nil, fmt.Errorf("--header 格式须为 'Key: Value'（多个用 ; 分隔，或重复 --header）: %q", h)
-			}
-			hs = append(hs, map[string]string{"key": strings.TrimSpace(k), "value": strings.TrimSpace(v)})
-		}
+	hs, err := parseComposeHeaders(headers)
+	if err != nil {
+		return nil, err
 	}
 	return c.post("/compose", map[string]any{
 		"url":        rem[0],

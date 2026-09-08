@@ -192,7 +192,7 @@ func (a *App) ProbeURLImport(rawurl string) (*URLImportProbe, error) {
 		return nil, err
 	}
 	var idx domainIndex
-	if err := json.Unmarshal(data, &idx); err == nil && idx.Groups != nil {
+	if err := json.Unmarshal(stripUTF8BOM(data), &idx); err == nil && idx.Groups != nil {
 		entries := make([]DomainIndexEntry, 0, len(idx.Groups))
 		for _, e := range idx.Groups {
 			if e.ID == "" || e.File == "" {

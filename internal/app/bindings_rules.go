@@ -250,6 +250,7 @@ func (a *App) ImportRules(src string) (*ImportRulesResult, error) {
 		}
 	}
 
+	data = stripUTF8BOM(data) // 容忍 Windows PowerShell 5.1 落盘的 UTF-8 BOM
 	var doc rulesFile
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("不是有效的规则 JSON: %w", err)

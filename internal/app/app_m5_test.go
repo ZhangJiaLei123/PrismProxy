@@ -218,6 +218,30 @@ func TestImportRules_FileReplaceAndValidate(t *testing.T) {
 	}
 }
 
+// TestImportRules_UTF8BOM 回归：Windows PowerShell 5.1 重定向/Out-File 落盘的规则文件带
+// UTF-8 BOM，旧版本 json.Unmarshal 报 BOM 非法字符错误；导入须容忍 BOM（真机实测发现）。
+func TestImportRules_UTF8BOM(t *testing.T) {
+	a := newTestApp(t)
+	doc := rulesFile{
+		Version: 1,
+		FilterGroups: []rules.FilterGroup{
+			{ID: "bomg", Name: "BOM组", Enabled: true, Mode: rules.ModeBlacklist, Hosts: []string{"bom.example"}},
+		},
+	}
+	raw, _ := json.Marshal(doc)
+	data := append([]byte{0xEF, 0xBB, 0xBF}, raw...) // 前置 UTF-8 BOM
+	path := filepath.Join(a.cfgDir, "rules-bom.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ImportRules(path); err != nil {
+		t.Fatalf("带 BOM 的规则文件应导入成功: %v", err)
+	}
+	if len(a.proj.FilterGroups) != 1 || a.proj.FilterGroups[0].ID != "bomg" {
+		t.Fatalf("BOM 导入后规则异常: %#v", a.proj.FilterGroups)
+	}
+}
+
 func TestImportRules_EmbeddedGroupsAndWarnings(t *testing.T) {
 	a := newTestApp(t)
 	// 引用 @adgroup，导入文件内嵌该组清单 → 自动补建且无 warning

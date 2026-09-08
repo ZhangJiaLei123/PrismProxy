@@ -190,8 +190,8 @@ PrismProxy.exe cli rules import rules.json               :: 从本地文件导�
 PrismProxy.exe cli rules import https://example.com/rules.json [--project 项目id]
 ```
 
-- **export `[--embed]`**：把规则导出为规则文件 JSON（`version`/`exportedAt`/`filterGroups`/`decryptRules`/`bypassList`/`groups`）。**JSON 原文直接写到 stdout**（不经结果封装），请用 `> 文件.json` 重定向保存；`--embed` 时把规则组通过 `@组id` 引用到的域名组全文内嵌进 `groups`，便于跨实例迁移。`bypassList`（系统代理绕过列表）是全局环境属性，仅随出供参照。
-- **import `<本地文件路径 | http(s) URL>`**：整体替换目标项目的规则。来源由**运行中的实例读取**（本地路径相对实例工作目录，或 http(s) 下载，限 4MB/20s）；文件内嵌的域名组会自动补建到目标项目 domains 目录；导入前做规则编译预检，非法规则拒绝且不落盘；`bypassList` 字段导入时忽略并给 warning。返回 `{"ok": true, "warnings": [...]}`。当前项目导入立即生效（引擎热重建）；带 `--project` 指向非当前项目时只改文件，切到该项目后生效。
+- **export `[--embed]`**：把规则导出为规则文件 JSON（`version`/`exportedAt`/`filterGroups`/`decryptRules`/`bypassList`/`groups`）。**JSON 原文直接写到 stdout**（不经结果封装），请重定向保存：cmd 用 `PrismProxy.exe cli rules export --embed > rules.json`；**PowerShell 5.1 注意**：原生 `>` 会产生 0 字节文件（管道提前关闭），`Out-File -Encoding utf8` 会写入 UTF-8 BOM，请改用 `cmd /c "PrismProxy.exe cli rules export --embed > rules.json 2>nul"`，或 PowerShell 7（`>` 默认无 BOM）。`--embed` 时把规则组通过 `@组id` 引用到的域名组全文内嵌进 `groups`，便于跨实例迁移。`bypassList`（系统代理绕过列表）是全局环境属性，仅随出供参照。
+- **import `<本地文件路径 | http(s) URL>`**：整体替换目标项目的规则。来源由**运行中的实例读取**（本地路径相对实例工作目录，或 http(s) 下载，限 4MB/20s）；**自动容忍 UTF-8 BOM**（PowerShell 5.1 落盘文件常见）；文件内嵌的域名组会自动补建到目标项目 domains 目录；导入前做规则编译预检，非法规则拒绝且不落盘；`bypassList` 字段导入时忽略并给 warning。返回 `{"ok": true, "warnings": [...]}`。当前项目导入立即生效（引擎热重建）；带 `--project` 指向非当前项目时只改文件，切到该项目后生效。
 
 - **list** 返回 `project`（目标项目 id）、`filterGroups`（过滤规则组，含 id/名称/启用状态/黑白名单模式/hosts/paths/processes 条目）、`decryptRules`（解密规则）、`quickIgnore`（两个内置快捷忽略组的 id）。带 `--project` 时读取并返回**目标项目**的规则（读其 project.json，不影响运行状态）。
 - **ignore** 写入内置「快捷忽略」组（域名组/进程组，组间 OR 互不干扰），幂等（重复添加返回 `{"added": false}`）；**只影响后续新流量，不删存量记录**；立即生效并落盘。
@@ -373,7 +373,7 @@ PrismProxy.exe cli compose https://api.example.com/v1/login --method POST ^
 ```
 
 - 独立直连目标地址发起一次 HTTP 请求（**不走代理监听、不受上游代理影响**），响应与请求要素作为一条**新流**写入列表（`Source=composer`，与抓包流一起出现在 `flows list/watch`），随后可用 `flows get <新id> --body resp` 分析结果。
-- 参数：`--method`（默认 GET）、`--header "K: V"`（**可重复**传多个；单次传值内也可用分号分隔多组，按首个冒号切 key/value——头值本身含分号如 Cookie 时请拆成多次 `--header`）、`--body <字符串>`、`--insecure` / `--skip-verify`（跳过 HTTPS 证书校验）。
+- 参数：`--method`（默认 GET）、`--header "K: V"`（**可重复**传多个；每个值整体作为一个请求头，只按第一个冒号切 key/value，值本身可含分号/冒号，如 `--header "Cookie: a=1; b=2"` 可直接发送）、`--body <字符串>`、`--insecure` / `--skip-verify`（跳过 HTTPS 证书校验）。
 - 典型用法：从现有流 `flows curl <id>` 拿到 cURL，改写参数后用 compose 重放；或直接构造异常请求做边界测试。
 
 ### 3.13 processes — 系统进程枚举

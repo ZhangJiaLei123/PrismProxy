@@ -9,6 +9,7 @@ package app
 // project.json 文件，不改变 currentProject、不触发引擎热切换。
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -746,17 +747,30 @@ func (s *ctlService) ImportDomainGroup(project, gid, source string) (any, error)
 	return map[string]any{"ok": true, "project": id, "id": gid, "count": n}, nil
 }
 
+// stripUTF8BOM 去掉开头的 UTF-8 BOM（Windows PowerShell 5.1 的 `>` / Out-File -Encoding utf8
+// 会给文件加 BOM，导致后续 json.Unmarshal 或首行域名解析失败）。
+func stripUTF8BOM(data []byte) []byte {
+	return bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+}
+
 // fetchSourceBytes 从本地文件或 http(s) URL 读取内容（复用 app 的 httpGet，限 4MB/20s）。
 func fetchSourceBytes(source string) ([]byte, error) {
 	source = strings.TrimSpace(source)
-	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
-		return httpGet(source)
+	isURL := strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
+	var data []byte
+	var err error
+	if isURL {
+		data, err = httpGet(source)
+	} else {
+		data, err = os.ReadFile(source)
 	}
-	data, err := os.ReadFile(source)
 	if err != nil {
+		if isURL {
+			return nil, err // httpGet 已包装为"下载失败: ..."
+		}
 		return nil, fmt.Errorf("读取文件: %w", err)
 	}
-	return data, nil
+	return stripUTF8BOM(data), nil
 }
 
 // ---------- 规则导入导出（M10 补面） ----------

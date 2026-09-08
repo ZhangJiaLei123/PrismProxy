@@ -160,6 +160,7 @@ func WriteUser(userDir, id string, data []byte) (int, error) {
 	if err := ValidateID(id); err != nil {
 		return 0, err
 	}
+	data = stripBOM(data) // 剥 BOM：容忍带 BOM 导入且落盘文件不残留 BOM（Parse 内部也会剥，这里为落盘干净）
 	list := Parse(data)
 	if len(list) == 0 {
 		return 0, fmt.Errorf("未解析到任何域名（每行一个域名，# 为注释）")
@@ -185,9 +186,16 @@ func DeleteUser(userDir, id string) error {
 	return err
 }
 
+// stripBOM 去掉开头的 UTF-8 BOM（Windows PowerShell 5.1 落盘 txt 常带 BOM，
+// 会污染首行域名/标题）。
+func stripBOM(data []byte) []byte {
+	return bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+}
+
 // ParseTitle 提取 txt 标准头部标题行「# 域名组：<名称>」（首个命中即返回）。
 // 标准格式见 domains/alipay.txt 头部注释；无该头的第三方文件返回空串（UI 回退组 id）。
 func ParseTitle(data []byte) string {
+	data = stripBOM(data)
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -207,6 +215,7 @@ func ParseTitle(data []byte) string {
 
 // Parse 解析 txt：每行一个域名，# 注释/空行忽略，统一小写，去重保序
 func Parse(data []byte) []string {
+	data = stripBOM(data)
 	seen := make(map[string]struct{})
 	var out []string
 	sc := bufio.NewScanner(bytes.NewReader(data))
