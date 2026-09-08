@@ -324,16 +324,22 @@ async function onCtxSelect(key: string) {
       await SetFlowPinned(f.ID, !f.Pinned)
     } else if (key === 'ignore-host' && f.Host) {
       const added = await AddQuickIgnore('host', f.Host)
-      if (added) message.success(`已忽略域名 ${f.Host}（含全部子域），后续流量不再显示`, { duration: 4000, closable: true })
-      else message.info(`域名 ${f.Host} 已在忽略列表中`, { duration: 3000, closable: true })
+      if (added) {
+        const n = store.removeIgnored('host', f.Host)
+        message.success(`已忽略域名 ${f.Host}（含全部子域），已从列表清理 ${n} 条相关流量，后续不再显示`, { duration: 4000, closable: true })
+      } else message.info(`域名 ${f.Host} 已在忽略列表中`, { duration: 3000, closable: true })
     } else if (key === 'ignore-proc' && f.ProcessName) {
       const added = await AddQuickIgnore('process', f.ProcessName)
-      if (added) message.success(`已忽略进程 ${f.ProcessName}，该进程后续流量不再显示`, { duration: 4000, closable: true })
-      else message.info(`进程 ${f.ProcessName} 已在忽略列表中`, { duration: 3000, closable: true })
+      if (added) {
+        const n = store.removeIgnored('process', f.ProcessName)
+        message.success(`已忽略进程 ${f.ProcessName}，已从列表清理 ${n} 条相关流量，后续不再显示`, { duration: 4000, closable: true })
+      } else message.info(`进程 ${f.ProcessName} 已在忽略列表中`, { duration: 3000, closable: true })
     } else if (key === 'ignore-path' && f.Path) {
       const added = await AddQuickIgnore('path', f.Path)
-      if (added) message.success('已忽略该路径（含下级路径，通配符 *? 可用），后续流量不再显示', { duration: 4000, closable: true })
-      else message.info('该路径已在忽略列表中', { duration: 3000, closable: true })
+      if (added) {
+        const n = store.removeIgnored('path', f.Path)
+        message.success(`已忽略该路径（含下级路径，通配符 *? 可用），已从列表清理 ${n} 条相关流量，后续不再显示`, { duration: 4000, closable: true })
+      } else message.info('该路径已在忽略列表中', { duration: 3000, closable: true })
     } else if (key === 'composer') {
       store.openComposer(f.ID)
     }

@@ -222,18 +222,31 @@ function seedFlows() {
 }
 seedFlows()
 
+// 实时流过滤判定（与引擎 ShouldDisplay 黑名单语义对齐）：
+// host=自身+全部子域；proc=精确；path=精确或段边界前缀（Path 去 query）。
+// 注意：mock 只过滤"后续新流"，已在列表中的存量流由前端 store 在添加忽略后统一清理
+// （真实后端 AddQuickIgnore 同样只热更新引擎、不回溯清理存量流）。
+function isIgnored(rec: FlowRec): boolean {
+  const host = rec.meta.Host || ''
+  // host：去掉末尾端口再做自身+子域比较（与后端 hostOnly / 前端 removeIgnored 口径一致）
+  const stripPort = (h: string) => h.replace(/:\d+$/, '').toLowerCase()
+  const h0 = stripPort(host)
+  if ([...state.ignoreHosts].some((h) => { const d = stripPort(h); return h0 === d || h0.endsWith('.' + d) })) return true
+  // 进程：大小写不敏感精确匹配（与后端 EqualFold 一致）
+  if (rec.meta.ProcessName && [...state.ignoreProcs].some((p) => p.toLowerCase() === rec.meta.ProcessName.toLowerCase())) return true
+  const p = (rec.meta.Path || '').split('?')[0]
+  for (const ip of state.ignorePaths) {
+    if (p === ip || p.startsWith(ip + '/')) return true
+  }
+  return false
+}
+
 // 实时流：每 8 秒一条模拟抓包（预览列表动效；间隔留足 UI 交互窗口）
 let liveSeq = 100
 setInterval(() => {
   if (!state.proxyRunning || !state.currentProjectId) return
   const rec = makeFlow(now(), liveSeq++, 'live-' + Date.now())
-  if (state.ignoreHosts.has(rec.meta.Host) || state.ignoreProcs.has(rec.meta.ProcessName)) return
-  // 路径忽略：精确或段边界前缀（与引擎 pathMatcher 非通配形态一致；引擎按不含 query 的 u.Path 判定）
-  const rawPath = rec.meta.Path || ''
-  const p = rawPath.split('?')[0]
-  for (const ip of state.ignorePaths) {
-    if (p === ip || p.startsWith(ip + '/')) return
-  }
+  if (isIgnored(rec)) return
   pushFlow(rec)
   if (state.flows.length > 2000) state.flows.length = 2000
 }, 8000)

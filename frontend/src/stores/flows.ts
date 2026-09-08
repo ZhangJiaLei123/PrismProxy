@@ -109,5 +109,41 @@ export const useFlowsStore = defineStore('flows', {
       this.rebuildIndex()
       if (!this.index.has(this.selectedId)) this.selectedId = ''
     },
+    // 快捷忽略生效后，清理列表中已存在的匹配流（后端引擎只过滤后续新流，不回溯清理存量；
+    // 匹配语义对齐 rules.Engine：host=自身+全部子域，process=不区分大小写精确，
+    // path=精确或段边界前缀。置顶流命中同样移除——黑名单命中即不应再显示）。
+    // 返回被移除条数（含置顶）。
+    removeIgnored(kind: 'host' | 'path' | 'process', rawValue: string): number {
+      const value = rawValue.trim()
+      if (!value) return 0
+      const hit = (m: app.FlowMeta): boolean => {
+        if (kind === 'host') {
+          // f.Host = ServerAddr 形如 host:port；与后端 hostOnly/normalizeQuickIgnoreHost 对齐：
+          // 先去末尾端口、转小写、去尾点/去 *. 前缀，再做自身+子域比较
+          const stripPort = (h: string) => h.replace(/:\d+$/, '')
+          const host = stripPort((m.Host || '').toLowerCase()).replace(/\.$/, '')
+          const dom = stripPort(value.toLowerCase()).replace(/\.$/, '').replace(/^\*\./, '')
+          return !!host && (host === dom || host.endsWith('.' + dom))
+        }
+        if (kind === 'process') {
+          return !!m.ProcessName && m.ProcessName.toLowerCase() === value.toLowerCase()
+        }
+        // path：引擎按不含 query/fragment 的路径判定，精确或段边界前缀
+        const norm = (p: string) => p.split(/[?#]/)[0]
+        let p = norm(value)
+        if (p && !p.startsWith('/')) p = '/' + p
+        if (!p || p === '/') return false // 与后端一致：裸 / 不构成有效快捷忽略
+        const mp = norm(m.Path || '')
+        return mp === p || mp.startsWith(p + '/')
+      }
+      const before = this.flows.length
+      this.flows = this.flows.filter((f) => !hit(f))
+      const removed = before - this.flows.length
+      if (removed > 0) {
+        this.rebuildIndex()
+        if (!this.index.has(this.selectedId)) this.selectedId = ''
+      }
+      return removed
+    },
   },
 })
