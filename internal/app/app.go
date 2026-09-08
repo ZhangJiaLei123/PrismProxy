@@ -82,69 +82,66 @@ func NewApp(addr string, noMITM bool) *App {
 		log.Printf("全局配置损坏，使用默认全局配置: %v", err)
 		gcfg = settings.DefaultGlobal()
 	}
-	// 全新安装/迁移失败兜底：清单为空时创建「默认项目」并落盘
-	if len(gcfg.Projects) == 0 {
-		if err := settings.EnsureDefaultProject(cfgDir, gcfg); err != nil {
-			log.Printf("创建默认项目失败: %v", err)
-		} else if serr := gcfg.SaveGlobal(cfgDir); serr != nil {
-			log.Printf("全局配置落盘失败: %v", serr)
-		}
-	}
-	// 极端兜底（如磁盘不可写）：内存态默认项目保证程序可用，规则不落盘
-	if len(gcfg.Projects) == 0 {
-		gcfg.Projects = []settings.ProjectMeta{{ID: "default", Name: "默认项目"}}
-		gcfg.CurrentProject = "default"
-	}
-
-	// currentProject 校验：不在清单或目录缺失时回退清单第一个并落盘修正（设计 §5.1）
-	meta := gcfg.Projects[0]
-	valid := false
-	for _, m := range gcfg.Projects {
-		if m.ID == gcfg.CurrentProject {
-			meta = m
-			if info, err := os.Stat(settings.ProjectDir(cfgDir, m.ID)); err == nil && info.IsDir() {
-				valid = true
+	// M11：清单为空 = 无打开项目态（欢迎页）。不再自动创建「默认项目」——
+	// 首次启动直接进欢迎页由用户新建；全部项目删完后同样回到此态。
+	var proj *settings.ProjectConfig
+	var groups *domains.Groups
+	if len(gcfg.Projects) > 0 {
+		// currentProject 校验：不在清单或目录缺失时回退清单第一个并落盘修正（设计 §5.1）
+		meta := gcfg.Projects[0]
+		valid := false
+		for _, m := range gcfg.Projects {
+			if m.ID == gcfg.CurrentProject {
+				meta = m
+				if info, err := os.Stat(settings.ProjectDir(cfgDir, m.ID)); err == nil && info.IsDir() {
+					valid = true
+				}
+				break
 			}
-			break
 		}
-	}
-	if !valid {
-		log.Printf("当前项目 %q 无效，回退到 %q", gcfg.CurrentProject, gcfg.Projects[0].ID)
-		meta = gcfg.Projects[0]
-		gcfg.CurrentProject = meta.ID
-		if serr := gcfg.SaveGlobal(cfgDir); serr != nil {
-			log.Printf("回退当前项目落盘失败: %v", serr)
+		if !valid {
+			log.Printf("当前项目 %q 无效，回退到 %q", gcfg.CurrentProject, gcfg.Projects[0].ID)
+			meta = gcfg.Projects[0]
+			gcfg.CurrentProject = meta.ID
+			if serr := gcfg.SaveGlobal(cfgDir); serr != nil {
+				log.Printf("回退当前项目落盘失败: %v", serr)
+			}
 		}
-	}
 
-	proj, err := settings.LoadProjectConfig(cfgDir, meta.ID, meta.Name)
-	if err != nil {
-		log.Printf("项目配置损坏，使用空白默认: %v", err)
-		proj = settings.DefaultProjectConfig(meta.ID, meta.Name)
-	}
-	proj.Name = meta.Name // 显示名以清单为准
-	// 旧 captureRules/processRules → filterGroups 迁移（规则设计 §六）：迁移即落盘一次
-	if proj.Migrate() {
-		if serr := settings.SaveProjectConfig(cfgDir, proj); serr != nil {
-			log.Printf("迁移项目配置落盘失败（内存态已迁移）: %v", serr)
+		p, err := settings.LoadProjectConfig(cfgDir, meta.ID, meta.Name)
+		if err != nil {
+			log.Printf("项目配置损坏，使用空白默认: %v", err)
+			p = settings.DefaultProjectConfig(meta.ID, meta.Name)
 		}
-	}
+		p.Name = meta.Name // 显示名以清单为准
+		// 旧 captureRules/processRules → filterGroups 迁移（规则设计 §六）：迁移即落盘一次
+		if p.Migrate() {
+			if serr := settings.SaveProjectConfig(cfgDir, p); serr != nil {
+				log.Printf("迁移项目配置落盘失败（内存态已迁移）: %v", serr)
+			}
+		}
+		proj = p
 
-	groups, gerr := domains.LoadUser(settings.ProjectDomainsDir(cfgDir, proj.ID))
-	if gerr != nil {
-		groups = nil // 域名组缺失不致命：@组名 引用将不匹配
+		g, gerr := domains.LoadUser(settings.ProjectDomainsDir(cfgDir, proj.ID))
+		if gerr != nil {
+			g = nil // 域名组缺失不致命：@组名 引用将不匹配
+		}
+		groups = g
 	}
 
 	eng := &rules.Holder{}
-	var gmap map[string][]string
-	if groups != nil {
-		gmap = groups.Domains
-	}
-	// 编译失败兜底：log warn + 空引擎全放行（规则设计 §5.3）
-	if e, err := rules.NewEngine(proj.FilterGroups, proj.DecryptRules, gmap); err == nil {
-		eng.Set(e)
-	} else {
-		log.Printf("过滤规则编译失败，当前过滤未生效（全量显示）: %v", err)
+	// 无项目态：eng 保持 nil Engine（ShouldDisplay 默认全放行；欢迎页不展示流列表）。
+	// 编译失败兜底：log warn + 空引擎全放行（规则设计 §5.3）。
+	if proj != nil {
+		var gmap map[string][]string
+		if groups != nil {
+			gmap = groups.Domains
+		}
+		if e, err := rules.NewEngine(proj.FilterGroups, proj.DecryptRules, gmap); err == nil {
+			eng.Set(e)
+		} else {
+			log.Printf("过滤规则编译失败，当前过滤未生效（全量显示）: %v", err)
+		}
 	}
 
 	if addr == "" {
@@ -249,11 +246,28 @@ func (a *App) restoreSystemProxy() {
 
 func (a *App) backupFile() string { return filepath.Join(a.cfgDir, "sysproxy-backup.json") }
 
-// projDir 当前项目目录 config/projects/<id>/（M9）
-func (a *App) projDir() string { return settings.ProjectDir(a.cfgDir, a.proj.ID) }
+// projDir 当前项目目录 config/projects/<id>/（M9）；无打开项目（M11 欢迎页态）返回空串。
+// 调用方必须先判断有当前项目（无项目态不应需要项目目录；dbPath 已自行守卫）。
+func (a *App) projDir() string {
+	if a.proj == nil {
+		return ""
+	}
+	return settings.ProjectDir(a.cfgDir, a.proj.ID)
+}
 
-// currentMeta 当前项目清单项（调用方持 projMu 或接受弱一致读）
+// currentID 当前项目 id；无打开项目返回空串（M11）。
+func (a *App) currentID() string {
+	if a.proj == nil {
+		return ""
+	}
+	return a.proj.ID
+}
+
+// currentMeta 当前项目清单项（调用方持 projMu 或接受弱一致读）；无打开项目返回零值。
 func (a *App) currentMeta() settings.ProjectMeta {
+	if a.proj == nil {
+		return settings.ProjectMeta{}
+	}
 	for _, m := range a.gcfg.Projects {
 		if m.ID == a.proj.ID {
 			return m

@@ -3,6 +3,7 @@ package ctlapi
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -12,6 +13,10 @@ import (
 	"strings"
 	"time"
 )
+
+// errOutputHandled 哨兵：处理器已自行向 stdout 输出原文（如 rules export），
+// RunCLI 不再做 JSON 结果封装打印（否则尾随 null 破坏重定向文件）。
+var errOutputHandled = errors.New("output already handled")
 
 // RunCLI 执行 `cli` 子命令（args 为 "cli" 之后的参数）。
 // 成功时 JSON 结果打印到 stdout；错误信息打印到 stderr 并以非零码退出。
@@ -92,6 +97,9 @@ func RunCLI(configDir string, args []string) int {
 		return 2
 	}
 	if err != nil {
+		if errors.Is(err, errOutputHandled) {
+			return 0 // 处理器已自行输出原文（rules export），无需封装打印
+		}
 		fmt.Fprintln(os.Stderr, "错误:", err)
 		return 1
 	}
@@ -137,7 +145,8 @@ func printCLIUsage(w io.Writer) {
   project switch <id|名称>               切换当前项目（运行中热切换，规则与流量历史随之切换）
   project create <名称> [--from id|名称] 新建项目并切换；--from 从指定项目复制规则+域名组
   project rename <id|名称> <新名称>      重命名项目（名称含空格时用 --name 指定新名）
-  project delete <id|名称>               删除项目（当前项目不可删）
+  project delete <id|名称>               删除项目（删当前项目后自动打开剩余首个；无剩余则进欢迎页）
+  project close                         关闭当前项目（不删除），进入欢迎页态
   rules list                             过滤规则组 + 解密规则
   rules ignore host <域名>               快捷忽略域名（自身+全部子域）
   rules ignore process <进程名>          快捷忽略进程
@@ -247,23 +256,24 @@ func cliRules(c *client, pos []string) (any, error) {
 	}
 	// 导入导出为独立动作（不与 list 共用 flagSet）
 	if sub == "export" {
-		embed := false
-		for _, a := range args {
-			if a == "--embed" || a == "-embed" {
-				embed = true
-			}
+		fs := flag.NewFlagSet("rules-export", flag.ContinueOnError)
+		embed := fs.Bool("embed", false, "导出时内嵌规则引用到的域名组全文")
+		if err := fs.Parse(reorderFlags(args)); err != nil {
+			return nil, err
+		}
+		if rem := fs.Args(); len(rem) > 0 {
+			return nil, fmt.Errorf("export 不接受位置参数: %s", strings.Join(rem, " "))
 		}
 		path := "/rules/export"
 		q := ""
-		if embed {
+		if *embed {
 			q = "embed=1"
 		}
 		if c.project != "" {
-			sep := ""
 			if q != "" {
-				sep = "&"
+				q += "&"
 			}
-			q += sep + "project=" + url.QueryEscape(c.project)
+			q += "project=" + url.QueryEscape(c.project)
 		}
 		if q != "" {
 			path += "?" + q
@@ -273,8 +283,10 @@ func cliRules(c *client, pos []string) (any, error) {
 			return nil, err
 		}
 		// 规则文件原文直出 stdout（供 > file.json 重定向保存），不走结果封装
-		os.Stdout.Write(append(raw, '\n'))
-		return nil, nil
+		if _, err := os.Stdout.Write(append(raw, '\n')); err != nil {
+			return nil, fmt.Errorf("写出失败: %w", err)
+		}
+		return nil, errOutputHandled
 	}
 	if sub == "import" {
 		if len(args) < 1 {
@@ -457,8 +469,10 @@ func cliProject(c *client, pos []string) (any, error) {
 			return nil, fmt.Errorf("用法: project delete <id|名称>")
 		}
 		return c.post("/projects", map[string]any{"action": "delete", "id": strings.Join(args, " ")})
+	case "close":
+		return c.post("/projects", map[string]any{"action": "close"})
 	default:
-		return nil, fmt.Errorf("未知 project 子命令: %s（list|switch|create|rename|delete）", sub)
+		return nil, fmt.Errorf("未知 project 子命令: %s（list|switch|create|rename|delete|close）", sub)
 	}
 }
 
@@ -567,11 +581,22 @@ func cliDomains(c *client, pos []string) (any, error) {
 
 // ---------- 调试重发（Composer，M10 补面） ----------
 
+// repeatHeader 支持 --header 可重复传入（每次一个 "Key: Value"）；
+// 单次传值内也可用分号分隔多个头（值本身含分号时请拆成多次 --header，如 Cookie）。
+type repeatHeader []string
+
+func (h *repeatHeader) String() string { return strings.Join(*h, "; ") }
+func (h *repeatHeader) Set(v string) error {
+	*h = append(*h, v)
+	return nil
+}
+
 func cliCompose(c *client, pos []string) (any, error) {
 	args := pos[1:]
 	fs := flag.NewFlagSet("compose", flag.ContinueOnError)
 	method := fs.String("method", "GET", "HTTP 方法")
-	header := fs.String("header", "", "请求头，可重复：Key: Value（多次用分号 ; 分隔）")
+	var headers repeatHeader
+	fs.Var(&headers, "header", "请求头，可重复：--header 'Key: Value'（单次传值内也可用 ; 分隔多个）")
 	body := fs.String("body", "", "请求体（字符串）")
 	insecure := fs.Bool("insecure", false, "跳过 HTTPS 证书校验（等同 --skip-verify）")
 	skipVerify := fs.Bool("skip-verify", false, "跳过 HTTPS 证书校验")
@@ -580,22 +605,22 @@ func cliCompose(c *client, pos []string) (any, error) {
 	}
 	rem := fs.Args()
 	if len(rem) < 1 {
-		return nil, fmt.Errorf("用法: compose <URL> [--method GET] [--header 'K: V; K2: V2'] [--body 内容] [--insecure]")
+		return nil, fmt.Errorf("用法: compose <URL> [--method GET] [--header 'Key: Value']... [--body 内容] [--insecure]")
 	}
-	var headers []map[string]string
-	if strings.TrimSpace(*header) != "" {
-		for _, h := range strings.Split(*header, ";") {
+	var hs []map[string]string
+	for _, group := range headers {
+		for _, h := range strings.Split(group, ";") {
 			k, v, ok := strings.Cut(h, ":")
 			if !ok {
-				return nil, fmt.Errorf("--header 格式须为 'Key: Value'（多个用 ; 分隔）: %q", h)
+				return nil, fmt.Errorf("--header 格式须为 'Key: Value'（多个用 ; 分隔，或重复 --header）: %q", h)
 			}
-			headers = append(headers, map[string]string{"key": strings.TrimSpace(k), "value": strings.TrimSpace(v)})
+			hs = append(hs, map[string]string{"key": strings.TrimSpace(k), "value": strings.TrimSpace(v)})
 		}
 	}
 	return c.post("/compose", map[string]any{
 		"url":        rem[0],
 		"method":     *method,
-		"headers":    headers,
+		"headers":    hs,
 		"body":       *body,
 		"skipVerify": *insecure || *skipVerify,
 	})

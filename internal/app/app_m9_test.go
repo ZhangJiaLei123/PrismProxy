@@ -155,30 +155,102 @@ func TestCreateProjectCopiesRulesNoDB(t *testing.T) {
 	}
 }
 
-func TestDeleteProjectConstraints(t *testing.T) {
+// TestDeleteProjectAllAllowed M11：放开「至少保留一个」「当前项目不可删」——
+// 删当前项目后自动打开首个剩余项目；全部删完进入无打开项目态（欢迎页）。
+func TestDeleteProjectAllAllowed(t *testing.T) {
 	a := newTestApp(t)
+	a.rec.GenFunc = func() uint64 { return a.projGen.Load() }
 	a.gcfg.Projects = []settings.ProjectMeta{
 		{ID: "default", Name: "A"},
 		{ID: "pb", Name: "B"},
 	}
 	a.gcfg.CurrentProject = "default"
 
-	// 当前项目不可删
-	if err := a.DeleteProject("default"); err == nil {
-		t.Fatal("当前项目应不可删")
-	}
-	// 切到 B 后可删 A；只剩一个时不可删
-	if err := a.SwitchProject("pb"); err != nil {
-		t.Fatal(err)
-	}
+	// 删当前项目（default）：自动打开首个剩余项目 pb
 	if err := a.DeleteProject("default"); err != nil {
-		t.Fatalf("删除非当前项目失败: %v", err)
+		t.Fatalf("删除当前项目应允许: %v", err)
 	}
 	if _, err := os.Stat(settings.ProjectDir(a.cfgDir, "default")); !os.IsNotExist(err) {
 		t.Fatalf("删除后目录应清除: err=%v", err)
 	}
-	if err := a.DeleteProject("pb"); err == nil {
-		t.Fatal("最后一个项目应不可删")
+	if a.proj == nil || a.proj.ID != "pb" || a.gcfg.CurrentProject != "pb" {
+		t.Fatalf("删当前项目后应自动打开首个剩余项目: proj=%v gcfg=%s", a.proj, a.gcfg.CurrentProject)
+	}
+
+	// 删最后一个项目：进入无打开项目态
+	if err := a.DeleteProject("pb"); err != nil {
+		t.Fatalf("删除最后一个项目应允许: %v", err)
+	}
+	if a.proj != nil || a.groups != nil || a.gcfg.CurrentProject != "" {
+		t.Fatalf("全部删完应进入无项目态: proj=%v groups=%v current=%q", a.proj, a.groups, a.gcfg.CurrentProject)
+	}
+	if len(a.gcfg.Projects) != 0 {
+		t.Fatalf("清单应为空: %#v", a.gcfg.Projects)
+	}
+	// 无项目态引擎全放行（nil Engine 默认 true）
+	if !a.eng.Get().ShouldDisplay("x.example", "https://x.example/", "") {
+		t.Fatal("无项目态引擎应全放行")
+	}
+}
+
+// TestCloseProjectEntersNoProjectState M11：CloseProject 关闭当前项目进入欢迎页态，
+// 项目仍在清单中可重新打开；无项目时调用幂等。
+func TestCloseProjectEntersNoProjectState(t *testing.T) {
+	a := newTestApp(t)
+	a.rec.GenFunc = func() uint64 { return a.projGen.Load() }
+	a.gcfg.Projects = []settings.ProjectMeta{{ID: "default", Name: "A"}}
+	a.gcfg.CurrentProject = "default"
+	a.st.Add(testFlow("f1"))
+
+	if err := a.CloseProject(); err != nil {
+		t.Fatalf("CloseProject: %v", err)
+	}
+	if a.proj != nil || a.groups != nil || a.gcfg.CurrentProject != "" {
+		t.Fatalf("关闭后应进入无项目态: proj=%v current=%q", a.proj, a.gcfg.CurrentProject)
+	}
+	if len(a.st.List()) != 0 {
+		t.Fatal("关闭项目应清空内存流量")
+	}
+	if len(a.gcfg.Projects) != 1 {
+		t.Fatalf("关闭不应删除清单项目: %#v", a.gcfg.Projects)
+	}
+	// 幂等：无项目时再关不报错
+	if err := a.CloseProject(); err != nil {
+		t.Fatalf("无项目态 CloseProject 应幂等: %v", err)
+	}
+	// 重新打开项目
+	if err := a.SwitchProject("default"); err != nil {
+		t.Fatalf("重新打开项目失败: %v", err)
+	}
+	if a.proj == nil || a.proj.ID != "default" {
+		t.Fatalf("重新打开后当前项目应为 default: %v", a.proj)
+	}
+}
+
+// TestNoProjectStateGuards M11：无打开项目时规则/域名组写操作返回明确错误而非 panic
+func TestNoProjectStateGuards(t *testing.T) {
+	a := newTestApp(t)
+	a.gcfg.Projects = nil
+	a.gcfg.CurrentProject = ""
+	a.proj = nil
+	a.groups = nil
+	a.eng.Set(nil)
+
+	if _, err := a.AddQuickIgnore("host", "x.example"); err == nil {
+		t.Fatal("无项目态 AddQuickIgnore 应报错")
+	}
+	if _, err := a.ExportRules(false); err == nil {
+		t.Fatal("无项目态 ExportRules 应报错")
+	}
+	if err := a.DeleteDomainGroup("g1"); err == nil {
+		t.Fatal("无项目态 DeleteDomainGroup 应报错")
+	}
+	if _, err := a.SaveDomainGroupText("g1", "x.example\n"); err == nil {
+		t.Fatal("无项目态保存域名组应报错")
+	}
+	// 读操作安全返回空
+	if len(a.ListDomainGroupDetails()) != 0 {
+		t.Fatal("无项目态域名组列表应为空")
 	}
 }
 

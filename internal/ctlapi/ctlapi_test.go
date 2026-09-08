@@ -30,6 +30,12 @@ type fakeService struct {
 	savedSettings []byte
 	projSeen      string // 最近一次规则/设置调用的 project 参数
 	switchTo      string
+
+	pinID      string // 最近一次 SetFlowPinned 调用
+	pinPinned  bool
+	pinCalls   int
+	curlID     string
+	curlShell  string
 }
 
 func (f *fakeService) Status() map[string]any {
@@ -113,6 +119,7 @@ func (f *fakeService) RenameProject(idOrName, name string) (any, error) {
 	return map[string]any{"ok": true, "id": idOrName, "name": name}, nil
 }
 func (f *fakeService) DeleteProject(idOrName string) error { return nil }
+func (f *fakeService) CloseProject() error                 { return nil }
 func (f *fakeService) UIClear() (int, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -158,8 +165,16 @@ func (f *fakeService) ExportRules(project string, embedGroups bool) (json.RawMes
 func (f *fakeService) ImportRules(project, src string) ([]string, error) {
 	return nil, nil
 }
-func (f *fakeService) SetFlowPinned(id string, pinned bool) error { return nil }
+func (f *fakeService) SetFlowPinned(id string, pinned bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pinID, f.pinPinned, f.pinCalls = id, pinned, f.pinCalls+1
+	return nil
+}
 func (f *fakeService) BuildCurl(id, shell string) (any, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.curlID, f.curlShell = id, shell
 	return map[string]any{"command": "curl " + id, "shell": shell}, nil
 }
 func (f *fakeService) Compose(raw json.RawMessage) (any, error) {
@@ -281,6 +296,57 @@ func TestFlowsClearEndpoint(t *testing.T) {
 	}
 	if svc.cleared != 1 {
 		t.Fatalf("ClearFlows 应被调用 1 次，得 %d", svc.cleared)
+	}
+}
+
+// POST /flows/{id}/pin → SetFlowPinned；GET /flows/{id}/curl → BuildCurl
+// 回归（H1）：handleFlowSub 曾有顶层 GET 守卫把 POST pin 一律 405，方法校验须下沉各分支
+func TestFlowPinCurlEndpoints(t *testing.T) {
+	svc := &fakeService{}
+	_, addr, token := startTestServer(t, svc)
+
+	// pin 置顶（POST）
+	code, m := doRequest(t, "POST", addr, token, "/flows/f1/pin", strings.NewReader(`{"pinned":true}`))
+	if code != 200 {
+		t.Fatalf("POST /flows/f1/pin 应 200，得 %d (%v)", code, m)
+	}
+	if m["pinned"] != true || m["id"] != "f1" {
+		t.Fatalf("pin 响应异常: %v", m)
+	}
+	if svc.pinID != "f1" || !svc.pinPinned || svc.pinCalls != 1 {
+		t.Fatalf("SetFlowPinned 调用错误: %s %v %d", svc.pinID, svc.pinPinned, svc.pinCalls)
+	}
+
+	// pin 取消（POST pinned:false）
+	code, _ = doRequest(t, "POST", addr, token, "/flows/f1/pin", strings.NewReader(`{"pinned":false}`))
+	if code != 200 || svc.pinPinned || svc.pinCalls != 2 {
+		t.Fatalf("取消置顶错误: code=%d pinned=%v calls=%d", code, svc.pinPinned, svc.pinCalls)
+	}
+
+	// pin 用 GET 应 405（校验下沉到 pin 分支）
+	if code, _ := doRequest(t, "GET", addr, token, "/flows/f1/pin", nil); code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET pin 应 405，得 %d", code)
+	}
+
+	// curl（GET，默认 powershell）
+	code, m = doRequest(t, "GET", addr, token, "/flows/f1/curl", nil)
+	if code != 200 || m["shell"] != "powershell" || svc.curlID != "f1" || svc.curlShell != "powershell" {
+		t.Fatalf("curl 响应/调用异常: code=%d m=%v id=%s shell=%s", code, m, svc.curlID, svc.curlShell)
+	}
+	// curl 指定 shell
+	code, _ = doRequest(t, "GET", addr, token, "/flows/f2/curl?shell=bash", nil)
+	if code != 200 || svc.curlID != "f2" || svc.curlShell != "bash" {
+		t.Fatalf("curl?shell=bash 错误: code=%d id=%s shell=%s", code, svc.curlID, svc.curlShell)
+	}
+
+	// curl 用 POST 应 405
+	if code, _ := doRequest(t, "POST", addr, token, "/flows/f1/curl", strings.NewReader("{}")); code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST curl 应 405，得 %d", code)
+	}
+
+	// GET /flows/{id} 单流详情仍正常（GET 校验下沉到 len(parts)==1 分支）
+	if code, _ := doRequest(t, "GET", addr, token, "/flows/f1", nil); code != 200 {
+		t.Fatalf("GET /flows/f1 应 200，得 %d", code)
 	}
 }
 

@@ -51,8 +51,13 @@ type DomainGroupImportResult struct {
 	Count int    `json:"count"`
 }
 
-// userDomainsDir 当前项目用户域名组目录（调用方须持 projMu）
-func (a *App) userDomainsDir() string { return settings.ProjectDomainsDir(a.cfgDir, a.proj.ID) }
+// userDomainsDir 当前项目用户域名组目录（调用方须持 projMu）；无打开项目返回空串
+func (a *App) userDomainsDir() string {
+	if a.proj == nil {
+		return ""
+	}
+	return settings.ProjectDomainsDir(a.cfgDir, a.proj.ID)
+}
 
 // ListDomainGroupDetails 域名组管理列表（含条数与自定义标记，按 id 排序）
 func (a *App) ListDomainGroupDetails() []DomainGroupInfo {
@@ -258,6 +263,10 @@ func (a *App) ImportDomainGroupsFromIndex(rawurl string, ids []string, overwrite
 	// ---- 阶段二（projMu 内）：写文件 + 热更新；skip 判定在锁内做，与切换串行保证目录一致 ----
 	a.projMu.Lock()
 	defer a.projMu.Unlock()
+	if a.proj == nil {
+		emitImportProgress(a.ctx, total, total, "", true)
+		return results, fmt.Errorf("尚未打开任何项目，请先从欢迎页新建或打开项目")
+	}
 	for i, id := range unique {
 		if results[i].Err != "" {
 			emitImportProgress(a.ctx, i+1, total, id, false)
@@ -376,6 +385,10 @@ func (a *App) SaveDomainGroupText(id, content string) (*DomainGroupImportResult,
 
 // reloadGroups 重载用户导入的域名组并热更新规则引擎（调用方须持 projMu）
 func (a *App) reloadGroups() error {
+	if a.proj == nil {
+		a.groups = nil
+		return a.rebuildEngine()
+	}
 	g, err := domains.LoadUser(a.userDomainsDir())
 	if err != nil {
 		return err

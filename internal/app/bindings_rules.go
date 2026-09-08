@@ -34,6 +34,9 @@ const (
 func (a *App) AddQuickIgnore(target, value string) (bool, error) {
 	a.projMu.Lock()
 	defer a.projMu.Unlock()
+	if a.proj == nil {
+		return false, fmt.Errorf("尚未打开任何项目，请先从欢迎页新建或打开项目")
+	}
 	added, err := addQuickIgnoreTo(a.proj, target, value)
 	if err != nil || !added {
 		return added, err
@@ -144,6 +147,10 @@ type rulesFile struct {
 // 便于跨机分享。返回保存路径（用户取消返回空串）。
 func (a *App) ExportRules(embedGroups bool) (string, error) {
 	a.projMu.Lock()
+	if a.proj == nil {
+		a.projMu.Unlock()
+		return "", fmt.Errorf("尚未打开任何项目，无规则可导出")
+	}
 	fg := append([]rules.FilterGroup(nil), a.proj.FilterGroups...)
 	dr := append([]rules.DecryptRule(nil), a.proj.DecryptRules...)
 	bp := append([]string(nil), a.gcfg.BypassList...)
@@ -261,6 +268,10 @@ func (a *App) ImportRules(src string) (*ImportRulesResult, error) {
 	a.projMu.Lock()
 	defer a.projMu.Unlock()
 
+	if a.proj == nil {
+		return nil, fmt.Errorf("尚未打开任何项目，请先从欢迎页新建或打开项目")
+	}
+
 	// 内嵌域名组 → 补建用户域名组（当前项目目录；含内嵌清单则引用不再缺失）
 	built := 0
 	for id, list := range doc.Groups {
@@ -320,6 +331,9 @@ func (a *App) AddDecryptBypass(host string) error {
 	}
 	a.projMu.Lock()
 	defer a.projMu.Unlock()
+	if a.proj == nil {
+		return fmt.Errorf("尚未打开任何项目，请先从欢迎页新建或打开项目")
+	}
 	a.proj.DecryptRules = append(a.proj.DecryptRules, rules.DecryptRule{Action: rules.ActionBypass, Host: host})
 	if err := settings.SaveProjectConfig(a.cfgDir, a.proj); err != nil {
 		return err

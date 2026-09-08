@@ -33,14 +33,19 @@ type persistOwner struct {
 
 // dbPath 持久化数据库路径：M9 起每项目独立 DB（config/projects/<id>/prism.db），
 // 废弃 persist.dbPath 自定义路径。调用方需持有 projMu（或处于启动单线程期）。
+// 无打开项目（M11 欢迎页态）返回空串——该态无库可落，调用方必须先判断。
 func (a *App) dbPath() string {
+	if a.proj == nil {
+		return ""
+	}
 	return filepath.Join(a.projDir(), settings.DefaultDBPath)
 }
 
 // initPersist 启动时按配置开启持久化（默认关闭）：打开 DB、挂订阅、加载最近历史入 store。
+// 无打开项目（M11 欢迎页态）无库可落，跳过——创建/切换到项目时由 switchPersist 开启。
 func (a *App) initPersist() {
 	cfg := a.gcfg.Persist
-	if !cfg.Enabled {
+	if !cfg.Enabled || a.proj == nil {
 		return
 	}
 	w, err := persist.Open(a.dbPath(), cfg.RetainDays, cfg.MaxMB)
@@ -171,8 +176,9 @@ func (a *App) applyPersist(cfg settings.PersistConfig) error {
 func (a *App) switchPersist() {
 	a.stopPersist()
 
+	// 无打开项目（M11 关闭项目态）：只停旧库，不开新库。
 	cfg := a.gcfg.Persist
-	if !cfg.Enabled {
+	if !cfg.Enabled || a.proj == nil {
 		return
 	}
 	w, err := persist.Open(a.dbPath(), cfg.RetainDays, cfg.MaxMB)

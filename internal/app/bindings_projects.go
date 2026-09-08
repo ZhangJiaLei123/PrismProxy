@@ -44,7 +44,7 @@ func (a *App) SwitchProject(id string) error {
 // 步骤序相对设计 §5.2 的调整：配置加载/域名组/规则预编译全部作为 preflight 放在
 // 代际推进（projGen++）之前，任一步失败整体拒绝切换。
 func (a *App) switchProjectLocked(id string) error {
-	if id == a.proj.ID {
+	if a.proj != nil && id == a.proj.ID {
 		return nil // 幂等：已在当前项目
 	}
 	var meta settings.ProjectMeta
@@ -157,7 +157,7 @@ func (a *App) RenameProject(id, name string) error {
 	}
 	a.gcfg.Projects[idx].Name = uniq
 
-	isCurrent := id == a.proj.ID
+	isCurrent := a.proj != nil && id == a.proj.ID
 	if isCurrent {
 		a.proj.Name = uniq
 		if err := settings.SaveProjectConfig(a.cfgDir, a.proj); err != nil {
@@ -190,17 +190,42 @@ func (a *App) RenameProject(id, name string) error {
 	return nil
 }
 
-// DeleteProject 删除项目（不能删当前项目；至少保留一个）
+// CloseProject 关闭当前打开的项目（不删除）：清空内存流、卸载规则引擎与域名组、
+// 关闭项目库，进入「无打开项目」态（前端回到欢迎页）。项目仍在清单中，可重新打开。
+func (a *App) CloseProject() error {
+	a.projMu.Lock()
+	defer a.projMu.Unlock()
+	if a.proj == nil {
+		return nil // 幂等：已无打开项目
+	}
+	a.enterNoProjectLocked()
+	a.emitProjectChanged()
+	log.Printf("已关闭项目，进入欢迎页态")
+	return nil
+}
+
+// enterNoProjectLocked 进入无打开项目态（调用方持 projMu）：
+// 代际推进（旧代际在途流终态丢弃）→ 清空内存流 → 停项目库 → 卸载规则/域名组 →
+// 落盘空当前项目指针。进入后不再失败（无 preflight）。
+func (a *App) enterNoProjectLocked() {
+	a.projGen.Add(1)
+	a.st.ClearAll()
+	a.proj = nil
+	a.groups = nil
+	a.switchPersist()       // 停旧 writer，无新项目不开库
+	a.eng.Set(nil)          // 卸载规则引擎（nil Engine ShouldDisplay 默认全放行）
+	a.gcfg.CurrentProject = ""
+	if serr := a.gcfg.SaveGlobal(a.cfgDir); serr != nil {
+		log.Printf("关闭项目落盘失败（内存态已关闭，重启后回到原项目）: %v", serr)
+	}
+}
+
+// DeleteProject 删除项目。可删除当前项目/删完全部：删当前项目后自动切换到清单首个
+// 剩余项目，清单为空则进入无打开项目态（欢迎页）。删非当前项目直接移除。
 func (a *App) DeleteProject(id string) error {
 	a.projMu.Lock()
 	defer a.projMu.Unlock()
 
-	if id == a.proj.ID {
-		return fmt.Errorf("不能删除当前项目，请先切换到其他项目")
-	}
-	if len(a.gcfg.Projects) <= 1 {
-		return fmt.Errorf("至少保留一个项目")
-	}
 	idx := -1
 	for i, m := range a.gcfg.Projects {
 		if m.ID == id {
@@ -212,14 +237,40 @@ func (a *App) DeleteProject(id string) error {
 		return fmt.Errorf("项目 %q 不存在", id)
 	}
 	meta := a.gcfg.Projects[idx]
-	a.gcfg.Projects = append(a.gcfg.Projects[:idx], a.gcfg.Projects[idx+1:]...)
+	remains := make([]settings.ProjectMeta, 0, len(a.gcfg.Projects)-1)
+	remains = append(remains, a.gcfg.Projects[:idx]...)
+	remains = append(remains, a.gcfg.Projects[idx+1:]...)
+
+	deletingCurrent := a.proj != nil && a.proj.ID == id
+
+	if deletingCurrent {
+		// 删当前项目：先进入无打开项目态（卸载引擎/停库释放 prism.db 句柄，
+		// 避免 Windows 文件占用导致删目录失败），再从清单移除。
+		a.enterNoProjectLocked()
+	}
+	a.gcfg.Projects = remains
 	if err := a.gcfg.SaveGlobal(a.cfgDir); err != nil {
-		// 回滚：按原位插回
+		// 回滚清单：按原位插回；若已进无项目态则切回被删项目（目录尚未删除，可恢复）
 		a.gcfg.Projects = append(a.gcfg.Projects[:idx], append([]settings.ProjectMeta{meta}, a.gcfg.Projects[idx:]...)...)
+		if deletingCurrent && a.proj == nil {
+			if serr := a.switchProjectLocked(meta.ID); serr != nil {
+				log.Printf("回滚切换到被删项目失败（请手动切换）: %v", serr)
+			}
+		}
 		return fmt.Errorf("全局配置落盘: %w", err)
 	}
 	if err := settings.DeleteProjectDir(a.cfgDir, id); err != nil {
 		log.Printf("删除项目目录失败（清单已移除，残留目录 config/projects/%s）: %v", id, err)
+	}
+
+	if deletingCurrent {
+		if len(remains) > 0 {
+			// 还有剩余项目：自动打开第一个，再通知前端
+			if err := a.switchProjectLocked(remains[0].ID); err != nil {
+				log.Printf("删除后自动打开项目 %q 失败（停留欢迎页）: %v", remains[0].ID, err)
+			}
+		}
+		a.emitProjectChanged() // 切换成功会自带 emit；切换失败/进欢迎页也需通知
 	}
 	return nil
 }

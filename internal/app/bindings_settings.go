@@ -15,11 +15,18 @@ import (
 
 // ---------- 设置 / 系统代理 / 系统信息 Bindings（方案 §4.8、项目配置设计 §5.5/§6.1） ----------
 
-// GetSettings 读取合并视图：全局环境字段 + 当前项目规则字段（前端设置页）
+// GetSettings 读取合并视图：全局环境字段 + 当前项目规则字段（前端设置页）。
+// 无打开项目（M11 欢迎页态）：规则字段为空切片，环境字段照常返回（欢迎页设置可用）。
 func (a *App) GetSettings() *SettingsView {
 	a.projMu.Lock()
 	defer a.projMu.Unlock()
-	return a.settingsViewLocked(a.proj.FilterGroups, a.proj.DecryptRules, a.proj.ID)
+	var fg []rules.FilterGroup
+	var dr []rules.DecryptRule
+	rulesProject := ""
+	if a.proj != nil {
+		fg, dr, rulesProject = a.proj.FilterGroups, a.proj.DecryptRules, a.proj.ID
+	}
+	return a.settingsViewLocked(fg, dr, rulesProject)
 }
 
 // settingsViewLocked 构造合并视图（调用方持 projMu）：环境字段取全局 gcfg，
@@ -67,7 +74,9 @@ func (a *App) SaveSettings(nu *SettingsView) (*SaveSettingsResult, error) {
 	}
 	defer a.projMu.Unlock()
 
-	if nu.RulesProject != a.proj.ID {
+	// M11：无打开项目（欢迎页态）时仅保存环境字段；规则半边无项目可属，跳过。
+	noProject := a.proj == nil
+	if !noProject && nu.RulesProject != a.proj.ID {
 		return nil, fmt.Errorf("项目已切换，请重新打开设置面板后再保存")
 	}
 
@@ -87,39 +96,47 @@ func (a *App) SaveSettings(nu *SettingsView) (*SaveSettingsResult, error) {
 		return nil, err
 	}
 
-	// 规则半边：可编译性校验（warnings 非阻塞）
-	var gmap map[string][]string
-	if a.groups != nil {
-		gmap = a.groups.Domains
-	}
-	err, warns := settings.ValidateRules(nu.FilterGroups, nu.DecryptRules, gmap)
-	if err != nil {
-		return nil, err
-	}
-	for _, w := range warns {
-		log.Printf("settings warning: %s", w)
-	}
-	// 补全新组 ID（同批多组加循环序号去重）
-	seq := 0
-	for i := range nu.FilterGroups {
-		if nu.FilterGroups[i].ID == "" {
-			seq++
-			nu.FilterGroups[i].ID = fmt.Sprintf("%d-%d", time.Now().UnixMilli(), seq)
+	var warns []string
+	// 规则半边（仅在有打开项目时）：可编译性校验（warnings 非阻塞）+ 组 ID 补全
+	if !noProject {
+		var gmap map[string][]string
+		if a.groups != nil {
+			gmap = a.groups.Domains
+		}
+		var werr error
+		werr, warns = settings.ValidateRules(nu.FilterGroups, nu.DecryptRules, gmap)
+		if werr != nil {
+			return nil, werr
+		}
+		for _, w := range warns {
+			log.Printf("settings warning: %s", w)
+		}
+		// 补全新组 ID（同批多组加循环序号去重）
+		seq := 0
+		for i := range nu.FilterGroups {
+			if nu.FilterGroups[i].ID == "" {
+				seq++
+				nu.FilterGroups[i].ID = fmt.Sprintf("%d-%d", time.Now().UnixMilli(), seq)
+			}
 		}
 	}
 
-	// 拆分落盘：环境 → 全局 settings.json；规则 → 当前项目 project.json
+	// 拆分落盘：环境 → 全局 settings.json
 	if err := g.SaveGlobal(a.cfgDir); err != nil {
 		return nil, fmt.Errorf("保存全局配置: %w", err)
 	}
-	pc := &settings.ProjectConfig{
-		ID:           a.proj.ID,
-		Name:         a.proj.Name,
-		FilterGroups: nu.FilterGroups,
-		DecryptRules: nu.DecryptRules,
-	}
-	if err := settings.SaveProjectConfig(a.cfgDir, pc); err != nil {
-		return nil, fmt.Errorf("保存项目配置: %w", err)
+	var pc *settings.ProjectConfig
+	if !noProject {
+		// 规则 → 当前项目 project.json
+		pc = &settings.ProjectConfig{
+			ID:           a.proj.ID,
+			Name:         a.proj.Name,
+			FilterGroups: nu.FilterGroups,
+			DecryptRules: nu.DecryptRules,
+		}
+		if err := settings.SaveProjectConfig(a.cfgDir, pc); err != nil {
+			return nil, fmt.Errorf("保存项目配置: %w", err)
+		}
 	}
 
 	// 内存应用（projMu 已持有；a.srv 读取走 a.mu，锁序 projMu → a.mu）
@@ -130,20 +147,26 @@ func (a *App) SaveSettings(nu *SettingsView) (*SaveSettingsResult, error) {
 	oldADB := a.gcfg.ADB         // 保存旧 ADB 配置用于自动挂钩收敛
 	oldBypass := a.gcfg.BypassList // 保存旧 bypass 用于变化检测
 	*a.gcfg = g                  // Projects/CurrentProject 随浅拷贝保留
-	a.proj.FilterGroups = pc.FilterGroups
-	a.proj.DecryptRules = pc.DecryptRules
+	if pc != nil {
+		a.proj.FilterGroups = pc.FilterGroups
+		a.proj.DecryptRules = pc.DecryptRules
+	}
 
 	a.st.SetLimits(g.MaxFlows, int64(g.MaxBodyMB)<<20)
-	// 落盘已成功：后续热应用失败一律降级 warning（配置已持久化、重启后必然生效），
-	// 不再返回错误——否则磁盘已写而调用方以为主全部失败，造成磁盘/内存认知不一致（M9 审计）。
-	if err := a.rebuildEngine(); err != nil {
-		log.Printf("规则引擎热重建失败（配置已保存，重启后生效）: %v", err)
-		warns = append(warns, fmt.Sprintf("规则已保存，但热应用失败（重启后生效）: %v", err))
-	}
-	// M7：持久化开关/参数热应用（开启即加载历史，关闭则停写保留 DB 文件）
-	if err := a.applyPersist(g.Persist); err != nil {
-		log.Printf("持久化设置热应用失败（配置已保存，重启后生效）: %v", err)
-		warns = append(warns, fmt.Sprintf("持久化设置已保存，但热应用失败（重启后生效）: %v", err))
+	if noProject {
+		// 无项目态：无规则引擎/项目库可热应用；环境热应用（重启/绕过/ADB）仍照常执行。
+	} else {
+		// 落盘已成功：后续热应用失败一律降级 warning（配置已持久化、重启后必然生效），
+		// 不再返回错误——否则磁盘已写而调用方以为主全部失败，造成磁盘/内存认知不一致（M9 审计）。
+		if err := a.rebuildEngine(); err != nil {
+			log.Printf("规则引擎热重建失败（配置已保存，重启后生效）: %v", err)
+			warns = append(warns, fmt.Sprintf("规则已保存，但热应用失败（重启后生效）: %v", err))
+		}
+		// M7：持久化开关/参数热应用（开启即加载历史，关闭则停写保留 DB 文件）
+		if err := a.applyPersist(g.Persist); err != nil {
+			log.Printf("持久化设置热应用失败（配置已保存，重启后生效）: %v", err)
+			warns = append(warns, fmt.Sprintf("持久化设置已保存，但热应用失败（重启后生效）: %v", err))
+		}
 	}
 	if needRestart {
 		// settings 热应用重启代理：内部方法连调（避免重复推 status），重启完成后推一次

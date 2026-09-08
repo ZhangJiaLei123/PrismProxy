@@ -56,7 +56,7 @@ CLI 与实例之间通过**本地回环控制 API**（默认 `127.0.0.1:9595`，
   domains delete <id>                    删除自定义域名组
   rules export [--embed]                 导出规则 JSON（原文直出 stdout，可 > 文件）
   rules import <文件路径|URL>            导入规则（整体替换，内嵌域名组自动补建）
-  compose <URL> [--method M] [--header 'K: V; K2: V2'] [--body 文本] [--insecure]
+  compose <URL> [--method M] [--header 'K: V']... [--body 文本] [--insecure]
                                          调试重发：独立直连目标，结果作为新流入列表
   processes                              枚举系统运行中进程名（ignore process 候选）
   project list                           项目列表 + 当前项目
@@ -368,12 +368,12 @@ PrismProxy.exe cli domains delete mytest                          :: 删除自�
 
 ```bat
 PrismProxy.exe cli compose https://api.example.com/v1/login --method POST ^
-  --header "Content-Type: application/json; Authorization: Bearer xxx" ^
+  --header "Content-Type: application/json" --header "Authorization: Bearer xxx" ^
   --body "{\"user\":\"a\"}" --insecure
 ```
 
 - 独立直连目标地址发起一次 HTTP 请求（**不走代理监听、不受上游代理影响**），响应与请求要素作为一条**新流**写入列表（`Source=composer`，与抓包流一起出现在 `flows list/watch`），随后可用 `flows get <新id> --body resp` 分析结果。
-- 参数：`--method`（默认 GET）、`--header "K: V; K2: V2"`（多组用分号分隔，按首个冒号切 key/value）、`--body <字符串>`、`--insecure` / `--skip-verify`（跳过 HTTPS 证书校验）。
+- 参数：`--method`（默认 GET）、`--header "K: V"`（**可重复**传多个；单次传值内也可用分号分隔多组，按首个冒号切 key/value——头值本身含分号如 Cookie 时请拆成多次 `--header`）、`--body <字符串>`、`--insecure` / `--skip-verify`（跳过 HTTPS 证书校验）。
 - 典型用法：从现有流 `flows curl <id>` 拿到 cURL，改写参数后用 compose 重放；或直接构造异常请求做边界测试。
 
 ### 3.13 processes — 系统进程枚举

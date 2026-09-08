@@ -108,6 +108,9 @@ func (s *ctlService) ClearFlows() int {
 func (a *App) resolveProjectIDLocked(idOrName string) (string, error) {
 	idOrName = strings.TrimSpace(idOrName)
 	if idOrName == "" {
+		if a.proj == nil {
+			return "", fmt.Errorf("尚未打开任何项目，请先新建或打开项目")
+		}
 		return a.proj.ID, nil
 	}
 	for _, m := range a.gcfg.Projects {
@@ -205,6 +208,9 @@ func (s *ctlService) DeleteProject(idOrName string) error {
 	return a.DeleteProject(id)
 }
 
+// CloseProject 关闭当前项目进入欢迎页态（无打开项目时幂等）
+func (s *ctlService) CloseProject() error { return s.app.CloseProject() }
+
 // ---------- 规则（目标项目：project 空=当前项目；非当前项目只改文件不热切换） ----------
 
 func (s *ctlService) ListRules(project string) (any, error) {
@@ -217,7 +223,7 @@ func (s *ctlService) ListRules(project string) (any, error) {
 	}
 	var fg []rules.FilterGroup
 	var dr []rules.DecryptRule
-	if id == a.proj.ID {
+	if a.proj != nil && id == a.proj.ID {
 		fg = append([]rules.FilterGroup(nil), a.proj.FilterGroups...)
 		dr = append([]rules.DecryptRule(nil), a.proj.DecryptRules...)
 	} else {
@@ -249,7 +255,7 @@ func (s *ctlService) mutateTargetProjectRules(project string, fn func(pc *settin
 	if err != nil {
 		return err
 	}
-	if id == a.proj.ID {
+	if a.proj != nil && id == a.proj.ID {
 		if err := fn(a.proj); err != nil {
 			return err
 		}
@@ -353,7 +359,7 @@ func (s *ctlService) GetSettings(project string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if id == a.proj.ID {
+	if a.proj != nil && id == a.proj.ID {
 		return a.settingsViewLocked(a.proj.FilterGroups, a.proj.DecryptRules, id), nil
 	}
 	pc, err := settings.LoadProjectConfig(a.cfgDir, id, "")
@@ -395,7 +401,7 @@ func (s *ctlService) SaveSettings(project string, raw json.RawMessage) ([]string
 	// 1) 规则半边：校验 + 写目标项目 project.json（不触发热切换）
 	var warns []string
 	a.projMu.Lock()
-	if a.proj.ID == id {
+	if a.proj != nil && a.proj.ID == id {
 		// 解析后目标项目被切换为当前：走内存 + 热重建保持一致
 		var gmap map[string][]string
 		if a.groups != nil {
@@ -466,11 +472,11 @@ func (s *ctlService) SaveSettings(project string, raw json.RawMessage) ([]string
 	return warns, nil
 }
 
-// currentProjectID 当前项目 id（自取 projMu；供锁外比较）
+// currentProjectID 当前项目 id（自取 projMu；供锁外比较）；无打开项目返回空串
 func currentProjectID(a *App) string {
 	a.projMu.Lock()
 	defer a.projMu.Unlock()
-	return a.proj.ID
+	return a.currentID()
 }
 
 // fillGroupIDs 补全新组 ID（时间戳毫秒+序号；与 SaveSettings 同规则，规则设计 §4.2）
@@ -523,12 +529,11 @@ func (s *ctlService) InstallCA() error   { return s.app.InstallRootCA() }
 
 // AdbDevices 返回已配置的 ADB 设备清单（名称/path/serial/autoSet），供 CLI 发现 path/serial。
 func (s *ctlService) AdbDevices() any {
-	a := s.app
-	a.projMu.Lock()
-	defer a.projMu.Unlock()
+	// 复用 adbSnapshot：持锁 copy 一份配置切片，避免 JSON 编码期间与 SaveSettings 写 gcfg 竞争
+	host, cfgs := s.app.adbSnapshot()
 	return map[string]any{
-		"deviceProxyHost": a.gcfg.ADB.DeviceProxyHost,
-		"devices":         a.gcfg.ADB.Configs,
+		"deviceProxyHost": host,
+		"devices":         cfgs,
 	}
 }
 
@@ -646,7 +651,7 @@ func (a *App) writeDomainGroupLocked(projectID, gid string, content []byte) (int
 	if err != nil {
 		return 0, err
 	}
-	if projectID == a.proj.ID {
+	if a.proj != nil && projectID == a.proj.ID {
 		if err := a.reloadGroups(); err != nil {
 			return 0, err
 		}
@@ -684,7 +689,7 @@ func (s *ctlService) DeleteDomainGroup(project, gid string) error {
 	if err := domains.DeleteUser(dir, gid); err != nil {
 		return err
 	}
-	if id == a.proj.ID {
+	if a.proj != nil && id == a.proj.ID {
 		return a.reloadGroups()
 	}
 	return nil
@@ -709,6 +714,12 @@ func (s *ctlService) ImportDomainGroup(project, gid, source string) (any, error)
 		}
 		gid = base
 	}
+	// 统一规范化（与 GUI importDomains 同口径）：小写+去首尾空白；
+	// 否则大写开头等常见文件名派生的 gid 过不了 ValidateID 白名单
+	gid = strings.ToLower(strings.TrimSpace(gid))
+	if gid == "" {
+		return nil, fmt.Errorf("无法从来源派生合法组 id，请用 --id 指定（须匹配 ^[a-z0-9][a-z0-9-]{0,63}$）")
+	}
 	a.projMu.Lock()
 	defer a.projMu.Unlock()
 	id, err := a.resolveProjectIDLocked(project)
@@ -719,7 +730,7 @@ func (s *ctlService) ImportDomainGroup(project, gid, source string) (any, error)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"ok": true, "project": id, "id": strings.ToLower(strings.TrimSpace(gid)), "count": n}, nil
+	return map[string]any{"ok": true, "project": id, "id": gid, "count": n}, nil
 }
 
 // fetchSourceBytes 从本地文件或 http(s) URL 读取内容（复用 app 的 httpGet，限 4MB/20s）。
@@ -750,7 +761,7 @@ func (s *ctlService) ExportRules(project string, embedGroups bool) (json.RawMess
 	var dr []rules.DecryptRule
 	var gmap map[string][]string
 	bp := append([]string(nil), a.gcfg.BypassList...)
-	if id == a.proj.ID {
+	if a.proj != nil && id == a.proj.ID {
 		fg = append([]rules.FilterGroup(nil), a.proj.FilterGroups...)
 		dr = append([]rules.DecryptRule(nil), a.proj.DecryptRules...)
 		if a.groups != nil {
@@ -845,8 +856,40 @@ func (s *ctlService) ImportRules(project, src string) ([]string, error) {
 	}
 
 	a.projMu.Lock()
-	defer a.projMu.Unlock()
+	// 竞态兜底：锁外判定后若项目已被切换为当前项目，改走热更新路径
+	// （与 SaveSettings 桥接锁内重查同模式；a.ImportRules 自行加锁，故先释放）
+	if a.proj != nil && id == a.proj.ID {
+		a.projMu.Unlock()
+		res, err := a.ImportRules(src)
+		if err != nil {
+			return nil, err
+		}
+		if res == nil {
+			return nil, fmt.Errorf("导入失败（空结果）")
+		}
+		return res.Warnings, nil
+	}
 	dir := settings.ProjectDomainsDir(a.cfgDir, id)
+	// 预检前置：把「目标项目现有域名组 + 文档内嵌组」在内存合并后编译校验，
+	// 通过后才落盘任何文件——避免规则非法时残留半写的域名组 .txt
+	gmap := map[string][]string{}
+	if gs, gerr := domains.LoadUser(dir); gerr == nil {
+		for k, v := range gs.Domains {
+			gmap[k] = v
+		}
+	}
+	for gid, list := range doc.Groups {
+		if gid = strings.ToLower(strings.TrimSpace(gid)); gid != "" && len(list) > 0 {
+			gmap[gid] = list
+		}
+	}
+	verr, vwarns := settings.ValidateRules(doc.FilterGroups, doc.DecryptRules, gmap)
+	if verr != nil {
+		a.projMu.Unlock()
+		return nil, verr
+	}
+	warns = append(warns, vwarns...)
+	// 预检通过：补建内嵌域名组落盘
 	for gid, list := range doc.Groups {
 		gid = strings.ToLower(strings.TrimSpace(gid))
 		if gid == "" || len(list) == 0 {
@@ -860,27 +903,22 @@ func (s *ctlService) ImportRules(project, src string) ([]string, error) {
 			}
 		}
 		if _, werr := domains.WriteUser(dir, gid, []byte(b.String())); werr != nil {
+			a.projMu.Unlock()
 			return nil, fmt.Errorf("补建内嵌域名组 %q: %w", gid, werr)
 		}
 	}
-	gmap := map[string][]string{}
-	if gs, gerr := domains.LoadUser(dir); gerr == nil {
-		gmap = gs.Domains
-	}
-	verr, vwarns := settings.ValidateRules(doc.FilterGroups, doc.DecryptRules, gmap)
-	if verr != nil {
-		return nil, verr
-	}
-	warns = append(warns, vwarns...)
 	pc, err := settings.LoadProjectConfig(a.cfgDir, id, "")
 	if err != nil {
+		a.projMu.Unlock()
 		return nil, fmt.Errorf("项目配置读取失败: %w", err)
 	}
 	pc.FilterGroups = doc.FilterGroups
 	pc.DecryptRules = doc.DecryptRules
 	if err := settings.SaveProjectConfig(a.cfgDir, pc); err != nil {
+		a.projMu.Unlock()
 		return nil, fmt.Errorf("保存项目配置: %w", err)
 	}
+	a.projMu.Unlock()
 	return warns, nil
 }
 

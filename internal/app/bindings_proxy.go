@@ -147,6 +147,11 @@ func resolveUpstream(mode, manual, selfAddr string) string {
 // rebuildEngine 按当前项目规则重编译规则引擎并热替换（Holder 原子替换）。
 // 调用方须持 projMu（a.proj/a.groups 均受 projMu 保护）。
 func (a *App) rebuildEngine() error {
+	if a.proj == nil {
+		// 无打开项目（M11 欢迎页态）：卸载引擎即可，无需编译
+		a.eng.Set(nil)
+		return nil
+	}
 	var gmap map[string][]string
 	if a.groups != nil {
 		gmap = a.groups.Domains

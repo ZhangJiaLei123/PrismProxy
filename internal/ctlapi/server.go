@@ -48,6 +48,7 @@ type Service interface {
 	CreateProject(name, from string) (any, error) // from 非空=从该项目复制规则+域名组
 	RenameProject(idOrName, name string) (any, error)
 	DeleteProject(idOrName string) error
+	CloseProject() error // M11：关闭当前项目进入无打开项目态（欢迎页）
 	// UI 控制（第二步）：仅 GUI 模式真正生效
 	UIClear() (cleared int, ui bool)
 	UISettings(tab string) (ui bool)
@@ -395,11 +396,12 @@ func (s *Server) handleFlowSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
-		return
-	}
 	if len(parts) == 1 {
+		// GET /flows/{id}：单流详情（pin 为 POST、走下方 switch，不能在此顶层拦非 GET）
+		if r.Method != http.MethodGet {
+			writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+			return
+		}
 		v, err := s.svc.GetFlow(id)
 		if err != nil {
 			writeErr(w, http.StatusNotFound, err.Error())
@@ -679,8 +681,14 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		case "close":
+			if err := s.svc.CloseProject(); err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		default:
-			writeErr(w, http.StatusBadRequest, "action 须为 switch|create|rename|delete")
+			writeErr(w, http.StatusBadRequest, "action 须为 switch|create|rename|delete|close")
 		}
 	default:
 		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET/POST")
