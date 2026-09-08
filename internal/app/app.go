@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"log"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -14,7 +15,6 @@ import (
 	"prismproxy/internal/ctlapi"
 	"prismproxy/internal/domains"
 	"prismproxy/internal/mitm"
-	"prismproxy/internal/persist"
 	"prismproxy/internal/proxy"
 	"prismproxy/internal/rules"
 	"prismproxy/internal/settings"
@@ -30,10 +30,17 @@ type App struct {
 	st  *store.Store
 	rec *capture.Recorder
 
-	cfg    *settings.Settings
+	gcfg   *settings.GlobalSettings // 全局环境配置（config/settings.json）
+	proj   *settings.ProjectConfig  // 当前项目规则配置（config/projects/<id>/project.json）
 	cfgDir string
 	eng    *rules.Holder   // 规则引擎热更新容器（proxy 与 Recorder.Filter 共享）
-	groups *domains.Groups // 域名组（用户导入，@组名 引用源）
+	groups *domains.Groups // 当前项目域名组（用户导入，@组名 引用源；随项目切换替换）
+
+	// 项目切换串行化（M9，项目配置设计 §5.4）：SwitchProject/项目 CRUD/SaveSettings/
+	// 规则与域名组写操作均持有；锁序固定 projMu → a.mu/a.pmu，禁止反向。
+	// projGen 项目代际（切换时 +1；recorder 每流读取故用原子，不走锁）。
+	projMu  sync.Mutex
+	projGen atomic.Uint64
 
 	mu       sync.Mutex
 	srv      *proxy.Server
@@ -43,9 +50,10 @@ type App struct {
 	startErr string // 启动自动抓包失败原因（GetProxyStatus 暴露给前端，事件竞态兜底）
 	ctl      *ctlapi.Server // M8 本地控制 API（cli 子命令连接目标；GUI/headless 均启动）
 
-	// M7 SQLite 持久化（方案 §4.11）：pmu 保护 writer 生命周期；落盘为旁路异步队列
+	// M7 SQLite 持久化（方案 §4.11）：pmu 保护 writer 生命周期；落盘为旁路异步队列。
+	// M9 起 writer 带所属项目 id/gen 打标（persistOwner，见 persist_wiring.go）。
 	pmu          sync.Mutex
-	persist      *persist.Writer
+	persist      *persistOwner
 	persistSubbed bool // store 持久化订阅是否已挂（订阅一次，靠 writer 启停控制写入）
 
 	// ADB 自动代理：启停代际号（每次启动/停止自增）+ 单 worker 串行任务队列，
@@ -60,22 +68,69 @@ type App struct {
 	flushDue bool
 }
 
-// NewApp addr 为空时使用持久化配置里的监听地址
+// NewApp addr 为空时使用全局配置里的监听地址
 func NewApp(addr string, noMITM bool) *App {
 	cfgDir := settings.DefaultConfigDir()
 
-	cfg, err := settings.Load(cfgDir)
-	if err != nil {
-		cfg = settings.Default()
+	// M9：旧版单配置 → 多项目结构一次性迁移（幂等；失败仅记录，按新结构兜底启动）
+	if err := settings.MigrateToProjects(cfgDir); err != nil {
+		log.Printf("配置迁移失败（按多项目默认兜底启动）: %v", err)
 	}
-	// 旧 captureRules/processRules → filterGroups 迁移（规则设计 §六）：迁移即落盘一次
-	if cfg.Migrate() {
-		if serr := cfg.Save(cfgDir); serr != nil {
-			log.Printf("迁移配置落盘失败（内存态已迁移）: %v", serr)
+
+	gcfg, err := settings.LoadGlobal(cfgDir)
+	if err != nil {
+		log.Printf("全局配置损坏，使用默认全局配置: %v", err)
+		gcfg = settings.DefaultGlobal()
+	}
+	// 全新安装/迁移失败兜底：清单为空时创建「默认项目」并落盘
+	if len(gcfg.Projects) == 0 {
+		if err := settings.EnsureDefaultProject(cfgDir, gcfg); err != nil {
+			log.Printf("创建默认项目失败: %v", err)
+		} else if serr := gcfg.SaveGlobal(cfgDir); serr != nil {
+			log.Printf("全局配置落盘失败: %v", serr)
+		}
+	}
+	// 极端兜底（如磁盘不可写）：内存态默认项目保证程序可用，规则不落盘
+	if len(gcfg.Projects) == 0 {
+		gcfg.Projects = []settings.ProjectMeta{{ID: "default", Name: "默认项目"}}
+		gcfg.CurrentProject = "default"
+	}
+
+	// currentProject 校验：不在清单或目录缺失时回退清单第一个并落盘修正（设计 §5.1）
+	meta := gcfg.Projects[0]
+	valid := false
+	for _, m := range gcfg.Projects {
+		if m.ID == gcfg.CurrentProject {
+			meta = m
+			if info, err := os.Stat(settings.ProjectDir(cfgDir, m.ID)); err == nil && info.IsDir() {
+				valid = true
+			}
+			break
+		}
+	}
+	if !valid {
+		log.Printf("当前项目 %q 无效，回退到 %q", gcfg.CurrentProject, gcfg.Projects[0].ID)
+		meta = gcfg.Projects[0]
+		gcfg.CurrentProject = meta.ID
+		if serr := gcfg.SaveGlobal(cfgDir); serr != nil {
+			log.Printf("回退当前项目落盘失败: %v", serr)
 		}
 	}
 
-	groups, gerr := domains.LoadUser(filepath.Join(cfgDir, "domains"))
+	proj, err := settings.LoadProjectConfig(cfgDir, meta.ID, meta.Name)
+	if err != nil {
+		log.Printf("项目配置损坏，使用空白默认: %v", err)
+		proj = settings.DefaultProjectConfig(meta.ID, meta.Name)
+	}
+	proj.Name = meta.Name // 显示名以清单为准
+	// 旧 captureRules/processRules → filterGroups 迁移（规则设计 §六）：迁移即落盘一次
+	if proj.Migrate() {
+		if serr := settings.SaveProjectConfig(cfgDir, proj); serr != nil {
+			log.Printf("迁移项目配置落盘失败（内存态已迁移）: %v", serr)
+		}
+	}
+
+	groups, gerr := domains.LoadUser(settings.ProjectDomainsDir(cfgDir, proj.ID))
 	if gerr != nil {
 		groups = nil // 域名组缺失不致命：@组名 引用将不匹配
 	}
@@ -86,17 +141,18 @@ func NewApp(addr string, noMITM bool) *App {
 		gmap = groups.Domains
 	}
 	// 编译失败兜底：log warn + 空引擎全放行（规则设计 §5.3）
-	if e, err := rules.NewEngine(cfg.FilterGroups, cfg.DecryptRules, gmap); err == nil {
+	if e, err := rules.NewEngine(proj.FilterGroups, proj.DecryptRules, gmap); err == nil {
 		eng.Set(e)
 	} else {
 		log.Printf("过滤规则编译失败，当前过滤未生效（全量显示）: %v", err)
 	}
 
 	if addr == "" {
-		addr = cfg.ListenAddr
+		addr = gcfg.ListenAddr
 	}
 	a := &App{
-		cfg:    cfg,
+		gcfg:   gcfg,
+		proj:   proj,
 		cfgDir: cfgDir,
 		eng:    eng,
 		groups: groups,
@@ -104,9 +160,11 @@ func NewApp(addr string, noMITM bool) *App {
 		noMITM: noMITM,
 		pendUp: make(map[string]FlowMeta),
 	}
-	a.st = store.New(cfg.MaxFlows)
-	a.st.SetLimits(cfg.MaxFlows, int64(cfg.MaxBodyMB)<<20)
+	a.st = store.New(gcfg.MaxFlows)
+	a.st.SetLimits(gcfg.MaxFlows, int64(gcfg.MaxBodyMB)<<20)
 	a.rec = capture.NewRecorder(a.st)
+	// 项目代际打标（项目配置设计 §5.2）：切换项目后旧代际在途流的终态丢弃
+	a.rec.GenFunc = func() uint64 { return a.projGen.Load() }
 	proxy.ApplyRulesFilter(a.rec, a.eng) // 捕获/进程规则 exclude → 不记录
 	a.st.Subscribe(a.onStoreEvent)
 	a.initPersist() // M7：按配置开启 SQLite 持久化（默认关）并加载历史
@@ -143,9 +201,9 @@ func (a *App) Startup(ctx context.Context) {
 		return
 	}
 	// 配置要求时自动接管系统代理（代理已监听；失败仅记录，不影响使用）
-	a.mu.Lock()
-	autoSys := a.cfg.AutoSysProxy
-	a.mu.Unlock()
+	a.projMu.Lock()
+	autoSys := a.gcfg.AutoSysProxy
+	a.projMu.Unlock()
 	if autoSys {
 		if err := a.SetSystemProxy(true); err != nil {
 			runtime.LogErrorf(ctx, "自动接管系统代理失败: %v", err)
@@ -190,6 +248,19 @@ func (a *App) restoreSystemProxy() {
 }
 
 func (a *App) backupFile() string { return filepath.Join(a.cfgDir, "sysproxy-backup.json") }
+
+// projDir 当前项目目录 config/projects/<id>/（M9）
+func (a *App) projDir() string { return settings.ProjectDir(a.cfgDir, a.proj.ID) }
+
+// currentMeta 当前项目清单项（调用方持 projMu 或接受弱一致读）
+func (a *App) currentMeta() settings.ProjectMeta {
+	for _, m := range a.gcfg.Projects {
+		if m.ID == a.proj.ID {
+			return m
+		}
+	}
+	return settings.ProjectMeta{ID: a.proj.ID, Name: a.proj.Name}
+}
 
 // ---------- 事件总线：store → 50ms 合帧 → 前端 ----------
 

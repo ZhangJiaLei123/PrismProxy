@@ -30,8 +30,16 @@ export function ClearFlows() {
   return window['go']['app']['App']['ClearFlows']();
 }
 
+export function CreateProject(arg1, arg2) {
+  return window['go']['app']['App']['CreateProject'](arg1, arg2);
+}
+
 export function DeleteDomainGroup(arg1) {
   return window['go']['app']['App']['DeleteDomainGroup'](arg1);
+}
+
+export function DeleteProject(arg1) {
+  return window['go']['app']['App']['DeleteProject'](arg1);
 }
 
 export function ExportDomainGroup(arg1) {
@@ -44,6 +52,10 @@ export function ExportRules(arg1) {
 
 export function FindFreePort(arg1, arg2) {
   return window['go']['app']['App']['FindFreePort'](arg1, arg2);
+}
+
+export function GetCurrentProject() {
+  return window['go']['app']['App']['GetCurrentProject']();
 }
 
 export function GetDomainGroupText(arg1) {
@@ -110,6 +122,10 @@ export function ListFlows() {
   return window['go']['app']['App']['ListFlows']();
 }
 
+export function ListProjects() {
+  return window['go']['app']['App']['ListProjects']();
+}
+
 export function ListSystemProcesses() {
   return window['go']['app']['App']['ListSystemProcesses']();
 }
@@ -120,6 +136,10 @@ export function PickAdbPath() {
 
 export function ProbeURLImport(arg1) {
   return window['go']['app']['App']['ProbeURLImport'](arg1);
+}
+
+export function RenameProject(arg1, arg2) {
+  return window['go']['app']['App']['RenameProject'](arg1, arg2);
 }
 
 export function SaveDomainGroupText(arg1, arg2) {
@@ -148,4 +168,8 @@ export function StartProxy(arg1) {
 
 export function StopProxy() {
   return window['go']['app']['App']['StopProxy']();
+}
+
+export function SwitchProject(arg1) {
+  return window['go']['app']['App']['SwitchProject'](arg1);
 }

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <section class="sec">
     <div class="sec-title">设备侧代理地址</div>
     <div class="form-row">
@@ -51,9 +51,9 @@
 import { reactive } from 'vue'
 import { NInput, NButton, NSwitch, useMessage, useDialog } from 'naive-ui'
 import { PickAdbPath, AdbTest, AdbSetProxy, AdbClearProxy } from '../../../wailsjs/go/app/App'
-import type { settings } from '../../../wailsjs/go/models'
+import type { app, settings } from '../../../wailsjs/go/models'
 
-const props = defineProps<{ form: settings.Settings }>()
+const props = defineProps<{ form: app.SettingsView }>()
 const message = useMessage()
 const dialog = useDialog()
 const busy = reactive<Record<string, boolean>>({})

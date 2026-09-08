@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <n-drawer :show="show" :width="640" placement="right" @update:show="close">
     <n-drawer-content title="设置" closable>
       <n-tabs v-model:value="activeTab" type="line" placement="left" :bar-width="200" class="settings-tabs">
@@ -49,7 +49,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onUnmounted, ref, watch } from 'vue'
 import { NDrawer, NDrawerContent, NTabs, NTabPane, NButton, NAlert, useMessage } from 'naive-ui'
 import GeneralTab from './settings/GeneralTab.vue'
 import NetworkTab from './settings/NetworkTab.vue'
@@ -58,7 +58,8 @@ import DecryptTab from './settings/DecryptTab.vue'
 import CaptureTab from './settings/CaptureTab.vue'
 import DomainsTab from './settings/DomainsTab.vue'
 import { GetSettings, SaveSettings } from '../../wailsjs/go/app/App'
-import type { settings } from '../../wailsjs/go/models'
+import { EventsOff, EventsOn } from '../../wailsjs/runtime/runtime'
+import type { app } from '../../wailsjs/go/models'
 
 const props = defineProps<{ show: boolean; initialTab?: string }>()
 const emit = defineEmits<{
@@ -67,7 +68,8 @@ const emit = defineEmits<{
 }>()
 
 // ---- 表单状态（各 tab 通过 props 共享修改，保存时统一提交） ----
-const emptyForm = (): settings.Settings =>
+// M9：SettingsView = 全局环境字段 + 当前项目规则字段；rulesProject 为保存时的并发令牌
+const emptyForm = (): app.SettingsView =>
   ({
     listenAddr: '127.0.0.1:9090',
     upstreamMode: 'direct',
@@ -78,11 +80,12 @@ const emptyForm = (): settings.Settings =>
     bypassList: [],
     filterGroups: [],
     decryptRules: [],
-    persist: { enabled: false, dbPath: '', retainDays: 7, maxMB: 500 },
+    persist: { enabled: false, retainDays: 7, maxMB: 500 },
     adb: { deviceProxyHost: '172.16.1.2', configs: [] },
-  }) as settings.Settings
+    rulesProject: '',
+  }) as app.SettingsView
 
-const form = ref<settings.Settings>(emptyForm())
+const form = ref<app.SettingsView>(emptyForm())
 const activeTab = ref('general')
 const saving = ref(false)
 const saveWarnings = ref<string[]>([])
@@ -92,11 +95,11 @@ const message = useMessage()
 // ---- 载入（打开面板时；规则导入后由 CaptureTab @imported 触发重载） ----
 async function loadSettings() {
   const s = await GetSettings()
-  form.value = JSON.parse(JSON.stringify(s)) as settings.Settings
+  form.value = JSON.parse(JSON.stringify(s)) as app.SettingsView
   form.value.bypassList ??= []
   form.value.decryptRules ??= []
   form.value.filterGroups ??= []
-  form.value.persist ??= { enabled: false, dbPath: '', retainDays: 7, maxMB: 500 }
+  form.value.persist ??= { enabled: false, retainDays: 7, maxMB: 500 }
   form.value.adb ??= { deviceProxyHost: '172.16.1.2', configs: [] }
   form.value.adb.configs ??= []
   if (!form.value.adb.deviceProxyHost) form.value.adb.deviceProxyHost = '172.16.1.2'
@@ -107,27 +110,41 @@ async function loadSettings() {
   }
 }
 
+// ---- M9：面板打开期间项目被切换（顶栏/CLI）→ 提示丢弃修改并强载新项目规则 ----
+// project:changed 是事后通知，切换已发生无法取消，只能提示 + 重载（设计 §7.2）
+function onProjectChanged() {
+  if (!props.show) return
+  saveWarnings.value = []
+  message.info('项目已切换，未保存的修改已丢弃', { duration: 4000 })
+  loadSettings()
+}
+
 // M8：面板打开时加载配置并定位 tab；面板已打开时外部（cli ui settings <tab>）
 // 改 initialTab 只切 tab，不重载表单（避免丢失用户正在编辑的内容）。
+// M9：打开期间订阅 project:changed（切换时提示+强载），关闭时退订。
 watch(
   () => [props.show, props.initialTab] as const,
   async ([v], [was]) => {
     if (v && !was) {
       activeTab.value = props.initialTab || 'general'
       saveWarnings.value = []
+      EventsOn('project:changed', onProjectChanged)
       await loadSettings()
     } else if (v && props.initialTab) {
       activeTab.value = props.initialTab
+    } else if (!v && was) {
+      EventsOff('project:changed')
     }
   },
 )
+onUnmounted(() => EventsOff('project:changed'))
 
 // ---- 保存 ----
 async function save() {
   saving.value = true
   saveWarnings.value = []
   try {
-    const nu = JSON.parse(JSON.stringify(form.value)) as settings.Settings
+    const nu = JSON.parse(JSON.stringify(form.value)) as app.SettingsView
     const res = await SaveSettings(nu)
     emit('changed')
     // 有 warnings（如未知 @引用）时留在面板展示；否则直接关闭

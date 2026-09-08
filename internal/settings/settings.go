@@ -1,5 +1,11 @@
 // Package settings 用户配置的加载与持久化（方案 §4.8）。
 // 存放于 exe 同级 config 目录（便携模式，见 DefaultConfigDir）。
+//
+// M9 起配置拆分为两层（项目配置设计 §3/§4）：
+//   - 全局配置 GlobalSettings：环境类（监听/上游/预算/开关/bypassList/persist 策略/ADB）
+//     + 项目清单与当前指针，存 config/settings.json；
+//   - 项目配置 ProjectConfig：规则类（filterGroups/decryptRules），
+//     存 config/projects/<id>/project.json（见 project.go）。
 package settings
 
 import (
@@ -55,8 +61,9 @@ const (
 	UpstreamSystem = "system" // 跟随系统代理（跳过自身，防环路）
 )
 
-// Settings 全部可配项（端口/绑定/上游代理/过滤规则组/解密规则/绕过列表/存储预算）
-type Settings struct {
+// GlobalSettings 全局（环境类）配置 + 项目清单与当前指针（项目配置设计 §4.1）。
+// 环境字段所有项目共享；规则类字段在 ProjectConfig（project.go）。
+type GlobalSettings struct {
 	ListenAddr    string `json:"listenAddr"`    // 监听地址，默认 127.0.0.1:9090
 	UpstreamMode  string `json:"upstreamMode"`  // direct | manual | system
 	UpstreamProxy string `json:"upstreamProxy"` // manual 模式的 HTTP 代理 host:port
@@ -69,34 +76,35 @@ type Settings struct {
 	// AutoSysProxy 启动程序时自动接管系统代理（默认关闭）。
 	AutoSysProxy bool `json:"autoSysProxy"`
 
-	// BypassList 系统代理 ProxyOverride 绕过列表（内置默认，可增删并持久化）。
+	// BypassList 系统代理 ProxyOverride 绕过列表（本机网络环境属性，全局唯一，
+	// 不随项目切换变化；项目配置设计 §3.2）。
 	// 语义：裸域名匹配自身+全部子域；代理崩溃残留时这些域名仍直连（方案 §4.6）。
 	BypassList []string `json:"bypassList"`
 
-	FilterGroups []rules.FilterGroup `json:"filterGroups"`
-	DecryptRules []rules.DecryptRule `json:"decryptRules"`
-
-	// Persist 流量 SQLite 持久化（M7，方案 §4.11）。默认关闭；
+	// Persist 流量 SQLite 持久化策略（M7，方案 §4.11）。默认关闭；
 	// 开启后流量异步落盘、启动加载最近历史，落盘是旁路不影响转发与内存 store 语义。
+	// M9 起 DB 文件按项目（projects/<id>/prism.db），此处仅 enabled/retainDays/maxMB 生效。
 	Persist PersistConfig `json:"persist"`
 
 	// ADB 安卓模拟器/真机自动代理配置：多条 adb 路径 + 一键设置/清除设备全局 http_proxy。
 	ADB ADBConfig `json:"adb"`
 
-	// 旧字段仅作迁移用途：Migrate 迁移后清空并重写落盘（规则设计 §六）
-	CaptureRules []rules.CaptureRule `json:"captureRules,omitempty"`
-	ProcessRules []rules.ProcessRule `json:"processRules,omitempty"`
+	// Projects 项目清单（顺序即展示顺序）；CurrentProject 当前项目 id。
+	Projects       []ProjectMeta `json:"projects"`
+	CurrentProject string        `json:"currentProject"`
 }
 
 // PersistConfig 流量持久化配置（M7，方案 §4.11）
 type PersistConfig struct {
-	Enabled    bool   `json:"enabled"`    // 是否开启落盘（默认关）
-	DBPath     string `json:"dbPath"`     // SQLite 文件路径；空=配置目录下 prism.db（便携模式）
+	Enabled bool `json:"enabled"` // 是否开启落盘（默认关）
+	// DBPath 已废弃（M9）：DB 路径固定为 projects/<id>/prism.db。
+	// 字段保留仅为兼容旧 JSON 读取（迁移时检测自定义路径告警），加载后清空、保存不写。
+	DBPath     string `json:"dbPath,omitempty"`
 	RetainDays int    `json:"retainDays"` // 保留天数；0=不限天数
 	MaxMB      int    `json:"maxMB"`      // DB 体积上限（MB）；0=不限体积
 }
 
-// DefaultDBPath 默认数据库文件名（落在 exe 同级 config 目录，便携模式）
+// DefaultDBPath 默认数据库文件名（落在项目目录 projects/<id>/ 下）
 const DefaultDBPath = "prism.db"
 
 // ADBConfig ADB 自动代理配置（设置面板「ADB 代理」）。
@@ -131,17 +139,15 @@ var BuiltinBypass = []string{
 	"byted-static.com", "tiktokcdn.com",
 }
 
-// Default 默认配置
-func Default() *Settings {
-	return &Settings{
+// DefaultGlobal 默认全局配置（无项目；调用方负责 EnsureDefaultProject）
+func DefaultGlobal() *GlobalSettings {
+	return &GlobalSettings{
 		ListenAddr:         "127.0.0.1:9090",
 		UpstreamMode:       UpstreamDirect,
 		MaxFlows:           2000,
 		MaxBodyMB:          256,
 		ShowSysProxySwitch: true,
 		BypassList:         append([]string(nil), BuiltinBypass...),
-		FilterGroups:       []rules.FilterGroup{},
-		DecryptRules:       []rules.DecryptRule{},
 		Persist: PersistConfig{
 			Enabled:    false,
 			RetainDays: 7,   // 默认保留 7 天
@@ -151,31 +157,38 @@ func Default() *Settings {
 			DeviceProxyHost: DefaultDeviceProxyHost,
 			Configs:         []ADBDevice{},
 		},
+		Projects: []ProjectMeta{},
 	}
 }
 
-// Load 从 dir 加载；文件不存在返回 Default；损坏返回错误（调用方降级 Default 并提示）
-func Load(dir string) (*Settings, error) {
+// LoadGlobal 从 dir 加载全局配置；文件不存在返回 DefaultGlobal；损坏返回错误（调用方降级并提示）。
+// 加载后 Persist.DBPath 强制清空（字段已废弃，不再读取、不再写出）。
+func LoadGlobal(dir string) (*GlobalSettings, error) {
 	data, err := os.ReadFile(filepath.Join(dir, fileName))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return Default(), nil
+			return DefaultGlobal(), nil
 		}
 		return nil, err
 	}
-	s := Default() // 以默认值兜底，兼容旧版缺字段
-	if err := json.Unmarshal(data, s); err != nil {
+	g := DefaultGlobal() // 以默认值兜底，兼容旧版缺字段
+	if err := json.Unmarshal(data, g); err != nil {
 		return nil, fmt.Errorf("解析 %s: %w", fileName, err)
 	}
-	return s, nil
+	g.Persist.DBPath = ""
+	if g.Projects == nil {
+		g.Projects = []ProjectMeta{}
+	}
+	return g, nil
 }
 
-// Save 持久化到 dir（先写临时文件再改名，避免写一半损坏配置）
-func (s *Settings) Save(dir string) error {
+// SaveGlobal 持久化全局配置到 dir（先写临时文件再改名，避免写一半损坏配置）
+func (g *GlobalSettings) SaveGlobal(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(s, "", "  ")
+	g.Persist.DBPath = "" // dbPath 废弃，保存不写
+	data, err := json.MarshalIndent(g, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -186,178 +199,51 @@ func (s *Settings) Save(dir string) error {
 	return os.Rename(tmp, filepath.Join(dir, fileName))
 }
 
-// Migrate 旧 captureRules/processRules → filterGroups（规则设计 §六）。
-// 返回是否发生迁移（调用方据此落盘一次；迁移幂等：旧字段清空后二次调用返回 false）。
-// urlRe/method 维度丢弃（path glob + 展示层方法过滤替代）并 log 提示；
-// decryptRules 不迁移、不改动。
-func (s *Settings) Migrate() bool {
-	changed := false
-	if len(s.CaptureRules) > 0 || len(s.ProcessRules) > 0 {
-		changed = s.migrateLegacyRules()
+// ValidateEnv 环境字段校验（项目配置设计 §5.5：SaveSettings 环境半边）。
+// 规则可编译性校验在 ValidateRules（项目半边）。
+func (g *GlobalSettings) ValidateEnv() error {
+	if _, _, err := net.SplitHostPort(g.ListenAddr); err != nil {
+		return fmt.Errorf("监听地址 %q 非法: %v", g.ListenAddr, err)
 	}
-	if s.splitQuickIgnoreGroup() {
-		changed = true
-	}
-	return changed
-}
-
-// splitQuickIgnoreGroup 拆分 M5 早期的混合内置黑名单组 _quick_ignore（hosts+processes 同组，
-// 组内 AND 语义会令域名/进程忽略互相收窄）为两个独立组 _quick_ignore_hosts / _quick_ignore_procs
-// （组间 OR）。幂等：拆分后旧组不存在，二次调用无操作。
-func (s *Settings) splitQuickIgnoreGroup() bool {
-	qi := -1
-	for i := range s.FilterGroups {
-		if s.FilterGroups[i].ID == "_quick_ignore" {
-			qi = i
-			break
-		}
-	}
-	if qi < 0 {
-		return false
-	}
-	old := s.FilterGroups[qi]
-	// 移除旧组
-	s.FilterGroups = append(s.FilterGroups[:qi], s.FilterGroups[qi+1:]...)
-
-	ensureGroup := func(id, name string) *rules.FilterGroup {
-		for i := range s.FilterGroups {
-			if s.FilterGroups[i].ID == id {
-				return &s.FilterGroups[i]
-			}
-		}
-		s.FilterGroups = append(s.FilterGroups, rules.FilterGroup{
-			ID: id, Name: name, Enabled: true, Mode: rules.ModeBlacklist,
-		})
-		return &s.FilterGroups[len(s.FilterGroups)-1]
-	}
-	mergeUniq := func(dst *[]string, src []string, caseInsensitive bool) {
-		for _, v := range src {
-			exist := false
-			for _, x := range *dst {
-				if (caseInsensitive && strings.EqualFold(x, v)) || (!caseInsensitive && x == v) {
-					exist = true
-					break
-				}
-			}
-			if !exist {
-				*dst = append(*dst, v)
-			}
-		}
-	}
-	if len(old.Hosts) > 0 || len(old.Paths) > 0 {
-		g := ensureGroup("_quick_ignore_hosts", "快捷忽略-域名")
-		mergeUniq(&g.Hosts, old.Hosts, false)
-		mergeUniq(&g.Paths, old.Paths, false)
-	}
-	if len(old.Processes) > 0 {
-		g := ensureGroup("_quick_ignore_procs", "快捷忽略-进程")
-		mergeUniq(&g.Processes, old.Processes, true)
-	}
-	log.Printf("settings migrate: 已将混合组 _quick_ignore 拆分为 _quick_ignore_hosts / _quick_ignore_procs")
-	return true
-}
-
-// migrateLegacyRules 旧 captureRules/processRules → filterGroups（规则设计 §六）。
-// urlRe/method 维度丢弃（path glob + 展示层方法过滤替代）并 log 提示；decryptRules 不迁移、不改动。
-func (s *Settings) migrateLegacyRules() bool {
-	// 来源 × 模式 四个迁移桶：同 action 旧条目合并进同一组（语义聚合）
-	type bucket struct {
-		name      string
-		id        string
-		mode      string
-		hosts     []string
-		processes []string
-	}
-	buckets := map[string]*bucket{
-		"capture_black": {name: "旧捕获规则-黑名单(迁移)", id: "_migrated_capture_black", mode: rules.ModeBlacklist},
-		"capture_white": {name: "旧捕获规则-白名单(迁移)", id: "_migrated_capture_white", mode: rules.ModeWhitelist},
-		"process_black": {name: "旧进程规则-黑名单(迁移)", id: "_migrated_process_black", mode: rules.ModeBlacklist},
-		"process_white": {name: "旧进程规则-白名单(迁移)", id: "_migrated_process_white", mode: rules.ModeWhitelist},
-	}
-	appendUniq := func(dst *[]string, v string) {
-		for _, x := range *dst {
-			if x == v {
-				return
-			}
-		}
-		*dst = append(*dst, v)
-	}
-	for _, r := range s.CaptureRules {
-		key := "capture_black"
-		if r.Action == rules.ActionInclude {
-			key = "capture_white"
-		}
-		if r.Host != "" {
-			appendUniq(&buckets[key].hosts, r.Host)
-		}
-		if r.URLRe != "" || r.Method != "" {
-			log.Printf("settings migrate: 旧捕获规则 %q 的 urlRe/method 维度已丢弃（path glob/展示层过滤替代）", r.Host)
-		}
-	}
-	for _, r := range s.ProcessRules {
-		key := "process_black"
-		if r.Action == rules.ActionInclude {
-			key = "process_white"
-		}
-		if r.Name != "" {
-			appendUniq(&buckets[key].processes, r.Name)
-		}
-	}
-	// 固定顺序追加非空迁移组，保证输出确定性
-	for _, key := range []string{"capture_black", "capture_white", "process_black", "process_white"} {
-		b := buckets[key]
-		if len(b.hosts)+len(b.processes) == 0 {
-			continue
-		}
-		s.FilterGroups = append(s.FilterGroups, rules.FilterGroup{
-			ID: b.id, Name: b.name, Enabled: true, Mode: b.mode,
-			Hosts: b.hosts, Processes: b.processes,
-		})
-	}
-	s.CaptureRules = nil
-	s.ProcessRules = nil
-	return true
-}
-
-// Validate 保存前校验（规则设计 §4.2）。
-// knownGroups 为内置域名组 id 集合（@组名 引用存在性检查，缺失只产生 warning 不阻塞）；
-// 返回 (阻塞错误, 非阻塞警告)。
-func (s *Settings) Validate(knownGroups map[string][]string) (error, []string) {
-	if _, _, err := net.SplitHostPort(s.ListenAddr); err != nil {
-		return fmt.Errorf("监听地址 %q 非法: %v", s.ListenAddr, err), nil
-	}
-	switch s.UpstreamMode {
+	switch g.UpstreamMode {
 	case UpstreamDirect:
 	case UpstreamManual:
-		if s.UpstreamProxy == "" {
-			return fmt.Errorf("手动上游代理模式须填写代理地址"), nil
+		if g.UpstreamProxy == "" {
+			return fmt.Errorf("手动上游代理模式须填写代理地址")
 		}
-		if _, _, err := net.SplitHostPort(s.UpstreamProxy); err != nil {
-			return fmt.Errorf("上游代理地址 %q 非法: %v", s.UpstreamProxy, err), nil
+		if _, _, err := net.SplitHostPort(g.UpstreamProxy); err != nil {
+			return fmt.Errorf("上游代理地址 %q 非法: %v", g.UpstreamProxy, err)
 		}
 	case UpstreamSystem:
 	default:
-		return fmt.Errorf("非法上游模式 %q", s.UpstreamMode), nil
+		return fmt.Errorf("非法上游模式 %q", g.UpstreamMode)
 	}
-	if s.MaxFlows <= 0 {
-		return fmt.Errorf("MaxFlows 须 > 0"), nil
+	if g.MaxFlows <= 0 {
+		return fmt.Errorf("MaxFlows 须 > 0")
 	}
-	if s.MaxBodyMB < 0 {
-		return fmt.Errorf("MaxBodyMB 须 >= 0"), nil
+	if g.MaxBodyMB < 0 {
+		return fmt.Errorf("MaxBodyMB 须 >= 0")
 	}
-	if s.Persist.RetainDays < 0 {
-		return fmt.Errorf("persist.retainDays 须 >= 0"), nil
+	if g.Persist.RetainDays < 0 {
+		return fmt.Errorf("persist.retainDays 须 >= 0")
 	}
-	if s.Persist.MaxMB < 0 {
-		return fmt.Errorf("persist.maxMB 须 >= 0"), nil
+	if g.Persist.MaxMB < 0 {
+		return fmt.Errorf("persist.maxMB 须 >= 0")
 	}
+	return nil
+}
+
+// ValidateRules 规则可编译性校验（规则设计 §4.2）。
+// knownGroups 为内置域名组 id 集合（@组名 引用存在性检查，缺失只产生 warning 不阻塞）；
+// 返回 (阻塞错误, 非阻塞警告)。
+func ValidateRules(filterGroups []rules.FilterGroup, decryptRules []rules.DecryptRule, knownGroups map[string][]string) (error, []string) {
 	// 规则可编译性（mode/组名/host 条目/glob 由 NewEngine 统一把关）
-	if _, err := rules.NewEngine(s.FilterGroups, s.DecryptRules, knownGroups); err != nil {
+	if _, err := rules.NewEngine(filterGroups, decryptRules, knownGroups); err != nil {
 		return err, nil
 	}
 	var warns []string
 	seen := map[string]bool{}
-	for _, g := range s.FilterGroups {
+	for _, g := range filterGroups {
 		for _, h := range g.Hosts {
 			if !strings.HasPrefix(h, "@") {
 				continue

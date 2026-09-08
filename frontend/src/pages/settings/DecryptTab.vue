@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <section class="sec">
     <n-dynamic-input v-model:value="form.decryptRules" :on-create="() => ({ action: 'bypass', host: '' })">
       <template #default="{ value }">
@@ -17,9 +17,9 @@
 import { onMounted, ref } from 'vue'
 import { NDynamicInput, NSelect, NInput } from 'naive-ui'
 import { ListDomainGroups } from '../../../wailsjs/go/app/App'
-import type { settings } from '../../../wailsjs/go/models'
+import type { app } from '../../../wailsjs/go/models'
 
-const props = defineProps<{ form: settings.Settings }>()
+const props = defineProps<{ form: app.SettingsView }>()
 
 const groupText = ref('')
 

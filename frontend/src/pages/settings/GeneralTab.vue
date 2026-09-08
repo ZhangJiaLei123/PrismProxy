@@ -46,10 +46,8 @@
           <template #suffix>MB</template>
         </n-input-number>
       </div>
-      <div class="form-row">
-        <span class="label">数据库路径</span>
-        <n-input v-model:value="form.persist.dbPath" placeholder="留空 = config/prism.db（便携目录）" style="width: 360px" />
-      </div>
+      <!-- M9：数据库路径不再可配，按项目独立存放（设计 §7.2） -->
+      <div class="hint">数据库按项目独立存放于 config/projects/&lt;项目&gt;/prism.db，切换项目时自动载入对应历史。</div>
       <div class="hint">保留天数/体积上限为 0 表示不限；超龄或超限的旧记录启动后及运行中每 10 分钟自动清理。保存即生效，关闭开关停止落盘（已存数据库文件保留）。</div>
     </template>
   </section>
@@ -66,11 +64,11 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NSwitch, NTag, NButton, NCheckbox, NInputNumber, NInput } from 'naive-ui'
+import { NSwitch, NTag, NButton, NCheckbox, NInputNumber } from 'naive-ui'
 import { GetSystemProxyStatus, SetSystemProxy, InstallRootCA } from '../../../wailsjs/go/app/App'
-import type { app, settings } from '../../../wailsjs/go/models'
+import type { app } from '../../../wailsjs/go/models'
 
-defineProps<{ form: settings.Settings }>()
+defineProps<{ form: app.SettingsView }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
 
 // ---- 系统代理状态 ----

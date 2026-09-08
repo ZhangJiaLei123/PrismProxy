@@ -87,9 +87,14 @@ if not errorlevel 1 (
 )
 
 rem ---------- clean ----------
-rem 注意：clean 删除 build\bin 但保留其下的 config（Root CA 证书/私钥、settings.json、
-rem ctl token）。否则重建后 config\ca 丢失 -> LoadOrCreateCA 生成全新 CA，而系统受信根里
-rem 装的还是旧 CA -> 所有 HTTPS 握手失败降级为盲透传（列表只剩 CONNECT），需重新装证书。
+rem NOTE: clean removes build\bin but preserves build\bin\config under it
+rem (Root CA cert/key, settings.json, ctl token). Otherwise config\ca is lost
+rem after rebuild -> LoadOrCreateCA generates a brand-new CA while the trusted
+rem root store still holds the old one -> all HTTPS handshakes fail and fall
+rem back to blind tunneling (list shows CONNECT only); the cert has to be
+rem reinstalled.
+rem (Keep this file ASCII-only: cmd.exe mis-parses UTF-8 multibyte chars after
+rem chcp 65001 and may execute fragments of rem comments as commands.)
 if "%DO_CLEAN%"=="1" (
     echo.
     echo [2/5] Cleaning previous build artifacts [keeping build\bin\config]...
@@ -180,6 +185,8 @@ echo   Build completed successfully.
 echo   Exe : build\bin\PrismProxy.exe
 echo   Zip : dist\!PKG_NAME!.zip
 echo ============================================================
+echo.
+pause
 exit /b 0
 
 :usage

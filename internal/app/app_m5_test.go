@@ -18,17 +18,20 @@ import (
 )
 
 // newTestApp 构造内存态 App（临时配置目录 + store，不走 startup/代理）
+// M9：环境配置 gcfg 与项目规则配置 proj 分离（项目固定为 default）
 func newTestApp(t *testing.T) *App {
 	t.Helper()
-	cfg := settings.Default()
+	gcfg := settings.DefaultGlobal()
+	proj := settings.DefaultProjectConfig("default", "默认项目")
 	a := &App{
-		cfg:    cfg,
+		gcfg:   gcfg,
+		proj:   proj,
 		cfgDir: t.TempDir(),
 		eng:    &rules.Holder{},
 		st:     store.New(100),
 		pendUp: map[string]FlowMeta{},
 	}
-	e, err := rules.NewEngine(cfg.FilterGroups, cfg.DecryptRules, nil)
+	e, err := rules.NewEngine(proj.FilterGroups, proj.DecryptRules, nil)
 	if err != nil {
 		t.Fatalf("newEngine: %v", err)
 	}
@@ -74,9 +77,9 @@ func TestAddQuickIgnore_Host(t *testing.T) {
 		t.Fatalf("重复添加应幂等: added=%v err=%v", added, err)
 	}
 	var g *rules.FilterGroup
-	for i := range a.cfg.FilterGroups {
-		if a.cfg.FilterGroups[i].ID == QuickIgnoreHostGroupID {
-			g = &a.cfg.FilterGroups[i]
+	for i := range a.proj.FilterGroups {
+		if a.proj.FilterGroups[i].ID == QuickIgnoreHostGroupID {
+			g = &a.proj.FilterGroups[i]
 		}
 	}
 	if g == nil {
@@ -88,9 +91,9 @@ func TestAddQuickIgnore_Host(t *testing.T) {
 	if len(g.Hosts) != 1 || g.Hosts[0] != "api.example.com" {
 		t.Fatalf("host 归一化/去重异常: %#v", g.Hosts)
 	}
-	// 落盘
-	if data, err := os.ReadFile(filepath.Join(a.cfgDir, "settings.json")); err != nil || !strings.Contains(string(data), QuickIgnoreHostGroupID) {
-		t.Fatalf("settings.json 应含快捷忽略组: err=%v", err)
+	// 落盘（M9：写入当前项目 project.json）
+	if data, err := os.ReadFile(filepath.Join(a.cfgDir, "projects", "default", "project.json")); err != nil || !strings.Contains(string(data), QuickIgnoreHostGroupID) {
+		t.Fatalf("project.json 应含快捷忽略组: err=%v", err)
 	}
 	// 引擎热生效：该域后续流量不显示
 	if a.eng.Get().ShouldDisplay("sub.api.example.com", "https://sub.api.example.com/x", "") {
@@ -152,9 +155,11 @@ func TestAddQuickIgnore_Process(t *testing.T) {
 func TestImportRules_FileReplaceAndValidate(t *testing.T) {
 	a := newTestApp(t)
 	// 现有一条规则，导入后应被整体替换
-	a.cfg.FilterGroups = append(a.cfg.FilterGroups, rules.FilterGroup{
+	a.proj.FilterGroups = append(a.proj.FilterGroups, rules.FilterGroup{
 		ID: "old", Name: "旧组", Enabled: true, Mode: rules.ModeBlacklist, Hosts: []string{"old.com"},
 	})
+	// M9：bypassList 为全局环境设置，导入时忽略——先记录基线
+	bypassBaseline := append([]string(nil), a.gcfg.BypassList...)
 
 	doc := rulesFile{
 		Version: 1,
@@ -176,14 +181,18 @@ func TestImportRules_FileReplaceAndValidate(t *testing.T) {
 	if res == nil {
 		t.Fatal("用户取消以外应返回结果")
 	}
-	if len(a.cfg.FilterGroups) != 1 || a.cfg.FilterGroups[0].ID != "g1" {
-		t.Fatalf("规则应整体替换: %#v", a.cfg.FilterGroups)
+	if len(a.proj.FilterGroups) != 1 || a.proj.FilterGroups[0].ID != "g1" {
+		t.Fatalf("规则应整体替换: %#v", a.proj.FilterGroups)
 	}
-	if len(a.cfg.DecryptRules) != 1 || a.cfg.DecryptRules[0].Host != "pin.example" {
-		t.Fatalf("解密规则应替换: %#v", a.cfg.DecryptRules)
+	if len(a.proj.DecryptRules) != 1 || a.proj.DecryptRules[0].Host != "pin.example" {
+		t.Fatalf("解密规则应替换: %#v", a.proj.DecryptRules)
 	}
-	if len(a.cfg.BypassList) != 2 || a.cfg.BypassList[0] != "<-loopback>" {
-		t.Fatalf("绕过列表应替换: %#v", a.cfg.BypassList)
+	// M9：bypassList 为全局环境设置，导入时忽略（以 warning 提示）
+	if !equalStrings(a.gcfg.BypassList, bypassBaseline) {
+		t.Fatalf("导入不应改写全局绕过列表: %#v", a.gcfg.BypassList)
+	}
+	if len(res.Warnings) == 0 || !strings.Contains(res.Warnings[0], "绕过列表") {
+		t.Fatalf("导入含 bypassList 应返回忽略提示: %v", res.Warnings)
 	}
 	if a.eng.Get().ShouldDisplay("blocked.example", "https://blocked.example/", "") {
 		t.Fatal("导入黑名单应热生效")
@@ -192,8 +201,8 @@ func TestImportRules_FileReplaceAndValidate(t *testing.T) {
 		t.Fatal("导入 bypass 解密规则应热生效")
 	}
 	// 监听地址等非规则字段沿用
-	if a.cfg.ListenAddr != "127.0.0.1:9090" {
-		t.Fatalf("非规则字段不应被覆盖: %s", a.cfg.ListenAddr)
+	if a.gcfg.ListenAddr != "127.0.0.1:9090" {
+		t.Fatalf("非规则字段不应被覆盖: %s", a.gcfg.ListenAddr)
 	}
 
 	// 非法 JSON / 版本不符
@@ -269,8 +278,8 @@ func TestImportRules_URL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("URL 导入失败: %v", err)
 	}
-	if res == nil || len(a.cfg.FilterGroups) != 1 || a.cfg.FilterGroups[0].ID != "u1" {
-		t.Fatalf("URL 导入内容异常: %#v", a.cfg.FilterGroups)
+	if res == nil || len(a.proj.FilterGroups) != 1 || a.proj.FilterGroups[0].ID != "u1" {
+		t.Fatalf("URL 导入内容异常: %#v", a.proj.FilterGroups)
 	}
 	if a.eng.Get().ShouldDisplay("urlblocked.example", "https://urlblocked.example/", "") {
 		t.Fatal("URL 导入规则应热生效")

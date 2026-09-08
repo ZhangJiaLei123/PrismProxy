@@ -1,7 +1,6 @@
-package app
+﻿package app
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -23,14 +22,14 @@ func persistWait(t *testing.T, cond func() bool, msg string) {
 }
 
 // 端到端：开启持久化 → 流量落盘 → 模拟重启 → 历史加载 + body 惰性回查
+// M9：DB 路径固定为 <cfgDir>/projects/<项目>/prism.db（persist.dbPath 已废弃）
 func TestPersistEndToEnd(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "prism.db")
 
 	// ---- 会话一：开启持久化并抓一条流 ----
 	a1 := newTestApp(t)
 	a1.cfgDir = dir
-	if err := a1.applyPersist(settings.PersistConfig{Enabled: true, DBPath: dbPath, RetainDays: 7, MaxMB: 100}); err != nil {
+	if err := a1.applyPersist(settings.PersistConfig{Enabled: true, RetainDays: 7, MaxMB: 100}); err != nil {
 		t.Fatalf("applyPersist: %v", err)
 	}
 
@@ -44,13 +43,13 @@ func TestPersistEndToEnd(t *testing.T) {
 	a1.st.Add(f)
 
 	// 等待异步落盘
-	persistWait(t, func() bool { return a1.currentPersist().Written() >= 1 }, "流落盘")
+	persistWait(t, func() bool { return a1.currentPersist().w.Written() >= 1 }, "流落盘")
 	a1.stopPersist()
 
 	// ---- 会话二：新 App 指向同一 DB，initPersist 应加载历史 ----
 	a2 := newTestApp(t)
 	a2.cfgDir = dir
-	a2.cfg.Persist = settings.PersistConfig{Enabled: true, DBPath: dbPath, RetainDays: 7, MaxMB: 100}
+	a2.gcfg.Persist = settings.PersistConfig{Enabled: true, RetainDays: 7, MaxMB: 100}
 	a2.initPersist()
 	defer a2.stopPersist()
 
@@ -91,11 +90,10 @@ func TestPersistEndToEnd(t *testing.T) {
 // 关闭持久化不应影响内存 store；DB 文件保留
 func TestPersistDisableKeepsStore(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "prism.db")
 
 	a := newTestApp(t)
 	a.cfgDir = dir
-	if err := a.applyPersist(settings.PersistConfig{Enabled: true, DBPath: dbPath}); err != nil {
+	if err := a.applyPersist(settings.PersistConfig{Enabled: true}); err != nil {
 		t.Fatalf("applyPersist enable: %v", err)
 	}
 	f := capture.NewFlow("persist-off-1")
@@ -103,7 +101,7 @@ func TestPersistDisableKeepsStore(t *testing.T) {
 	f.ServerAddr = "x.com"
 	f.Request = &capture.Message{Method: "GET", URL: "http://x.com/"}
 	a.st.Add(f)
-	persistWait(t, func() bool { return a.currentPersist().Written() >= 1 }, "流落盘")
+	persistWait(t, func() bool { return a.currentPersist().w.Written() >= 1 }, "流落盘")
 
 	// 关闭
 	if err := a.applyPersist(settings.PersistConfig{Enabled: false}); err != nil {
@@ -123,8 +121,7 @@ func TestPersistDisableKeepsStore(t *testing.T) {
 // 根因曾为 applyPersist 持 pmu 调 st.Add → emit 同步回调 onPersistEvent 再取 pmu（不可重入）。
 func TestPersistReapplyNoDeadlock(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "prism.db")
-	pc := settings.PersistConfig{Enabled: true, DBPath: dbPath, RetainDays: 7, MaxMB: 100}
+	pc := settings.PersistConfig{Enabled: true, RetainDays: 7, MaxMB: 100}
 
 	a := newTestApp(t)
 	a.cfgDir = dir
@@ -137,7 +134,7 @@ func TestPersistReapplyNoDeadlock(t *testing.T) {
 	f.Request = &capture.Message{Method: "GET", URL: "https://example.com/a"}
 	f.Response = &capture.Message{StatusCode: 200, Body: []byte(`{"k":"v"}`)}
 	a.st.Add(f)
-	persistWait(t, func() bool { return a.currentPersist().Written() >= 1 }, "落盘")
+	persistWait(t, func() bool { return a.currentPersist().w.Written() >= 1 }, "落盘")
 
 	// 清空内存（DB 保留），制造"历史不在内存"；再关闭 writer（模拟用户关→开持久化，
 	// 走"由关到开"重连路径，会 LoadRecent 补载历史 → st.Add，是死锁触发点）
@@ -175,8 +172,7 @@ func TestPersistReapplyNoDeadlock(t *testing.T) {
 // 回归：DB 路径不变、仅保留策略变化时不应重连 writer（复用同一实例）。
 func TestPersistRetentionUpdateNoReopen(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "prism.db")
-	pc := settings.PersistConfig{Enabled: true, DBPath: dbPath, RetainDays: 7, MaxMB: 100}
+	pc := settings.PersistConfig{Enabled: true, RetainDays: 7, MaxMB: 100}
 
 	a := newTestApp(t)
 	a.cfgDir = dir

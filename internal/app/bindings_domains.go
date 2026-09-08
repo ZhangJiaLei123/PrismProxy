@@ -17,9 +17,13 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"prismproxy/internal/domains"
+	"prismproxy/internal/settings"
 )
 
 // ---------- 域名组管理（设置面板：导入/导出/删除，即时生效） ----------
+//
+// M9 起用户域名组随项目（config/projects/<id>/domains/）；导入/删除/编辑等写操作
+// 持有 projMu（项目配置设计 §5.4），userDomainsDir 调用方须持 projMu。
 
 // DomainGroupInfo 域名组管理列表项
 type DomainGroupInfo struct {
@@ -47,13 +51,14 @@ type DomainGroupImportResult struct {
 	Count int    `json:"count"`
 }
 
-func (a *App) userDomainsDir() string { return filepath.Join(a.cfgDir, "domains") }
+// userDomainsDir 当前项目用户域名组目录（调用方须持 projMu）
+func (a *App) userDomainsDir() string { return settings.ProjectDomainsDir(a.cfgDir, a.proj.ID) }
 
 // ListDomainGroupDetails 域名组管理列表（含条数与自定义标记，按 id 排序）
 func (a *App) ListDomainGroupDetails() []DomainGroupInfo {
-	a.mu.Lock()
+	a.projMu.Lock()
 	g := a.groups
-	a.mu.Unlock()
+	a.projMu.Unlock()
 	if g == nil {
 		return []DomainGroupInfo{}
 	}
@@ -196,7 +201,9 @@ func (a *App) ProbeURLImport(rawurl string) (*URLImportProbe, error) {
 }
 
 // ImportDomainGroupsFromIndex 按勾选的 id 从索引 URL 批量下载域名组并导入（各组文件相对索引 URL 解析）。
-// overwrite=false 时本地已存在的同名组（config/domains/<id>.txt）跳过不下载、不覆盖。
+// overwrite=false 时本地已存在的同名组（当前项目 domains/<id>.txt）跳过不下载、不覆盖。
+// 下载阶段（逐组 httpGet，可能耗时）在 projMu 外进行，仅写文件与热更新持锁——
+// 避免慢网络长时间阻塞项目切换/设置保存（M9 审计）；写文件时才持锁保证落进同一项目目录。
 func (a *App) ImportDomainGroupsFromIndex(rawurl string, ids []string, overwrite bool) ([]IndexImportResult, error) {
 	base, err := parseHTTPURL(rawurl)
 	if err != nil {
@@ -225,47 +232,51 @@ func (a *App) ImportDomainGroupsFromIndex(rawurl string, ids []string, overwrite
 	}
 	total := len(unique)
 	results := make([]IndexImportResult, 0, total)
+	// ---- 阶段一（projMu 外）：解析地址并逐组下载到内存，进度条照常推进 ----
+	downloaded := make(map[string][]byte, total)
 	for i, id := range unique {
 		res := IndexImportResult{ID: id}
+		results = append(results, res)
 		emitImportProgress(a.ctx, i, total, id, false)
 		entry, ok := byID[id]
 		if !ok {
-			res.Err = "索引中不存在该组"
-			results = append(results, res)
-			emitImportProgress(a.ctx, i+1, total, id, false)
+			results[i].Err = "索引中不存在该组"
 			continue
 		}
 		ref, err := url.Parse(entry.File)
 		if err != nil {
-			res.Err = "索引中文件路径非法"
-			results = append(results, res)
+			results[i].Err = "索引中文件路径非法"
+			continue
+		}
+		txt, err := httpGet(base.ResolveReference(ref).String())
+		if err != nil {
+			results[i].Err = err.Error()
+			continue
+		}
+		downloaded[id] = txt
+	}
+	// ---- 阶段二（projMu 内）：写文件 + 热更新；skip 判定在锁内做，与切换串行保证目录一致 ----
+	a.projMu.Lock()
+	defer a.projMu.Unlock()
+	for i, id := range unique {
+		if results[i].Err != "" {
 			emitImportProgress(a.ctx, i+1, total, id, false)
 			continue
 		}
 		if !overwrite {
 			if _, err := os.Stat(filepath.Join(a.userDomainsDir(), id+".txt")); err == nil {
-				res.Skipped = true
-				results = append(results, res)
+				results[i].Skipped = true
 				emitImportProgress(a.ctx, i+1, total, id, false)
 				continue
 			}
 		}
-		txt, err := httpGet(base.ResolveReference(ref).String())
+		n, err := domains.WriteUser(a.userDomainsDir(), id, downloaded[id])
 		if err != nil {
-			res.Err = err.Error()
-			results = append(results, res)
+			results[i].Err = err.Error()
 			emitImportProgress(a.ctx, i+1, total, id, false)
 			continue
 		}
-		n, err := domains.WriteUser(a.userDomainsDir(), id, txt)
-		if err != nil {
-			res.Err = err.Error()
-			results = append(results, res)
-			emitImportProgress(a.ctx, i+1, total, id, false)
-			continue
-		}
-		res.Count = n
-		results = append(results, res)
+		results[i].Count = n
 		emitImportProgress(a.ctx, i+1, total, id, false)
 	}
 	emitImportProgress(a.ctx, total, total, "", true)
@@ -288,6 +299,8 @@ func emitImportProgress(ctx context.Context, current, total int, id string, done
 // importDomains 校验并落盘导入内容，随后重载域名组 + 热更新规则引擎
 func (a *App) importDomains(id string, data []byte) (*DomainGroupImportResult, error) {
 	id = strings.ToLower(strings.TrimSpace(id))
+	a.projMu.Lock()
+	defer a.projMu.Unlock()
 	n, err := domains.WriteUser(a.userDomainsDir(), id, data)
 	if err != nil {
 		return nil, err
@@ -321,15 +334,14 @@ func (a *App) ExportDomainGroup(id string) (string, error) {
 	return dest, nil
 }
 
-// groupRaw 取组原始文本（保留注释原貌）：所有组均为用户导入，读用户目录文件
+// groupRaw 取组原始文本（保留注释原貌）：所有组均为用户导入，读当前项目用户目录文件
 func (a *App) groupRaw(id string) ([]byte, error) {
-	a.mu.Lock()
-	g := a.groups
-	a.mu.Unlock()
-	if g == nil {
+	a.projMu.Lock()
+	defer a.projMu.Unlock()
+	if a.groups == nil {
 		return nil, fmt.Errorf("域名组不可用")
 	}
-	if _, ok := g.Domains[id]; !ok {
+	if _, ok := a.groups.Domains[id]; !ok {
 		return nil, fmt.Errorf("域名组 %q 不存在", id)
 	}
 	return os.ReadFile(filepath.Join(a.userDomainsDir(), id+".txt"))
@@ -337,10 +349,9 @@ func (a *App) groupRaw(id string) ([]byte, error) {
 
 // DeleteDomainGroup 删除自定义域名组（内置组不可删除；覆盖同名内置组的删除后内置组恢复生效）
 func (a *App) DeleteDomainGroup(id string) error {
-	a.mu.Lock()
-	custom := a.groups != nil && a.groups.Custom[id]
-	a.mu.Unlock()
-	if !custom {
+	a.projMu.Lock()
+	defer a.projMu.Unlock()
+	if a.groups == nil || !a.groups.Custom[id] {
 		return fmt.Errorf("内置域名组不可删除")
 	}
 	if err := domains.DeleteUser(a.userDomainsDir(), id); err != nil {
@@ -363,14 +374,12 @@ func (a *App) SaveDomainGroupText(id, content string) (*DomainGroupImportResult,
 	return a.importDomains(id, []byte(content))
 }
 
-// reloadGroups 重载用户导入的域名组并热更新规则引擎
+// reloadGroups 重载用户导入的域名组并热更新规则引擎（调用方须持 projMu）
 func (a *App) reloadGroups() error {
 	g, err := domains.LoadUser(a.userDomainsDir())
 	if err != nil {
 		return err
 	}
-	a.mu.Lock()
 	a.groups = g
-	a.mu.Unlock()
 	return a.rebuildEngine()
 }

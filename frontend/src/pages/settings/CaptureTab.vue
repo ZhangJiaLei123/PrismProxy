@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <!-- 顶部状态条：模式提示（谓词与引擎一致：enabled + 条目非空才算生效） -->
   <n-alert :type="modeAlertType" :bordered="false" class="mode-bar">{{ modeText }}</n-alert>
 
@@ -53,11 +53,11 @@
 import { computed, onMounted, ref } from 'vue'
 import { NAlert, NButton, NCheckbox, NInput, useDialog, useMessage } from 'naive-ui'
 import { ExportRules, ImportRules, ListDomainGroups, ListSystemProcesses } from '../../../wailsjs/go/app/App'
-import type { app, settings } from '../../../wailsjs/go/models'
+import type { app } from '../../../wailsjs/go/models'
 import { useFlowsStore } from '../../stores/flows'
 import FilterGroupCard from './FilterGroupCard.vue'
 
-const props = defineProps<{ form: settings.Settings }>()
+const props = defineProps<{ form: app.SettingsView }>()
 // 导入即时落盘 + 热更新后，由父组件（SettingsPanel）重新 GetSettings 刷新表单
 const emit = defineEmits<{ (e: 'imported'): void }>()
 

@@ -21,24 +21,29 @@ import (
 // 取 pmu，在同一 goroutine 内二次加锁不可重入会死锁。因此历史补载（st.Add）一律在
 // pmu 解锁后执行（历史流 Source=history 会被 onPersistEvent 跳过，无回写风险）。
 
-// dbPath 解析持久化数据库路径：配置相对/空路径按配置目录（便携模式）解析
-func (a *App) dbPath(p settings.PersistConfig) string {
-	if p.DBPath != "" {
-		if filepath.IsAbs(p.DBPath) {
-			return p.DBPath
-		}
-		return filepath.Join(a.cfgDir, p.DBPath)
-	}
-	return filepath.Join(a.cfgDir, settings.DefaultDBPath)
+// persistOwner M9 起 writer 的所属项目打标（项目配置设计 §5.2 审计 v3 补强）：
+// writer 打开时记录所属项目 id 与代际 gen；onPersistEvent 入队前比对 flow.Gen 与
+// writer 的 gen（而非当前 projGen），封死 projGen++ 到 stopPersist 之间新代际流
+// 落旧项目库的窗口。切换瞬间在途流的终态两个项目都不保留（拍板丢弃）。
+type persistOwner struct {
+	w   *persist.Writer
+	gen uint64 // 所属项目代际（打开时的 projGen）
+	id  string // 所属项目 ID
+}
+
+// dbPath 持久化数据库路径：M9 起每项目独立 DB（config/projects/<id>/prism.db），
+// 废弃 persist.dbPath 自定义路径。调用方需持有 projMu（或处于启动单线程期）。
+func (a *App) dbPath() string {
+	return filepath.Join(a.projDir(), settings.DefaultDBPath)
 }
 
 // initPersist 启动时按配置开启持久化（默认关闭）：打开 DB、挂订阅、加载最近历史入 store。
 func (a *App) initPersist() {
-	cfg := a.cfg.Persist
+	cfg := a.gcfg.Persist
 	if !cfg.Enabled {
 		return
 	}
-	w, err := persist.Open(a.dbPath(cfg), cfg.RetainDays, cfg.MaxMB)
+	w, err := persist.Open(a.dbPath(), cfg.RetainDays, cfg.MaxMB)
 	if err != nil {
 		log.Printf("persist: 开启持久化失败（本次运行不落盘）: %v", err)
 		return
@@ -47,7 +52,7 @@ func (a *App) initPersist() {
 
 	a.pmu.Lock()
 	first := !a.persistSubbed
-	a.persist = w
+	a.persist = &persistOwner{w: w, gen: a.projGen.Load(), id: a.proj.ID}
 	if first {
 		a.persistSubbed = true
 	}
@@ -58,7 +63,7 @@ func (a *App) initPersist() {
 	if first {
 		a.st.Subscribe(a.onPersistEvent)
 	}
-	hist, err := w.LoadRecent(a.cfg.MaxFlows)
+	hist, err := w.LoadRecent(a.gcfg.MaxFlows)
 	if err != nil {
 		log.Printf("persist: 加载历史失败: %v", err)
 		return
@@ -72,38 +77,37 @@ func (a *App) initPersist() {
 }
 
 // onPersistEvent store 事件 → 持久化队列。仅终态流落盘（Writer.Enqueue 内部也判状态双保险）。
+// 代际比对（M9）：flow.Gen 必须与 writer 所属代际一致才入队，跨代际流直接丢弃，
+// 防止项目切换窗口期新代际流写入旧项目库。
 func (a *App) onPersistEvent(ev store.Event) {
 	a.pmu.Lock()
-	w := a.persist
+	po := a.persist
 	a.pmu.Unlock()
-	if w == nil {
+	if po == nil {
 		return
 	}
 	switch ev.Type {
 	case "new", "update":
 		// 历史流自身入 store 会产生 "new" 事件；跳过避免回写已在库的历史
-		if ev.Flow != nil && ev.Flow.Source != capture.SourceHistory {
-			w.Enqueue(ev.Flow)
+		if ev.Flow != nil && ev.Flow.Source != capture.SourceHistory && ev.Flow.Gen == po.gen {
+			po.w.Enqueue(ev.Flow)
 		}
 	}
 }
 
-// applyPersist 设置保存后热应用持久化开关/参数。
-// 关闭：停止并关闭 writer（DB 文件保留）。开启且 DB 路径变化/由关到开：重连并补载历史；
+// applyPersist 设置保存后热应用持久化开关/参数（调用方持 projMu）。
+// 关闭：停止并关闭 writer（DB 文件保留）。开启且由关到开：重连并补载历史；
 // 仅保留天数/体积上限变化：热更新 writer 参数，不重连、不重扫（避免无关设置保存也重开 DB）。
+// （M9 起 DB 路径随项目固定，同项目内不存在路径变化，故不再比较路径。）
 func (a *App) applyPersist(cfg settings.PersistConfig) error {
 	a.pmu.Lock()
 	old := a.persist
-	path := ""
-	if old != nil {
-		path = old.Path() // 旧 writer 实际打开的 DB 文件（不依赖 a.cfg，避免取到变更后的配置）
-	}
 	a.pmu.Unlock()
 
 	// 关闭：停写（DB 文件保留）
 	if !cfg.Enabled {
 		if old != nil {
-			old.Close()
+			old.w.Close()
 			a.pmu.Lock()
 			a.persist = nil
 			a.pmu.Unlock()
@@ -112,18 +116,14 @@ func (a *App) applyPersist(cfg settings.PersistConfig) error {
 		return nil
 	}
 
-	newPath := a.dbPath(cfg)
-	if old != nil && path == newPath {
-		// 同一 DB：仅保留策略可能变化，热更新参数即可（DB 路径不变无需重连）
-		old.UpdateRetention(cfg.RetainDays, cfg.MaxMB)
+	if old != nil {
+		// 同项目同一 DB：仅保留策略可能变化，热更新参数即可（无需重连）
+		old.w.UpdateRetention(cfg.RetainDays, cfg.MaxMB)
 		return nil
 	}
 
-	// 由关到开，或 DB 路径变化：关闭旧 writer（队列残留随 Close 刷盘）后打开新库
-	if old != nil {
-		old.Close()
-	}
-	w, err := persist.Open(newPath, cfg.RetainDays, cfg.MaxMB)
+	// 由关到开：打开当前项目库并补载历史
+	w, err := persist.Open(a.dbPath(), cfg.RetainDays, cfg.MaxMB)
 	if err != nil {
 		a.pmu.Lock()
 		a.persist = nil
@@ -134,7 +134,7 @@ func (a *App) applyPersist(cfg settings.PersistConfig) error {
 
 	a.pmu.Lock()
 	first := !a.persistSubbed
-	a.persist = w
+	a.persist = &persistOwner{w: w, gen: a.projGen.Load(), id: a.proj.ID}
 	if first {
 		a.persistSubbed = true
 	}
@@ -145,7 +145,7 @@ func (a *App) applyPersist(cfg settings.PersistConfig) error {
 	}
 
 	// 补载历史（pmu 外，避免 emit 回调重入死锁）：仅补内存中不存在的 ID
-	hist, err := w.LoadRecent(a.cfg.MaxFlows)
+	hist, err := w.LoadRecent(a.gcfg.MaxFlows)
 	if err != nil {
 		log.Printf("persist: 加载历史失败: %v", err)
 		return nil
@@ -164,8 +164,52 @@ func (a *App) applyPersist(cfg settings.PersistConfig) error {
 	return nil
 }
 
-// currentPersist 返回当前 writer（可能为 nil）
-func (a *App) currentPersist() *persist.Writer {
+// switchPersist 项目切换时换库（项目配置设计 §5.2 步骤 6）。
+// 调用方持 projMu 且已完成 st.ClearAll（store 已空，无旧项目流残留）。
+// 顺序：停旧 writer（队列刷盘关闭）→ 按全局 persist 开关打开新项目库 →
+// pmu 内换上新 owner（打标新代际）→ pmu 外补载新项目历史入 store。
+func (a *App) switchPersist() {
+	a.stopPersist()
+
+	cfg := a.gcfg.Persist
+	if !cfg.Enabled {
+		return
+	}
+	w, err := persist.Open(a.dbPath(), cfg.RetainDays, cfg.MaxMB)
+	if err != nil {
+		log.Printf("persist: 切换项目后开启持久化失败（本次运行不落盘）: %v", err)
+		return
+	}
+	w.Start()
+
+	a.pmu.Lock()
+	first := !a.persistSubbed
+	a.persist = &persistOwner{w: w, gen: a.projGen.Load(), id: a.proj.ID}
+	if first {
+		a.persistSubbed = true
+	}
+	a.pmu.Unlock()
+
+	if first {
+		a.st.Subscribe(a.onPersistEvent)
+	}
+
+	// 补载新项目历史（pmu 外；历史流 Source=history 会被 onPersistEvent 跳过，无回写）
+	hist, err := w.LoadRecent(a.gcfg.MaxFlows)
+	if err != nil {
+		log.Printf("persist: 加载新项目历史失败: %v", err)
+		return
+	}
+	for _, f := range hist {
+		a.st.Add(f)
+	}
+	if len(hist) > 0 {
+		log.Printf("persist: 已加载新项目 %d 条历史流量", len(hist))
+	}
+}
+
+// currentPersist 返回当前 writer 持有者（可能为 nil）
+func (a *App) currentPersist() *persistOwner {
 	a.pmu.Lock()
 	defer a.pmu.Unlock()
 	return a.persist
@@ -175,11 +219,11 @@ func (a *App) currentPersist() *persist.Writer {
 // writer 未开（持久化关闭）：返回 isHistory=false，由调用方据此提示而非静默空白；
 // 历史流 DB 无该 body 记录：返回 (nil,true,nil)（确实无 body）；查询/解压错误透传。
 func (a *App) persistBody(flowID, kind string) (body []byte, isHistory bool, err error) {
-	w := a.currentPersist()
-	if w == nil {
+	po := a.currentPersist()
+	if po == nil {
 		return nil, false, nil
 	}
-	body, err = w.LoadBody(flowID, kind)
+	body, err = po.w.LoadBody(flowID, kind)
 	return body, true, err
 }
 
@@ -201,13 +245,13 @@ func (a *App) loadHistBody(msg *capture.Message, flowID, kind string) string {
 	return ""
 }
 
-// stopPersist 退出时刷盘并关闭 DB
+// stopPersist 退出/切换项目时刷盘并关闭 DB
 func (a *App) stopPersist() {
 	a.pmu.Lock()
-	w := a.persist
+	po := a.persist
 	a.persist = nil
 	a.pmu.Unlock()
-	if w != nil {
-		w.Close()
+	if po != nil {
+		po.w.Close()
 	}
 }

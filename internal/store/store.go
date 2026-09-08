@@ -229,6 +229,26 @@ func (s *Store) Clear() {
 	}
 }
 
+// ClearAll 清空全部流（含置顶）并对其 ID 发 "evict"；供项目切换使用（项目配置设计 §5.2）。
+// UI 顶栏「清空」按钮仍用 Clear（保留置顶，语义不变，TestClearKeepsPinned 守护）。
+func (s *Store) ClearAll() {
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.flows))
+	for _, f := range s.flows {
+		ids = append(ids, f.ID)
+	}
+	s.flows = s.flows[:0]
+	s.next = 0
+	s.bodyBytes = 0
+	s.index = make(map[string]*capture.Flow)
+	s.acct = make(map[string]int64)
+	s.mu.Unlock()
+
+	if len(ids) > 0 {
+		s.emit([]Event{{Type: "evict", IDs: ids}})
+	}
+}
+
 // SetPinned 设置/取消置顶（方案 §4.4）。置顶流固定顶部展示、不参与淘汰、Clear 保留；
 // 置顶数达 MaxPinned 上限后再置顶返回错误。状态变更发 "update" 事件；状态不变为 no-op。
 func (s *Store) SetPinned(id string, pinned bool) (*capture.Flow, error) {

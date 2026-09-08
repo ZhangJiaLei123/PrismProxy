@@ -4,6 +4,8 @@ import (
 	"net/url"
 
 	"prismproxy/internal/capture"
+	"prismproxy/internal/rules"
+	"prismproxy/internal/settings"
 )
 
 // ---------- DTO（Wails 序列化给前端） ----------
@@ -69,6 +71,31 @@ type ProxyStatus struct {
 	Mode       string // MITM | tunnel-only
 	FlowCount  int
 	StartError string // 启动自动抓包失败原因（如端口占用），空为正常
+}
+
+// SettingsView GetSettings/SaveSettings 面向前端的合并 DTO（项目配置设计 §6.1）：
+// 全局环境字段 + 当前项目规则字段，前端表单字段名与旧单配置一致。
+type SettingsView struct {
+	// 环境（全局 settings.json）
+	ListenAddr         string `json:"listenAddr"`
+	UpstreamMode       string `json:"upstreamMode"`
+	UpstreamProxy      string `json:"upstreamProxy"`
+	MaxFlows           int    `json:"maxFlows"`
+	MaxBodyMB          int    `json:"maxBodyMB"`
+	ShowSysProxySwitch bool   `json:"showSysProxySwitch"`
+	AutoSysProxy       bool   `json:"autoSysProxy"`
+	// BypassList 系统代理 ProxyOverride 绕过列表（本机环境属性，全局唯一，见 §3.2）
+	BypassList []string               `json:"bypassList"`
+	Persist    settings.PersistConfig `json:"persist"`
+	ADB        settings.ADBConfig     `json:"adb"`
+	// 规则（当前项目 project.json）
+	FilterGroups []rules.FilterGroup `json:"filterGroups"`
+	DecryptRules []rules.DecryptRule `json:"decryptRules"`
+	// CurrentProject 只读项目上下文（SaveSettings 忽略入参该字段）
+	CurrentProject settings.ProjectMeta `json:"currentProject"`
+	// RulesProject 规则字段所属项目 id（GetSettings 回填=当前项目 id）；
+	// SaveSettings 校验其与当前项目一致，不一致拒绝保存（并发令牌，防 TOCTOU，见 §5.5）
+	RulesProject string `json:"rulesProject"`
 }
 
 // ---------- 转换 ----------

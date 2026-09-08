@@ -37,7 +37,7 @@
   <section class="sec">
     <div class="sec-title">系统代理绕过列表（ProxyOverride）</div>
     <n-dynamic-tags v-model:value="form.bypassList" />
-    <div class="hint">裸域名匹配自身+全部子域；&lt;-loopback&gt; 绕过本地回环。接管状态下需重新开关系统代理生效。</div>
+    <div class="hint">裸域名匹配自身+全部子域；&lt;-loopback&gt; 绕过本地回环。接管状态下保存后自动热下发生效（M9 起）。</div>
   </section>
 </template>
 
@@ -45,9 +45,9 @@
 import { onMounted, ref, watch } from 'vue'
 import { NSelect, NInputNumber, NInput, NButton, NDynamicTags } from 'naive-ui'
 import { GetLocalAddrs, FindFreePort } from '../../../wailsjs/go/app/App'
-import type { settings } from '../../../wailsjs/go/models'
+import type { app } from '../../../wailsjs/go/models'
 
-const props = defineProps<{ form: settings.Settings }>()
+const props = defineProps<{ form: app.SettingsView }>()
 
 const bindIP = ref('127.0.0.1')
 const bindPort = ref<number | null>(9090)

@@ -154,12 +154,15 @@ func (a *App) AdbTest(adbPath string) (string, error) {
 // AdbSetProxy 对指定设备写入全局 http_proxy（host:port 取代理实际监听地址）。
 // serial 为空且 adb server 下有多台设备时 adb 会报错（需在配置中填序列号）。
 func (a *App) AdbSetProxy(adbPath, serial, deviceHost string) (string, error) {
+	if deviceHost == "" {
+		// 全局 ADB 配置；projMu → a.mu 锁序：先取快照再进 a.mu，禁止反向（设计 §5.4）。
+		a.projMu.Lock()
+		deviceHost = a.gcfg.ADB.DeviceProxyHost
+		a.projMu.Unlock()
+	}
 	a.mu.Lock()
 	running := a.srv != nil
 	addr := a.addr
-	if deviceHost == "" {
-		deviceHost = a.cfg.ADB.DeviceProxyHost
-	}
 	a.mu.Unlock()
 	if !running {
 		return "", fmt.Errorf("代理未启动，无法设置设备代理")
@@ -218,12 +221,12 @@ func (a *App) runAdbTimeout(timeout time.Duration, adbPath, serial string, args 
 	return string(out), nil
 }
 
-// adbSnapshot 取当前 adb 配置快照（设备侧 host + 配置列表），供自动挂钩使用。
+// adbSnapshot 在 projMu 下读取 ADB 全局配置（M9 起随全局，gcfg）。
 func (a *App) adbSnapshot() (host string, cfgs []settings.ADBDevice) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	host = a.cfg.ADB.DeviceProxyHost
-	cfgs = append([]settings.ADBDevice(nil), a.cfg.ADB.Configs...)
+	a.projMu.Lock()
+	defer a.projMu.Unlock()
+	host = a.gcfg.ADB.DeviceProxyHost
+	cfgs = append([]settings.ADBDevice(nil), a.gcfg.ADB.Configs...)
 	return
 }
 

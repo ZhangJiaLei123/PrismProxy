@@ -87,6 +87,10 @@ type Flow struct {
 	Err        string
 	Pinned     bool // M5 置顶：固定顶部展示、不参与环形淘汰、Clear 保留、会话内不持久化（方案 §4.4）
 	Source     string // capture | composer（M6 调试重发，方案 §4.10）；空值按 capture 处理
+	// Gen 会话态项目代际（M9，不持久化）：recorder 创建流时打标当前 projGen；
+	// 项目热切换后旧代际流的 Update/Finish 直接丢弃（不复活已清空列表、不入新项目库，
+	// 项目配置设计 §5.2 在途流归属）。
+	Gen uint64
 }
 
 func NewFlow(id string) *Flow {

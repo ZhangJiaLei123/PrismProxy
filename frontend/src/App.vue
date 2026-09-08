@@ -5,6 +5,8 @@
       <n-layout style="height: 100%">
       <n-layout-header bordered style="height: 40px; display: flex; align-items: center; padding: 0 12px; gap: 12px">
         <!-- <span style="font-weight: 600">PrismProxy</span> -->
+        <!-- M9：项目切换器（规则/历史随项目隔离，运行中热切换） -->
+        <project-switcher />
         <n-tag
           size="small"
           :type="status.Running ? 'success' : 'error'"
@@ -122,6 +124,7 @@ import FlowList from './pages/FlowList.vue'
 import FlowDetail from './pages/FlowDetail.vue'
 import SettingsPanel from './pages/SettingsPanel.vue'
 import Composer from './pages/Composer.vue'
+import ProjectSwitcher from './components/ProjectSwitcher.vue'
 import { useFlowsStore } from './stores/flows'
 import { GetProxyStatus, StartProxy, StopProxy, GetSystemProxyStatus, SetSystemProxy, GetSettings } from '../wailsjs/go/app/App'
 import { EventsOn, WindowUnminimise } from '../wailsjs/runtime/runtime'

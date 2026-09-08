@@ -41,6 +41,10 @@ type Sender struct {
 	NewID    func() string
 	Store    capture.FlowStore
 	Upstream string // 上游 HTTP 代理 host:port（环路防护后；空=直连）
+	// Gen 项目代际（M9）：非 nil 时创建 Flow 打标当前代际。Sender 直接 Store.Add 不经
+	// recorder，若不打标则 Gen=0，项目切换后（projGen≥1）onPersistEvent 代际比对会
+	// 把重发流量永久排除在落盘之外。nil=不打标（测试/单项目场景）。
+	Gen func() uint64
 }
 
 // composerHopHeaders 重发时剥离的逐跳/自动派生首部（Go Transport 与重定向会自行处理）
@@ -83,6 +87,9 @@ func (s *Sender) Send(ctx context.Context, req Request) (*capture.Flow, error) {
 	}
 
 	flow := capture.NewFlow(s.NewID())
+	if s.Gen != nil {
+		flow.Gen = s.Gen()
+	}
 	flow.Source = capture.SourceComposer
 	flow.Scheme = u.Scheme
 	flow.ServerAddr = u.Host

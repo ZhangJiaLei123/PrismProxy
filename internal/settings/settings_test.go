@@ -8,71 +8,65 @@ import (
 	"prismproxy/internal/rules"
 )
 
-func TestLoadMissingReturnsDefault(t *testing.T) {
-	s, err := Load(filepath.Join(t.TempDir(), "nope"))
+func TestLoadGlobalMissingReturnsDefault(t *testing.T) {
+	g, err := LoadGlobal(filepath.Join(t.TempDir(), "nope"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.ListenAddr != "127.0.0.1:9090" || s.MaxFlows != 2000 || s.MaxBodyMB != 256 {
-		t.Fatalf("默认值不对: %+v", s)
+	if g.ListenAddr != "127.0.0.1:9090" || g.MaxFlows != 2000 || g.MaxBodyMB != 256 {
+		t.Fatalf("默认值不对: %+v", g)
 	}
-	if len(s.BypassList) != len(BuiltinBypass) {
+	if len(g.BypassList) != len(BuiltinBypass) {
 		t.Fatal("默认绕过列表应为内置列表")
 	}
-	if s.FilterGroups == nil {
-		t.Fatal("FilterGroups 应初始化为空切片（不序列化出 null）")
+	if g.Projects == nil {
+		t.Fatal("Projects 应初始化为空切片（不序列化出 null）")
 	}
 }
 
-func TestSaveLoadRoundtrip(t *testing.T) {
+func TestSaveLoadGlobalRoundtrip(t *testing.T) {
 	dir := t.TempDir()
-	s := Default()
-	s.ListenAddr = "0.0.0.0:8888"
-	s.UpstreamMode = UpstreamManual
-	s.UpstreamProxy = "127.0.0.1:7890"
-	s.MaxFlows = 500
-	s.MaxBodyMB = 64
-	s.BypassList = append(s.BypassList, "my.corp.com")
-	s.FilterGroups = []rules.FilterGroup{{
-		ID: "1", Name: "只抓网易", Enabled: true, Mode: rules.ModeWhitelist,
-		Hosts: []string{"netease.com", "@netease"}, Paths: []string{"/api/*"}, Processes: []string{"dnplayer.exe"},
-	}}
-	s.DecryptRules = []rules.DecryptRule{{Action: rules.ActionBypass, Host: "pin.example.com"}}
+	g := DefaultGlobal()
+	g.ListenAddr = "0.0.0.0:8888"
+	g.UpstreamMode = UpstreamManual
+	g.UpstreamProxy = "127.0.0.1:7890"
+	g.MaxFlows = 500
+	g.MaxBodyMB = 64
+	g.BypassList = append(g.BypassList, "my.corp.com")
+	g.Persist.DBPath = `C:\somewhere\custom.db` // 废弃字段，保存须强制清空
+	g.Projects = []ProjectMeta{{ID: "1700000000000-1", Name: "默认项目"}}
+	g.CurrentProject = "1700000000000-1"
 
-	if err := s.Save(dir); err != nil {
+	if err := g.SaveGlobal(dir); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Load(dir)
+	got, err := LoadGlobal(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ListenAddr != s.ListenAddr || got.UpstreamMode != s.UpstreamMode ||
-		got.UpstreamProxy != s.UpstreamProxy || got.MaxFlows != 500 || got.MaxBodyMB != 64 {
+	if got.ListenAddr != g.ListenAddr || got.UpstreamMode != g.UpstreamMode ||
+		got.UpstreamProxy != g.UpstreamProxy || got.MaxFlows != 500 || got.MaxBodyMB != 64 {
 		t.Fatalf("往返后基础字段不一致: %+v", got)
 	}
-	if len(got.BypassList) != len(s.BypassList) {
+	if len(got.BypassList) != len(g.BypassList) {
 		t.Fatal("绕过列表丢失")
 	}
-	if len(got.FilterGroups) != 1 || got.FilterGroups[0].Name != "只抓网易" ||
-		got.FilterGroups[0].Mode != rules.ModeWhitelist || len(got.FilterGroups[0].Paths) != 1 {
-		t.Fatalf("过滤规则组丢失: %+v", got.FilterGroups)
+	if got.Persist.DBPath != "" {
+		t.Fatalf("dbPath 已废弃，不应落盘/读出: %q", got.Persist.DBPath)
 	}
-	if len(got.DecryptRules) != 1 || got.DecryptRules[0].Host != "pin.example.com" {
-		t.Fatalf("解密规则丢失: %+v", got.DecryptRules)
+	if len(got.Projects) != 1 || got.Projects[0].ID != "1700000000000-1" || got.CurrentProject != "1700000000000-1" {
+		t.Fatalf("项目清单/当前指针丢失: %+v", got.Projects)
 	}
 }
 
-func TestLoadLegacyMissingFieldsFallback(t *testing.T) {
+func TestLoadGlobalLegacyMissingFieldsFallback(t *testing.T) {
 	dir := t.TempDir()
-	if err := Default().Save(dir); err != nil {
-		t.Fatal(err)
-	}
 	// 手工截断成旧版最小 JSON
 	minJSON := []byte(`{"listenAddr":"127.0.0.1:9999"}`)
 	if err := os.WriteFile(filepath.Join(dir, fileName), minJSON, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Load(dir)
+	got, err := LoadGlobal(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,33 +80,33 @@ func TestLoadLegacyMissingFieldsFallback(t *testing.T) {
 
 // 旧 captureRules/processRules → filterGroups 迁移（规则设计 §六）
 func TestMigrate(t *testing.T) {
-	s := Default()
-	s.CaptureRules = []rules.CaptureRule{
+	pc := DefaultProjectConfig("t1", "测试")
+	pc.CaptureRules = []rules.CaptureRule{
 		{Action: rules.ActionExclude, Host: "tracker.com"},
 		{Action: rules.ActionExclude, Host: "ads.com", URLRe: "/telemetry/", Method: "POST"}, // urlRe/method 丢弃
 		{Action: rules.ActionInclude, Host: "netease.com"},
 		{Action: rules.ActionExclude, Host: "tracker.com"}, // 去重
 	}
-	s.ProcessRules = []rules.ProcessRule{
+	pc.ProcessRules = []rules.ProcessRule{
 		{Action: rules.ActionExclude, Name: "dnplayer.exe"},
 	}
-	s.DecryptRules = []rules.DecryptRule{{Action: rules.ActionBypass, Host: "pin.example.com"}}
+	pc.DecryptRules = []rules.DecryptRule{{Action: rules.ActionBypass, Host: "pin.example.com"}}
 
-	if !s.Migrate() {
+	if !pc.Migrate() {
 		t.Fatal("应发生迁移")
 	}
-	if len(s.CaptureRules) != 0 || len(s.ProcessRules) != 0 {
+	if len(pc.CaptureRules) != 0 || len(pc.ProcessRules) != 0 {
 		t.Fatal("迁移后旧字段应清空")
 	}
-	if len(s.DecryptRules) != 1 {
+	if len(pc.DecryptRules) != 1 {
 		t.Fatal("decryptRules 不应改动")
 	}
-	if len(s.FilterGroups) != 3 {
-		t.Fatalf("应生成 3 个迁移组（捕获黑/白 + 进程黑）: %+v", s.FilterGroups)
+	if len(pc.FilterGroups) != 3 {
+		t.Fatalf("应生成 3 个迁移组（捕获黑/白 + 进程黑）: %+v", pc.FilterGroups)
 	}
 	var cb, cw, pb *rules.FilterGroup
-	for i := range s.FilterGroups {
-		g := &s.FilterGroups[i]
+	for i := range pc.FilterGroups {
+		g := &pc.FilterGroups[i]
 		switch g.ID {
 		case "_migrated_capture_black":
 			cb = g
@@ -141,10 +135,10 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("进程黑名单组不对: %+v", pb)
 	}
 	// 迁移幂等：二次调用不再生成
-	if s.Migrate() {
+	if pc.Migrate() {
 		t.Fatal("二次 Migrate 应返回 false")
 	}
-	if len(s.FilterGroups) != 3 {
+	if len(pc.FilterGroups) != 3 {
 		t.Fatal("迁移应幂等，不重复生成迁移组")
 	}
 }
@@ -152,22 +146,22 @@ func TestMigrate(t *testing.T) {
 // 迁移后落盘 → 二次 Load 不重复迁移（GUI 验收 #4 的存储层保障）
 func TestMigratePersistedIdempotent(t *testing.T) {
 	dir := t.TempDir()
-	s := Default()
-	s.CaptureRules = []rules.CaptureRule{{Action: rules.ActionExclude, Host: "tracker.com"}}
-	if err := s.Save(dir); err != nil {
+	pc := DefaultProjectConfig("t1", "测试")
+	pc.CaptureRules = []rules.CaptureRule{{Action: rules.ActionExclude, Host: "tracker.com"}}
+	if err := SaveProjectConfig(dir, pc); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Load(dir)
+	got, err := LoadProjectConfig(dir, "t1", "测试")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got.Migrate() {
 		t.Fatal("首轮应迁移")
 	}
-	if err := got.Save(dir); err != nil {
+	if err := SaveProjectConfig(dir, got); err != nil {
 		t.Fatal(err)
 	}
-	got2, err := Load(dir)
+	got2, err := LoadProjectConfig(dir, "t1", "测试")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,27 +175,27 @@ func TestMigratePersistedIdempotent(t *testing.T) {
 
 // M5 早期混合内置组 _quick_ignore（hosts+processes 同组）须拆分为两个独立组（组间 OR）
 func TestMigrateSplitQuickIgnore(t *testing.T) {
-	s := Default()
-	s.FilterGroups = append(s.FilterGroups, rules.FilterGroup{
+	pc := DefaultProjectConfig("t1", "测试")
+	pc.FilterGroups = append(pc.FilterGroups, rules.FilterGroup{
 		ID: "_quick_ignore", Name: "快捷忽略", Enabled: true, Mode: rules.ModeBlacklist,
 		Hosts: []string{"www.bilibili.com"}, Processes: []string{"curl.exe"},
 	})
-	if !s.Migrate() {
+	if !pc.Migrate() {
 		t.Fatal("应发生拆分迁移")
 	}
 	var hosts, procs *rules.FilterGroup
-	for i := range s.FilterGroups {
-		switch s.FilterGroups[i].ID {
+	for i := range pc.FilterGroups {
+		switch pc.FilterGroups[i].ID {
 		case "_quick_ignore":
 			t.Fatal("旧混合组应已移除")
 		case "_quick_ignore_hosts":
-			hosts = &s.FilterGroups[i]
+			hosts = &pc.FilterGroups[i]
 		case "_quick_ignore_procs":
-			procs = &s.FilterGroups[i]
+			procs = &pc.FilterGroups[i]
 		}
 	}
 	if hosts == nil || procs == nil {
-		t.Fatalf("应生成域名组与进程组: %+v", s.FilterGroups)
+		t.Fatalf("应生成域名组与进程组: %+v", pc.FilterGroups)
 	}
 	if len(hosts.Hosts) != 1 || hosts.Hosts[0] != "www.bilibili.com" || len(hosts.Processes) != 0 {
 		t.Fatalf("域名组内容异常: %+v", hosts)
@@ -210,48 +204,54 @@ func TestMigrateSplitQuickIgnore(t *testing.T) {
 		t.Fatalf("进程组内容异常: %+v", procs)
 	}
 	// 幂等：二次调用不再变化
-	if s.Migrate() {
+	if pc.Migrate() {
 		t.Fatal("拆分迁移应幂等")
 	}
 }
 
-func TestValidate(t *testing.T) {
-	gmap := map[string][]string{"ai": {"trae.cn"}}
-	assertErr := func(s *Settings, msg string) {
+func TestValidateEnv(t *testing.T) {
+	assertErr := func(g *GlobalSettings, msg string) {
 		t.Helper()
-		if err, _ := s.Validate(gmap); err == nil {
+		if err := g.ValidateEnv(); err == nil {
 			t.Fatal(msg)
 		}
 	}
 
-	bad := Default()
+	bad := DefaultGlobal()
 	bad.ListenAddr = "not-an-addr"
 	assertErr(bad, "非法监听地址应报错")
 
-	bad = Default()
+	bad = DefaultGlobal()
 	bad.UpstreamMode = UpstreamManual
 	assertErr(bad, "manual 模式空代理地址应报错")
 
-	bad = Default()
+	bad = DefaultGlobal()
 	bad.UpstreamMode = "bogus"
 	assertErr(bad, "非法上游模式应报错")
 
-	bad = Default()
-	bad.FilterGroups = []rules.FilterGroup{{Name: "g", Enabled: true, Mode: "nope"}}
-	assertErr(bad, "非法 mode 应报错")
+	good := DefaultGlobal()
+	good.UpstreamMode = UpstreamManual
+	good.UpstreamProxy = "127.0.0.1:7890"
+	if err := good.ValidateEnv(); err != nil {
+		t.Fatalf("合法配置不应报错: %v", err)
+	}
+}
 
-	bad = Default()
-	bad.FilterGroups = []rules.FilterGroup{{Name: "", Enabled: true, Mode: rules.ModeBlacklist}}
-	assertErr(bad, "空组名应报错")
+func TestValidateRules(t *testing.T) {
+	gmap := map[string][]string{"ai": {"trae.cn"}}
+	assertErr := func(fg []rules.FilterGroup, msg string) {
+		t.Helper()
+		if err, _ := ValidateRules(fg, nil, gmap); err == nil {
+			t.Fatal(msg)
+		}
+	}
 
-	bad = Default()
-	bad.FilterGroups = []rules.FilterGroup{{Name: "g", Enabled: true, Mode: rules.ModeBlacklist, Hosts: []string{"*"}}}
-	assertErr(bad, "裸 * host 应报错")
+	assertErr([]rules.FilterGroup{{Name: "g", Enabled: true, Mode: "nope"}}, "非法 mode 应报错")
+	assertErr([]rules.FilterGroup{{Name: "", Enabled: true, Mode: rules.ModeBlacklist}}, "空组名应报错")
+	assertErr([]rules.FilterGroup{{Name: "g", Enabled: true, Mode: rules.ModeBlacklist, Hosts: []string{"*"}}}, "裸 * host 应报错")
 
 	// 未知 @引用 → warning 不阻塞
-	warn := Default()
-	warn.FilterGroups = []rules.FilterGroup{{Name: "g", Enabled: true, Mode: rules.ModeBlacklist, Hosts: []string{"@nope", "@ai"}}}
-	err, warns := warn.Validate(gmap)
+	err, warns := ValidateRules([]rules.FilterGroup{{Name: "g", Enabled: true, Mode: rules.ModeBlacklist, Hosts: []string{"@nope", "@ai"}}}, nil, gmap)
 	if err != nil {
 		t.Fatalf("未知 @引用 不应阻塞保存: %v", err)
 	}
@@ -259,10 +259,7 @@ func TestValidate(t *testing.T) {
 		t.Fatalf("应产生 1 条 warning（仅 @nope）: %v", warns)
 	}
 
-	good := Default()
-	good.UpstreamMode = UpstreamManual
-	good.UpstreamProxy = "127.0.0.1:7890"
-	if err, _ := good.Validate(gmap); err != nil {
-		t.Fatalf("合法配置不应报错: %v", err)
+	if err, _ := ValidateRules([]rules.FilterGroup{{Name: "g", Enabled: true, Mode: rules.ModeBlacklist, Hosts: []string{"@ai"}}}, nil, gmap); err != nil {
+		t.Fatalf("合法规则不应报错: %v", err)
 	}
 }

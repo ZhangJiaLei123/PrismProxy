@@ -33,18 +33,47 @@ type Service interface {
 	GetFlow(id string) (any, error)
 	GetFlowBody(id, which string) (any, error)
 	ClearFlows() int // 返回清除条数（置顶保留）
-	// 规则（过滤规则组 / 解密规则）
-	ListRules() any
-	RuleIgnore(target, value string) (bool, error) // target=host|process；added=false 表示幂等已存在
-	RuleGroupSetEnabled(id string, enabled bool) error
-	RuleDecrypt(action, host string) error // action=mitm|bypass
+	// 规则（过滤规则组 / 解密规则）；project 空=当前项目，否则按 id|名称解析（设计 §6.3）
+	ListRules(project string) (any, error)
+	RuleIgnore(project, target, value string) (bool, error) // target=host|process；added=false 表示幂等已存在
+	RuleGroupSetEnabled(project, id string, enabled bool) error
+	RuleDecrypt(project, action, host string) error // action=mitm|bypass
 	// 系统代理 / 设置
 	SysProxy(action string) (string, error) // action=on|off|status → 返回 state
-	GetSettings() any
-	SaveSettings(raw json.RawMessage) (warnings []string, err error)
+	GetSettings(project string) (any, error)
+	SaveSettings(project string, raw json.RawMessage) (warnings []string, err error)
+	// 项目（M9，设计 §6.3）
+	ListProjects() any
+	SwitchProject(idOrName string) (any, error)
+	CreateProject(name, from string) (any, error) // from 非空=从该项目复制规则+域名组
+	RenameProject(idOrName, name string) (any, error)
+	DeleteProject(idOrName string) error
 	// UI 控制（第二步）：仅 GUI 模式真正生效
 	UIClear() (cleared int, ui bool)
 	UISettings(tab string) (ui bool)
+	// 代理生命周期 / CA（M10 补面）
+	StartProxy() error
+	StopProxy() error
+	InstallCA() error
+	// ADB 设备代理（M10 补面）
+	AdbTest(adbPath string) (string, error)
+	AdbSetProxy(adbPath, serial string) (string, error) // deviceHost 由后端按配置/默认补
+	AdbClearProxy(adbPath, serial string) (string, error)
+	AdbDevices() any                                    // 已配置的 ADB 设备清单（供 CLI 发现 path/serial）
+	// 域名组（M10 补面）；project 空=当前项目，非当前项目写文件不热切换
+	ListDomainGroups(project string) (any, error)
+	GetDomainGroup(project, id string) (any, error) // 返回 {id,text}
+	SaveDomainGroup(project, id, content string) (any, error)
+	DeleteDomainGroup(project, id string) error
+	ImportDomainGroup(project, id, source string) (any, error) // source=http(s) URL 或本地文件路径
+	// 规则导入导出（M10 补面）
+	ExportRules(project string, embedGroups bool) (json.RawMessage, error) // 返回 rules JSON 原文
+	ImportRules(project, src string) (warnings []string, err error)        // src=http(s) URL 或本地文件路径
+	// 流量动作 / 调试（M10 补面）
+	SetFlowPinned(id string, pinned bool) error
+	BuildCurl(id, shell string) (any, error)
+	Compose(raw json.RawMessage) (any, error)
+	ListProcesses() []string
 }
 
 // Server 控制 API HTTP 服务（仅回环）
@@ -170,7 +199,16 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/v1/rules/", s.auth(s.handleRulesSub))
 	mux.HandleFunc("/api/v1/sysproxy", s.auth(s.handleSysProxy))
 	mux.HandleFunc("/api/v1/settings", s.auth(s.handleSettings))
+	mux.HandleFunc("/api/v1/projects", s.auth(s.handleProjects))
 	mux.HandleFunc("/api/v1/ui/", s.auth(s.handleUI))
+	mux.HandleFunc("/api/v1/proxy", s.auth(s.handleProxy))
+	mux.HandleFunc("/api/v1/ca/install", s.auth(s.handleCA))
+	mux.HandleFunc("/api/v1/adb", s.auth(s.handleADB))
+	mux.HandleFunc("/api/v1/adb/", s.auth(s.handleADB))
+	mux.HandleFunc("/api/v1/domains", s.auth(s.handleDomains))
+	mux.HandleFunc("/api/v1/domains/", s.auth(s.handleDomains))
+	mux.HandleFunc("/api/v1/processes", s.auth(s.handleProcesses))
+	mux.HandleFunc("/api/v1/compose", s.auth(s.handleCompose))
 	// SSE 推送（query token 仅此端点接受：EventSource 无法自定义请求头）
 	mux.HandleFunc("/api/v1/events", s.auth(s.handleEvents, true))
 	return mux
@@ -370,10 +408,15 @@ func (s *Server) handleFlowSub(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, v)
 		return
 	}
-	if parts[1] == "body" {
+	switch parts[1] {
+	case "body":
 		which := r.URL.Query().Get("which")
 		if which == "" {
 			which = "resp"
+		}
+		if r.Method != http.MethodGet {
+			writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+			return
 		}
 		v, err := s.svc.GetFlowBody(id, which)
 		if err != nil {
@@ -382,14 +425,56 @@ func (s *Server) handleFlowSub(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, v)
 		return
+	case "pin":
+		// POST /flows/{id}/pin  {pinned:bool}
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+			return
+		}
+		var req struct {
+			Pinned bool `json:"pinned"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+			return
+		}
+		if err := s.svc.SetFlowPinned(id, req.Pinned); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "pinned": req.Pinned})
+		return
+	case "curl":
+		// GET /flows/{id}/curl?shell=cmd|powershell|bash
+		if r.Method != http.MethodGet {
+			writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+			return
+		}
+		shell := r.URL.Query().Get("shell")
+		if shell == "" {
+			shell = "powershell"
+		}
+		v, err := s.svc.BuildCurl(id, shell)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+		return
 	}
-	writeErr(w, http.StatusNotFound, "未知路径")
+	writeErr(w, http.StatusNotFound, "未知路径（可用：/flows/{id}、/flows/{id}/body、/flows/{id}/pin、/flows/{id}/curl）")
 }
 
 func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, s.svc.ListRules())
+		v, err := s.svc.ListRules(project)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
 	case http.MethodPost:
 		var req struct {
 			Action string `json:"action"` // ignore | decrypt
@@ -404,14 +489,14 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 		}
 		switch req.Action {
 		case "ignore":
-			added, err := s.svc.RuleIgnore(req.Target, req.Value)
+			added, err := s.svc.RuleIgnore(project, req.Target, req.Value)
 			if err != nil {
 				writeErr(w, http.StatusBadRequest, err.Error())
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"added": added})
 		case "decrypt":
-			if err := s.svc.RuleDecrypt(req.Kind, req.Host); err != nil {
+			if err := s.svc.RuleDecrypt(project, req.Kind, req.Host); err != nil {
 				writeErr(w, http.StatusBadRequest, err.Error())
 				return
 			}
@@ -425,11 +510,52 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRulesSub(w http.ResponseWriter, r *http.Request) {
-	// /api/v1/rules/groups/{id}/enabled  {enabled:bool}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/rules/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	project := r.URL.Query().Get("project")
+
+	// /rules/export?embed=1  → GET，返回规则 JSON 文件原文（供 CLI 重定向保存）
+	if len(parts) == 1 && parts[0] == "export" {
+		if r.Method != http.MethodGet {
+			writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+			return
+		}
+		embed := r.URL.Query().Get("embed") != "" && r.URL.Query().Get("embed") != "0" && r.URL.Query().Get("embed") != "false"
+		raw, err := s.svc.ExportRules(project, embed)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(raw)
+		return
+	}
+	// /rules/import  → POST {src: 本地路径|http(s) URL}
+	if len(parts) == 1 && parts[0] == "import" {
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+			return
+		}
+		var req struct {
+			Src string `json:"src"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+			return
+		}
+		warnings, err := s.svc.ImportRules(project, req.Src)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "warnings": warnings})
+		return
+	}
+
+	// /rules/groups/{id}/enabled  {enabled:bool}
 	if len(parts) != 3 || parts[0] != "groups" || parts[2] != "enabled" {
-		writeErr(w, http.StatusNotFound, "未知路径（可用：/rules/groups/{id}/enabled）")
+		writeErr(w, http.StatusNotFound, "未知路径（可用：/rules/groups/{id}/enabled、/rules/export、/rules/import）")
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -443,7 +569,7 @@ func (s *Server) handleRulesSub(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
 		return
 	}
-	if err := s.svc.RuleGroupSetEnabled(parts[1], req.Enabled); err != nil {
+	if err := s.svc.RuleGroupSetEnabled(project, parts[1], req.Enabled); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -483,16 +609,22 @@ func (s *Server) handleSysProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, s.svc.GetSettings())
+		v, err := s.svc.GetSettings(project)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
 	case http.MethodPut:
 		raw, err := readBody(r, 4<<20)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		warnings, err := s.svc.SaveSettings(raw)
+		warnings, err := s.svc.SaveSettings(project, raw)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -500,6 +632,58 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "warnings": warnings})
 	default:
 		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET/PUT")
+	}
+}
+
+// handleProjects 项目 CRUD（M9，设计 §6.3）：GET 列表；POST action=switch|create|rename|delete
+func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, s.svc.ListProjects())
+	case http.MethodPost:
+		var req struct {
+			Action string `json:"action"` // switch | create | rename | delete
+			ID     string `json:"id"`     // switch/rename/delete 目标（id|名称）
+			Name   string `json:"name"`   // create/rename 名称
+			From   string `json:"from"`   // create 复制源（id|名称，可空）
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+			return
+		}
+		switch req.Action {
+		case "switch":
+			v, err := s.svc.SwitchProject(req.ID)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "current": v})
+		case "create":
+			v, err := s.svc.CreateProject(req.Name, req.From)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "project": v})
+		case "rename":
+			v, err := s.svc.RenameProject(req.ID, req.Name)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, v)
+		case "delete":
+			if err := s.svc.DeleteProject(req.ID); err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		default:
+			writeErr(w, http.StatusBadRequest, "action 须为 switch|create|rename|delete")
+		}
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET/POST")
 	}
 }
 
@@ -528,6 +712,201 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeErr(w, http.StatusNotFound, "未知路径（可用：/ui/clear、/ui/settings）")
 	}
+}
+
+// ---------- 代理生命周期 / CA ----------
+
+func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		var req struct {
+			Action string `json:"action"` // start | stop
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+			return
+		}
+		var err error
+		switch req.Action {
+		case "start":
+			err = s.svc.StartProxy()
+		case "stop":
+			err = s.svc.StopProxy()
+		default:
+			writeErr(w, http.StatusBadRequest, "action 须为 start|stop")
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, s.svc.Status())
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+	}
+}
+
+func (s *Server) handleCA(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	if err := s.svc.InstallCA(); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// ---------- ADB 设备代理 ----------
+
+func (s *Server) handleADB(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/adb")
+	rest = strings.Trim(rest, "/")
+	if r.Method != http.MethodPost {
+		// GET /adb → 已配置设备清单（供 CLI 发现 path/serial）
+		if r.Method == http.MethodGet && rest == "" {
+			writeJSON(w, http.StatusOK, s.svc.AdbDevices())
+			return
+		}
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET/POST")
+		return
+	}
+	var req struct {
+		Action  string `json:"action"` // test | set | clear
+		AdbPath string `json:"adbPath"`
+		Serial  string `json:"serial"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
+	// 允许 /adb/<action> 子路径覆盖请求体 action（CLI 走 RESTful 子路径）
+	if rest != "" && (rest == "test" || rest == "set" || rest == "clear") {
+		req.Action = rest
+	}
+	var msg string
+	var err error
+	switch req.Action {
+	case "test":
+		msg, err = s.svc.AdbTest(req.AdbPath)
+	case "set":
+		msg, err = s.svc.AdbSetProxy(req.AdbPath, req.Serial)
+	case "clear":
+		msg, err = s.svc.AdbClearProxy(req.AdbPath, req.Serial)
+	default:
+		writeErr(w, http.StatusBadRequest, "action 须为 test|set|clear")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": msg})
+}
+
+// ---------- 域名组 ----------
+
+func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/domains")
+	id := strings.Trim(rest, "/")
+	project := r.URL.Query().Get("project")
+
+	switch r.Method {
+	case http.MethodGet:
+		if id == "" {
+			v, err := s.svc.ListDomainGroups(project)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, v)
+			return
+		}
+		v, err := s.svc.GetDomainGroup(project, id)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	case http.MethodPost:
+		// /domains/import {id, source}：从本地路径或 http(s) URL 导入
+		if id == "import" {
+			var req struct {
+				ID     string `json:"id"`
+				Source string `json:"source"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
+				writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+				return
+			}
+			if strings.TrimSpace(req.Source) == "" {
+				writeErr(w, http.StatusBadRequest, "source 为空（本地文件路径或 http(s) URL）")
+				return
+			}
+			v, err := s.svc.ImportDomainGroup(project, req.ID, req.Source)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, v)
+			return
+		}
+		// /domains/{id} {content}：保存/新建（覆盖）
+		var req struct {
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+			return
+		}
+		v, err := s.svc.SaveDomainGroup(project, id, req.Content)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	case http.MethodDelete:
+		if id == "" || id == "import" {
+			writeErr(w, http.StatusBadRequest, "缺少域名组 id")
+			return
+		}
+		if err := s.svc.DeleteDomainGroup(project, id); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET/POST/DELETE")
+	}
+}
+
+// ---------- 进程枚举 / 调试重发 ----------
+
+func (s *Server) handleProcesses(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"processes": s.svc.ListProcesses()})
+}
+
+func (s *Server) handleCompose(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	raw, err := readBody(r, 2<<20)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	v, err := s.svc.Compose(raw)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
 }
 
 // ---------- 响应辅助 ----------

@@ -56,8 +56,12 @@ func (a *App) SendComposed(req *ComposedRequest) (*FlowDetail, error) {
 	if req == nil {
 		return nil, fmt.Errorf("请求为空")
 	}
+	// 上游为全局环境配置：先 projMu 快照再进 a.mu（锁序 projMu → a.mu，禁止反向）。
+	a.projMu.Lock()
+	upMode, upManual := a.gcfg.UpstreamMode, a.gcfg.UpstreamProxy
+	a.projMu.Unlock()
 	a.mu.Lock()
-	upstream := proxy.GuardUpstreamLoop(a.resolveUpstream(a.addr), hostOfAddr(a.addr), portOfAddr(a.addr))
+	upstream := proxy.GuardUpstreamLoop(resolveUpstream(upMode, upManual, a.addr), hostOfAddr(a.addr), portOfAddr(a.addr))
 	rec := a.rec
 	st := a.st
 	a.mu.Unlock()
@@ -66,6 +70,7 @@ func (a *App) SendComposed(req *ComposedRequest) (*FlowDetail, error) {
 		NewID:    rec.NewID,
 		Store:    st,
 		Upstream: upstream,
+		Gen:      func() uint64 { return a.projGen.Load() }, // M9：重发流也打项目代际（否则切换后永不落盘）
 	}
 	hdrs := make([]compose.KV, 0, len(req.Headers))
 	for _, h := range req.Headers {

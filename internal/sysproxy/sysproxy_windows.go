@@ -1,4 +1,4 @@
-﻿//go:build windows
+//go:build windows
 
 // Package sysproxy Windows 系统代理开关（方案 §4.6）：
 // 注册表接管/恢复 + InternetSetOption 广播 + ProxyOverride 合并 + 崩溃自愈。
@@ -7,6 +7,7 @@ package sysproxy
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strings"
@@ -147,6 +148,38 @@ func Enable(selfAddr string, bypass []string, backupFile string) error {
 	merged := MergeOverride(cur.Override, bypass)
 	if err := write(Config{
 		Enable: true, Server: selfAddr, Override: merged,
+		ServerExists: true, OverrideExists: true,
+		AutoConfigURL: cur.AutoConfigURL, AutoURLExists: cur.AutoURLExists,
+	}); err != nil {
+		return err
+	}
+	broadcast()
+	return nil
+}
+
+// Reapply 以备份原始 Override 为基线重合并 bypassList 并写回注册表（项目配置设计 §5.2）。
+// 触发点仅为 SaveSettings 修改全局 bypassList 且系统代理接管中（项目切换不触发）。
+// 直接重调 Enable（合并当前注册表 Override）会把已删除的旧 bypass 条目永久残留，
+// 故以 sysproxy-backup.json 的原值为基线重建；不重建备份（仍供 Disable/崩溃自愈还原）、
+// 不广播"代理关闭"（避免窗口期断流）。备份缺失（异常态）降级为合并当前值并 log 告警。
+func Reapply(selfAddr string, bypass []string, backupFile string) error {
+	cur, err := Current()
+	if err != nil {
+		return err
+	}
+	if !cur.Enable || !pointsToSelf(cur.Server, selfAddr) {
+		return nil // 非本工具接管，不动用户配置
+	}
+	base := cur.Override
+	bak, berr := readBackup(backupFile)
+	if berr != nil {
+		log.Printf("sysproxy Reapply: 读取备份失败(%v)，降级为合并当前 Override", berr)
+	} else {
+		base = bak.Override
+	}
+	merged := MergeOverride(base, bypass)
+	if err := write(Config{
+		Enable: true, Server: cur.Server, Override: merged,
 		ServerExists: true, OverrideExists: true,
 		AutoConfigURL: cur.AutoConfigURL, AutoURLExists: cur.AutoURLExists,
 	}); err != nil {

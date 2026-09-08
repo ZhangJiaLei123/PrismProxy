@@ -17,12 +17,14 @@ import (
 // 成功时 JSON 结果打印到 stdout；错误信息打印到 stderr 并以非零码退出。
 // configDir 用于发现 endpoint 文件（exe 同级 config）。
 func RunCLI(configDir string, args []string) int {
-	// 全局 flag：--pretty 人类可读；--addr/--token 覆盖自动发现
+	// 全局 flag：--pretty 人类可读；--addr/--token 覆盖自动发现；--project/-P 目标项目（M9）
 	fs := flag.NewFlagSet("cli", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	pretty := fs.Bool("pretty", false, "人类可读输出（默认 JSON）")
 	addrFlag := fs.String("addr", "", "控制 API 地址（默认自动发现）")
 	tokenFlag := fs.String("token", "", "控制 API token（默认自动发现）")
+	projectFlag := fs.String("project", "", "目标项目 id|名称（规则/设置类命令；默认当前项目）")
+	projectShort := fs.String("P", "", "目标项目 id|名称（--project 简写）")
 	fs.Usage = func() { printCLIUsage(os.Stderr) }
 	// 全局 flag（--pretty/--addr/--token）可出现在子命令前或后：前置后解析；
 	// 未定义的子命令 flag（--filter 等）不在此 fs，遇首个位置参数即停止解析。
@@ -49,6 +51,11 @@ func RunCLI(configDir string, args []string) int {
 		fmt.Fprintln(os.Stderr, "错误:", err)
 		return 1
 	}
+	// 目标项目（M9，设计 §6.3）：--project 优先于 -P；仅规则/设置类命令生效
+	c.project = *projectFlag
+	if c.project == "" {
+		c.project = *projectShort
+	}
 
 	// pos[0] 是子命令名（flows/rules/...）；各处理器内部自行剥离
 	var out any
@@ -63,8 +70,22 @@ func RunCLI(configDir string, args []string) int {
 		out, err = cliSysProxy(c, pos)
 	case "settings":
 		out, err = cliSettings(c, pos)
+	case "project":
+		out, err = cliProject(c, pos)
 	case "ui":
 		out, err = cliUI(c, pos)
+	case "proxy":
+		out, err = cliProxy(c, pos)
+	case "adb":
+		out, err = cliADB(c, pos)
+	case "domains":
+		out, err = cliDomains(c, pos)
+	case "compose":
+		out, err = cliCompose(c, pos)
+	case "processes":
+		out, err = c.get("/processes")
+	case "ca":
+		out, err = cliCA(c, pos)
 	default:
 		fmt.Fprintf(os.Stderr, "未知子命令: %s\n\n", cmd)
 		printCLIUsage(os.Stderr)
@@ -82,17 +103,41 @@ func RunCLI(configDir string, args []string) int {
 func printCLIUsage(w io.Writer) {
 	fmt.Fprint(w, `PrismProxy cli — 控制运行中的 PrismProxy 实例（M8，方案 §4.12）
 
-用法: PrismProxy.exe cli <命令> [参数] [--pretty] [--addr 地址] [--token token]
+用法: PrismProxy.exe cli <命令> [参数] [--pretty] [--addr 地址] [--token token] [--project 项目]
 
 命令:
-  status                                 代理状态 / 流计数 / 系统代理状态
+  status                                 代理状态 / 流计数 / 系统代理状态 / 当前项目
   flows list [--filter 子串] [--limit N] 流摘要列表（不含 body）
   flows get <id>                         单流详情（Headers 等）
   flows get <id> --body req|resp         单流消息体（JSON：raw/body/base64）
   flows clear                            清空记录列表（保留置顶）
+  flows pin <id> [--pin false]           置顶/取消置顶流（置顶流不淘汰、清空保留）
+  flows curl <id> [--shell cmd|powershell|bash]
+                                         生成该流的可执行 cURL 命令
   flows watch [--filter 子串] [--status] [--format ndjson|sse]
                                          实时监控：先输出全量 snapshot，再持续输出增量
                                          （upsert/evict/status/reset），断线自动重连
+  proxy start|stop                       启动/停止代理监听（sysproxy on 会隐式启动）
+  ca install                             安装根证书到当前用户受信根存储（免管理员）
+  adb devices                            已配置的 ADB 设备清单（名称/path/serial/autoSet）
+  adb test [--adb 路径]                   测试 adb 连通性并列出已连接设备
+  adb set [--adb 路径] [--serial 序列号]  给设备写全局 http_proxy（指向本机代理）
+  adb clear [--adb 路径] [--serial ...]   清除设备全局 http_proxy
+  domains list                           域名组清单（--project 可指定目标项目）
+  domains get <id>                       查看域名组原始文本
+  domains save <id> <域名...>            新建/覆盖域名组（空格分隔，每行一个域名）
+  domains import <文件路径|URL> [--id]   从本地 txt 或 http(s) URL 导入域名组
+  domains delete <id>                    删除自定义域名组
+  rules export [--embed]                 导出规则 JSON（原文直出 stdout，可 > 文件）
+  rules import <文件路径|URL>            导入规则（整体替换，内嵌域名组自动补建）
+  compose <URL> [--method M] [--header 'K: V; K2: V2'] [--body 文本] [--insecure]
+                                         调试重发：独立直连目标，结果作为新流入列表
+  processes                              枚举系统运行中进程名（ignore process 候选）
+  project list                           项目列表 + 当前项目
+  project switch <id|名称>               切换当前项目（运行中热切换，规则与流量历史随之切换）
+  project create <名称> [--from id|名称] 新建项目并切换；--from 从指定项目复制规则+域名组
+  project rename <id|名称> <新名称>      重命名项目（名称含空格时用 --name 指定新名）
+  project delete <id|名称>               删除项目（当前项目不可删）
   rules list                             过滤规则组 + 解密规则
   rules ignore host <域名>               快捷忽略域名（自身+全部子域）
   rules ignore process <进程名>          快捷忽略进程
@@ -107,14 +152,19 @@ func printCLIUsage(w io.Writer) {
   ui settings [tab]                      打开 GUI 设置面板（tab: general|network|adb|decrypt|capture|domains）
 
 全局参数:
-  --pretty   人类可读缩进输出（默认单行 JSON，便于 AI/脚本解析）
-  --addr     控制 API 地址（默认从 config/ctl-endpoint.json 自动发现）
-  --token    控制 API token（默认自动发现）
+  --pretty      人类可读缩进输出（默认单行 JSON，便于 AI/脚本解析）
+  --addr        控制 API 地址（默认从 config/ctl-endpoint.json 自动发现）
+  --token       控制 API token（默认自动发现）
+  --project, -P 目标项目 id|名称（仅规则/设置类命令生效；默认当前项目。
+                指定非当前项目时只改其配置文件，不切换当前项目、不影响运行中的代理；
+                flows/sysproxy/status/ui 命令不受此参数影响）
 
 示例:
   PrismProxy.exe cli status --pretty
   PrismProxy.exe cli flows list --filter baidu --limit 20
   PrismProxy.exe cli rules ignore host api.example.com
+  PrismProxy.exe cli rules list --project 商城联调
+  PrismProxy.exe cli project switch 商城联调
   PrismProxy.exe cli sysproxy on
 `)
 }
@@ -133,6 +183,8 @@ func cliFlows(c *client, pos []string) (any, error) {
 	filter := fs.String("filter", "", "按 host/URL 子串过滤")
 	limit := fs.Int("limit", 0, "只返回最近 N 条")
 	body := fs.String("body", "", "消息体：req|resp（配合 get）")
+	shell := fs.String("shell", "powershell", "cURL 目标 shell：cmd|powershell|bash（配合 curl）")
+	pinned := fs.String("pin", "", "置顶/取消置顶：true|false（配合 <id>）")
 	if err := fs.Parse(reorderFlags(args)); err != nil {
 		return nil, err
 	}
@@ -160,8 +212,28 @@ func cliFlows(c *client, pos []string) (any, error) {
 		return c.get("/flows/" + urlEncode(rem[0]))
 	case "clear":
 		return c.post("/flows/clear", nil)
+	case "pin":
+		// flows pin <id> [--pin false]（默认置顶；--pin false 取消）
+		if len(rem) == 0 {
+			return nil, fmt.Errorf("flows pin 需要 <id>")
+		}
+		on := true
+		if *pinned == "false" || *pinned == "0" {
+			on = false
+		} else if *pinned != "" && *pinned != "true" && *pinned != "1" {
+			return nil, fmt.Errorf("--pin 须为 true|false")
+		}
+		return c.post(fmt.Sprintf("/flows/%s/pin", urlEncode(rem[0])), map[string]any{"pinned": on})
+	case "curl":
+		if len(rem) == 0 {
+			return nil, fmt.Errorf("flows curl 需要 <id>")
+		}
+		if *shell != "cmd" && *shell != "powershell" && *shell != "bash" {
+			return nil, fmt.Errorf("--shell 须为 cmd|powershell|bash")
+		}
+		return c.get(fmt.Sprintf("/flows/%s/curl?shell=%s", urlEncode(rem[0]), *shell))
 	default:
-		return nil, fmt.Errorf("未知 flows 子命令: %s（list|get|clear）", sub)
+		return nil, fmt.Errorf("未知 flows 子命令: %s（list|get|clear|pin|curl）", sub)
 	}
 }
 
@@ -173,9 +245,47 @@ func cliRules(c *client, pos []string) (any, error) {
 		sub = args[0]
 		args = args[1:]
 	}
+	// 导入导出为独立动作（不与 list 共用 flagSet）
+	if sub == "export" {
+		embed := false
+		for _, a := range args {
+			if a == "--embed" || a == "-embed" {
+				embed = true
+			}
+		}
+		path := "/rules/export"
+		q := ""
+		if embed {
+			q = "embed=1"
+		}
+		if c.project != "" {
+			sep := ""
+			if q != "" {
+				sep = "&"
+			}
+			q += sep + "project=" + url.QueryEscape(c.project)
+		}
+		if q != "" {
+			path += "?" + q
+		}
+		raw, err := c.do(http.MethodGet, path, nil)
+		if err != nil {
+			return nil, err
+		}
+		// 规则文件原文直出 stdout（供 > file.json 重定向保存），不走结果封装
+		os.Stdout.Write(append(raw, '\n'))
+		return nil, nil
+	}
+	if sub == "import" {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("用法: rules import <本地文件路径|http(s) URL>")
+		}
+		return c.post(c.withProject("/rules/import"), map[string]any{"src": args[0]})
+	}
+
 	switch sub {
 	case "list", "":
-		return c.get("/rules")
+		return c.get(c.withProject("/rules"))
 	case "ignore":
 		if len(args) < 2 {
 			return nil, fmt.Errorf("用法: rules ignore host|process <值>")
@@ -184,7 +294,7 @@ func cliRules(c *client, pos []string) (any, error) {
 		if target != "host" && target != "process" {
 			return nil, fmt.Errorf("ignore 目标须为 host|process")
 		}
-		return c.post("/rules", map[string]any{"action": "ignore", "target": target, "value": value})
+		return c.post(c.withProject("/rules"), map[string]any{"action": "ignore", "target": target, "value": value})
 	case "group":
 		if len(args) < 2 {
 			return nil, fmt.Errorf("用法: rules group <id> enable|disable")
@@ -193,7 +303,7 @@ func cliRules(c *client, pos []string) (any, error) {
 		if args[1] != "enable" && args[1] != "disable" {
 			return nil, fmt.Errorf("须为 enable|disable")
 		}
-		return c.post(fmt.Sprintf("/rules/groups/%s/enabled", urlEncode(args[0])),
+		return c.post(c.withProject(fmt.Sprintf("/rules/groups/%s/enabled", urlEncode(args[0]))),
 			map[string]any{"enabled": enabled})
 	case "decrypt":
 		if len(args) < 2 {
@@ -203,9 +313,9 @@ func cliRules(c *client, pos []string) (any, error) {
 		if kind != "mitm" && kind != "bypass" {
 			return nil, fmt.Errorf("解密动作须为 mitm|bypass")
 		}
-		return c.post("/rules", map[string]any{"action": "decrypt", "kind": kind, "host": args[1]})
+		return c.post(c.withProject("/rules"), map[string]any{"action": "decrypt", "kind": kind, "host": args[1]})
 	default:
-		return nil, fmt.Errorf("未知 rules 子命令: %s（list|ignore|group|decrypt）", sub)
+		return nil, fmt.Errorf("未知 rules 子命令: %s（list|ignore|group|decrypt|import|export）", sub)
 	}
 }
 
@@ -237,14 +347,14 @@ func cliSettings(c *client, pos []string) (any, error) {
 		args = args[1:]
 	}
 	if sub == "get" {
-		return c.get("/settings")
+		return c.get(c.withProject("/settings"))
 	}
 	if sub != "set" || len(args) < 2 {
 		return nil, fmt.Errorf("用法: settings get | settings set <key> <value>")
 	}
 	key, val := args[0], strings.Join(args[1:], " ")
-	// 读-改-写：取当前配置 → 改单项 → 整体提交（后端校验 + 热应用）
-	cur, err := c.get("/settings")
+	// 读-改-写：取目标项目配置 → 改单项 → 整体提交（后端校验 + 热应用）
+	cur, err := c.get(c.withProject("/settings"))
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +372,7 @@ func cliSettings(c *client, pos []string) (any, error) {
 		OK       bool     `json:"ok"`
 		Warnings []string `json:"warnings"`
 	}
-	raw, err := c.put("/settings", bytes.NewReader(body))
+	raw, err := c.put(c.withProject("/settings"), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -292,13 +402,214 @@ func cliUI(c *client, pos []string) (any, error) {
 	}
 }
 
-// reorderFlagsGlobal 只把已知全局 flag（--pretty/--addr/--token）提到最前，
+// cliProject 项目管理（M9，设计 §6.3）：list/switch/create [--from]/rename/delete
+func cliProject(c *client, pos []string) (any, error) {
+	// pos[0]="project"；第一个非 flag 位置参数是动作（list/switch/create/rename/delete，默认 list）
+	args := pos[1:]
+	sub := "list"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = args[0]
+		args = args[1:]
+	}
+	switch sub {
+	case "list", "":
+		return c.get("/projects")
+	case "switch":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("用法: project switch <id|名称>")
+		}
+		return c.post("/projects", map[string]any{"action": "switch", "id": strings.Join(args, " ")})
+	case "create":
+		fs := flag.NewFlagSet("project-create", flag.ContinueOnError)
+		from := fs.String("from", "", "从指定项目复制规则+域名组（id|名称）")
+		if err := fs.Parse(reorderFlags(args)); err != nil {
+			return nil, err
+		}
+		rem := fs.Args()
+		if len(rem) < 1 {
+			return nil, fmt.Errorf("用法: project create <名称> [--from <id|名称>]")
+		}
+		return c.post("/projects", map[string]any{"action": "create", "name": strings.Join(rem, " "), "from": *from})
+	case "rename":
+		// 目标（id|名称）与新名都可能含空格，位置参数形态无法区分：优先 --name 指定新名，
+		// 目标取全部位置参数 Join；无 --name 时保持旧语义（args[0]=目标，其余=新名）
+		fs := flag.NewFlagSet("project-rename", flag.ContinueOnError)
+		nameFlag := fs.String("name", "", "新名称（项目名/目标名含空格时必须使用）")
+		if err := fs.Parse(reorderFlags(args)); err != nil {
+			return nil, err
+		}
+		rem := fs.Args()
+		var id, newName string
+		if *nameFlag != "" {
+			if len(rem) < 1 {
+				return nil, fmt.Errorf("用法: project rename <id|名称> --name <新名称>")
+			}
+			id, newName = strings.Join(rem, " "), *nameFlag
+		} else {
+			if len(rem) < 2 {
+				return nil, fmt.Errorf("用法: project rename <id|名称> <新名称>（名称含空格时用 --name 指定新名）")
+			}
+			id, newName = rem[0], strings.Join(rem[1:], " ")
+		}
+		return c.post("/projects", map[string]any{"action": "rename", "id": id, "name": newName})
+	case "delete":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("用法: project delete <id|名称>")
+		}
+		return c.post("/projects", map[string]any{"action": "delete", "id": strings.Join(args, " ")})
+	default:
+		return nil, fmt.Errorf("未知 project 子命令: %s（list|switch|create|rename|delete）", sub)
+	}
+}
+
+// ---------- 代理生命周期 / CA（M10 补面） ----------
+
+func cliProxy(c *client, pos []string) (any, error) {
+	args := pos[1:]
+	action := "status"
+	if len(args) > 0 {
+		action = args[0]
+	}
+	switch action {
+	case "start":
+		return c.post("/proxy", map[string]any{"action": "start"})
+	case "stop":
+		return c.post("/proxy", map[string]any{"action": "stop"})
+	default:
+		return nil, fmt.Errorf("未知 proxy 子命令: %s（start|stop）", action)
+	}
+}
+
+func cliCA(c *client, pos []string) (any, error) {
+	args := pos[1:]
+	action := "install"
+	if len(args) > 0 {
+		action = args[0]
+	}
+	if action != "install" {
+		return nil, fmt.Errorf("未知 ca 子命令: %s（install）", action)
+	}
+	return c.post("/ca/install", nil)
+}
+
+// ---------- ADB 设备代理（M10 补面） ----------
+
+func cliADB(c *client, pos []string) (any, error) {
+	args := pos[1:]
+	action := "devices"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		action = args[0]
+		args = args[1:]
+	}
+	fs := flag.NewFlagSet("adb", flag.ContinueOnError)
+	adbPath := fs.String("adb", "", "adb 可执行文件路径（默认取已配置设备）")
+	serial := fs.String("serial", "", "设备序列号（多设备时必填）")
+	if err := fs.Parse(reorderFlags(args)); err != nil {
+		return nil, err
+	}
+	body := map[string]any{"adbPath": *adbPath, "serial": *serial}
+	switch action {
+	case "devices":
+		// 已配置设备清单（GET /adb）
+		return c.get("/adb")
+	case "test", "set", "clear":
+		return c.post("/adb/"+action, body)
+	default:
+		return nil, fmt.Errorf("未知 adb 子命令: %s（devices|test|set|clear）", action)
+	}
+}
+
+// ---------- 域名组（M10 补面；rules/settings 类，受 --project 影响） ----------
+
+func cliDomains(c *client, pos []string) (any, error) {
+	args := pos[1:]
+	sub := "list"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = args[0]
+		args = args[1:]
+	}
+	switch sub {
+	case "list", "":
+		return c.get(c.withProject("/domains"))
+	case "get":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("用法: domains get <id>")
+		}
+		return c.get(c.withProject("/domains/" + urlEncode(args[0])))
+	case "delete", "rm":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("用法: domains delete <id>")
+		}
+		return c.del(c.withProject("/domains/" + urlEncode(args[0])))
+	case "save", "set":
+		// domains save <id> <内容...>（每行一个域名，用 \n 分隔）
+		if len(args) < 2 {
+			return nil, fmt.Errorf("用法: domains save <id> <域名，空格或 \\n 分隔>")
+		}
+		id := args[0]
+		content := strings.Join(args[1:], "\n")
+		return c.post(c.withProject("/domains/"+urlEncode(id)), map[string]any{"content": content})
+	case "import":
+		fs := flag.NewFlagSet("domains-import", flag.ContinueOnError)
+		id := fs.String("id", "", "导入后的组 id（缺省取来源文件名）")
+		if err := fs.Parse(reorderFlags(args)); err != nil {
+			return nil, err
+		}
+		rem := fs.Args()
+		if len(rem) < 1 {
+			return nil, fmt.Errorf("用法: domains import <本地文件路径|http(s) URL> [--id <组id>]")
+		}
+		return c.post(c.withProject("/domains/import"), map[string]any{"source": rem[0], "id": *id})
+	default:
+		return nil, fmt.Errorf("未知 domains 子命令: %s（list|get|save|delete|import）", sub)
+	}
+}
+
+// ---------- 调试重发（Composer，M10 补面） ----------
+
+func cliCompose(c *client, pos []string) (any, error) {
+	args := pos[1:]
+	fs := flag.NewFlagSet("compose", flag.ContinueOnError)
+	method := fs.String("method", "GET", "HTTP 方法")
+	header := fs.String("header", "", "请求头，可重复：Key: Value（多次用分号 ; 分隔）")
+	body := fs.String("body", "", "请求体（字符串）")
+	insecure := fs.Bool("insecure", false, "跳过 HTTPS 证书校验（等同 --skip-verify）")
+	skipVerify := fs.Bool("skip-verify", false, "跳过 HTTPS 证书校验")
+	if err := fs.Parse(reorderFlags(args)); err != nil {
+		return nil, err
+	}
+	rem := fs.Args()
+	if len(rem) < 1 {
+		return nil, fmt.Errorf("用法: compose <URL> [--method GET] [--header 'K: V; K2: V2'] [--body 内容] [--insecure]")
+	}
+	var headers []map[string]string
+	if strings.TrimSpace(*header) != "" {
+		for _, h := range strings.Split(*header, ";") {
+			k, v, ok := strings.Cut(h, ":")
+			if !ok {
+				return nil, fmt.Errorf("--header 格式须为 'Key: Value'（多个用 ; 分隔）: %q", h)
+			}
+			headers = append(headers, map[string]string{"key": strings.TrimSpace(k), "value": strings.TrimSpace(v)})
+		}
+	}
+	return c.post("/compose", map[string]any{
+		"url":        rem[0],
+		"method":     *method,
+		"headers":    headers,
+		"body":       *body,
+		"skipVerify": *insecure || *skipVerify,
+	})
+}
+
+// reorderFlagsGlobal 只把已知全局 flag（--pretty/--addr/--token/--project/-P）提到最前，
 // 其余参数（含子命令自有 flag 如 --filter）保持原位，交由子命令 flagSet 解析。
 func reorderFlagsGlobal(args []string) []string {
 	known := map[string]bool{"-pretty": true, "--pretty": true,
-		"-addr": true, "--addr": true, "-token": true, "--token": true}
+		"-addr": true, "--addr": true, "-token": true, "--token": true,
+		"-project": true, "--project": true, "-P": true, "--P": true}
 	// 取值型 flag（bool 的 --pretty 不吞下一 token）
-	valueFlags := map[string]bool{"-addr": true, "--addr": true, "-token": true, "--token": true}
+	valueFlags := map[string]bool{"-addr": true, "--addr": true, "-token": true, "--token": true,
+		"-project": true, "--project": true, "-P": true, "--P": true}
 	var globals, others []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -378,8 +689,21 @@ func printResult(v any, pretty bool) {
 type client struct {
 	base       string
 	token      string
+	project    string       // 目标项目（M9：全局 --project/-P；空=当前项目）
 	http       *http.Client // 普通请求-响应（含快照拉取）
 	streamHTTP *http.Client // SSE 事件流长连接（watch 专用：无总超时、独立连接不复用）
+}
+
+// withProject 给规则/设置类请求路径拼 ?project=（c.project 为空时原样返回）
+func (c *client) withProject(path string) string {
+	if c.project == "" {
+		return path
+	}
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "project=" + url.QueryEscape(c.project)
 }
 
 func newClient(configDir, addr, token string) (*client, error) {
@@ -450,6 +774,11 @@ func (c *client) post(path string, v any) (any, error) {
 
 func (c *client) put(path string, body io.Reader) (json.RawMessage, error) {
 	return c.do(http.MethodPut, path, body)
+}
+
+func (c *client) del(path string) (any, error) {
+	raw, err := c.do(http.MethodDelete, path, nil)
+	return rawMessage(raw), err
 }
 
 // rawMessage 把响应字节透传为可被 Encoder 原样输出的 JSON（避免 map 化丢字段顺序无关紧要）

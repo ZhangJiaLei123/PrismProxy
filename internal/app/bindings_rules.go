@@ -12,9 +12,13 @@ import (
 
 	"prismproxy/internal/domains"
 	"prismproxy/internal/rules"
+	"prismproxy/internal/settings"
 )
 
 // ---------- 快捷忽略 / 规则导入导出 / 解密绕过 Bindings（方案 §4.7-4.8） ----------
+//
+// M9 起规则（filterGroups/decryptRules）随项目：读写当前项目 project.json，
+// 写操作持有 projMu（项目配置设计 §5.4）。
 
 // 快捷忽略内置黑名单组（规则设计 §八）：域名与进程拆为两个独立组——
 // 引擎组内维度为 AND，若混放同一组会令"忽略域名 X"与"忽略进程 Y"互相收窄
@@ -28,6 +32,24 @@ const (
 // 分别写入内置黑名单组 _quick_ignore_hosts / _quick_ignore_procs（不存在则自动创建），幂等去重；热更新 + 落盘。
 // 返回 added=false 表示已存在未重复添加。
 func (a *App) AddQuickIgnore(target, value string) (bool, error) {
+	a.projMu.Lock()
+	defer a.projMu.Unlock()
+	added, err := addQuickIgnoreTo(a.proj, target, value)
+	if err != nil || !added {
+		return added, err
+	}
+	if err := settings.SaveProjectConfig(a.cfgDir, a.proj); err != nil {
+		return false, err
+	}
+	if err := a.rebuildEngine(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// addQuickIgnoreTo 快捷忽略的规则操作（纯函数，作用于给定项目配置；调用方负责落盘/热重建）。
+// 供 AddQuickIgnore（当前项目）与 ctl RuleIgnore（目标项目，设计 §6.3）共用。
+func addQuickIgnoreTo(pc *settings.ProjectConfig, target, value string) (bool, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return false, fmt.Errorf("忽略内容为空")
@@ -71,38 +93,27 @@ func (a *App) AddQuickIgnore(target, value string) (bool, error) {
 		return false, fmt.Errorf("域名无效：%q", value)
 	}
 
-	a.mu.Lock()
 	gi := -1
-	for i := range a.cfg.FilterGroups {
-		if a.cfg.FilterGroups[i].ID == groupID {
+	for i := range pc.FilterGroups {
+		if pc.FilterGroups[i].ID == groupID {
 			gi = i
 			break
 		}
 	}
 	if gi < 0 {
-		a.cfg.FilterGroups = append(a.cfg.FilterGroups, rules.FilterGroup{
+		pc.FilterGroups = append(pc.FilterGroups, rules.FilterGroup{
 			ID: groupID, Name: groupName, Enabled: true, Mode: rules.ModeBlacklist,
 		})
-		gi = len(a.cfg.FilterGroups) - 1
+		gi = len(pc.FilterGroups) - 1
 	}
-	g := &a.cfg.FilterGroups[gi]
+	g := &pc.FilterGroups[gi]
 	if exists(*g, nv) {
-		a.mu.Unlock()
 		return false, nil // 幂等：已存在
 	}
 	if target == "host" {
 		g.Hosts = append(g.Hosts, nv)
 	} else {
 		g.Processes = append(g.Processes, nv)
-	}
-	cfg := a.cfg
-	a.mu.Unlock()
-
-	if err := cfg.Save(a.cfgDir); err != nil {
-		return false, err
-	}
-	if err := a.rebuildEngine(); err != nil {
-		return false, err
 	}
 	return true, nil
 }
@@ -125,22 +136,22 @@ type rulesFile struct {
 	ExportedAt   string              `json:"exportedAt,omitempty"`
 	FilterGroups []rules.FilterGroup `json:"filterGroups"`
 	DecryptRules []rules.DecryptRule `json:"decryptRules"`
-	BypassList   []string            `json:"bypassList"`
-	Groups       map[string][]string `json:"groups,omitempty"` // 内嵌引用域名组清单（可选）
+	BypassList   []string            `json:"bypassList"`              // 全局环境设置；导出附带供参考，导入忽略
+	Groups       map[string][]string `json:"groups,omitempty"`        // 内嵌引用域名组清单（可选）
 }
 
 // ExportRules 导出规则为 JSON 文件（弹保存对话框）；embedGroups=true 时内嵌规则 @引用到的域名组清单，
 // 便于跨机分享。返回保存路径（用户取消返回空串）。
 func (a *App) ExportRules(embedGroups bool) (string, error) {
-	a.mu.Lock()
-	fg := append([]rules.FilterGroup(nil), a.cfg.FilterGroups...)
-	dr := append([]rules.DecryptRule(nil), a.cfg.DecryptRules...)
-	bp := append([]string(nil), a.cfg.BypassList...)
+	a.projMu.Lock()
+	fg := append([]rules.FilterGroup(nil), a.proj.FilterGroups...)
+	dr := append([]rules.DecryptRule(nil), a.proj.DecryptRules...)
+	bp := append([]string(nil), a.gcfg.BypassList...)
 	var gmap map[string][]string
 	if a.groups != nil {
 		gmap = a.groups.Domains
 	}
-	a.mu.Unlock()
+	a.projMu.Unlock()
 
 	doc := rulesFile{
 		Version:      1,
@@ -195,9 +206,10 @@ type ImportRulesResult struct {
 	Warnings []string `json:"warnings"`
 }
 
-// ImportRules 从本地文件或 http(s) URL 导入规则（整体替换 + 校验，方案 §4.7）。
+// ImportRules 从本地文件或 http(s) URL 导入规则（整体替换当前项目规则 + 校验，方案 §4.7）。
 // src 为本地路径或 URL；src 为空时弹文件选择对话框。
 // 内嵌域名组清单（groups）自动补建为用户域名组；引用缺失组不阻塞、以 warnings 返回。
+// M9：bypassList 为全局环境设置，导入时忽略（以 warning 提示）。
 func (a *App) ImportRules(src string) (*ImportRulesResult, error) {
 	var data []byte
 	src = strings.TrimSpace(src)
@@ -246,7 +258,10 @@ func (a *App) ImportRules(src string) (*ImportRulesResult, error) {
 		doc.DecryptRules = []rules.DecryptRule{}
 	}
 
-	// 内嵌域名组 → 补建用户域名组（含内嵌清单则引用不再缺失）
+	a.projMu.Lock()
+	defer a.projMu.Unlock()
+
+	// 内嵌域名组 → 补建用户域名组（当前项目目录；含内嵌清单则引用不再缺失）
 	built := 0
 	for id, list := range doc.Groups {
 		id = strings.ToLower(strings.TrimSpace(id))
@@ -267,53 +282,33 @@ func (a *App) ImportRules(src string) (*ImportRulesResult, error) {
 		built++
 	}
 
-	// 整体替换 + 校验（沿用现有非规则字段：监听/上游/存储预算/开关）
-	a.mu.Lock()
-	nu := *a.cfg
-	a.mu.Unlock()
-	nu.FilterGroups = doc.FilterGroups
-	nu.DecryptRules = doc.DecryptRules
-	if doc.BypassList != nil {
-		nu.BypassList = doc.BypassList
-	}
-
 	var gmap map[string][]string
 	if built > 0 {
 		g, err := domains.LoadUser(a.userDomainsDir())
 		if err != nil {
 			return nil, err
 		}
-		a.mu.Lock()
 		a.groups = g
-		a.mu.Unlock()
 		gmap = g.Domains
 	} else if a.groups != nil {
 		gmap = a.groups.Domains
 	}
-	err, warns := nu.Validate(gmap)
+
+	// 仅替换当前项目规则（环境字段不动，无需重启代理/调整存储预算）
+	err, warns := settings.ValidateRules(doc.FilterGroups, doc.DecryptRules, gmap)
 	if err != nil {
 		return nil, err
 	}
-	if err := nu.Save(a.cfgDir); err != nil {
-		return nil, fmt.Errorf("保存配置: %w", err)
+	if doc.BypassList != nil {
+		warns = append(warns, "系统代理绕过列表为全局环境设置，导入时已忽略（请在「设置-常规」中修改）")
 	}
-	a.mu.Lock()
-	needRestart := a.srv != nil && (nu.ListenAddr != a.cfg.ListenAddr ||
-		nu.UpstreamMode != a.cfg.UpstreamMode || nu.UpstreamProxy != a.cfg.UpstreamProxy)
-	a.cfg = &nu
-	a.mu.Unlock()
-
-	a.st.SetLimits(nu.MaxFlows, int64(nu.MaxBodyMB)<<20)
+	a.proj.FilterGroups = doc.FilterGroups
+	a.proj.DecryptRules = doc.DecryptRules
+	if err := settings.SaveProjectConfig(a.cfgDir, a.proj); err != nil {
+		return nil, fmt.Errorf("保存项目配置: %w", err)
+	}
 	if err := a.rebuildEngine(); err != nil {
 		return nil, err
-	}
-	if needRestart {
-		if err := a.StopProxy(); err != nil {
-			return nil, err
-		}
-		if err := a.StartProxy(""); err != nil {
-			return nil, err
-		}
 	}
 	return &ImportRulesResult{Warnings: warns}, nil
 }
@@ -323,11 +318,10 @@ func (a *App) AddDecryptBypass(host string) error {
 	if host == "" {
 		return fmt.Errorf("host 为空")
 	}
-	a.mu.Lock()
-	a.cfg.DecryptRules = append(a.cfg.DecryptRules, rules.DecryptRule{Action: rules.ActionBypass, Host: host})
-	cfg := a.cfg
-	a.mu.Unlock()
-	if err := cfg.Save(a.cfgDir); err != nil {
+	a.projMu.Lock()
+	defer a.projMu.Unlock()
+	a.proj.DecryptRules = append(a.proj.DecryptRules, rules.DecryptRule{Action: rules.ActionBypass, Host: host})
+	if err := settings.SaveProjectConfig(a.cfgDir, a.proj); err != nil {
 		return err
 	}
 	return a.rebuildEngine()
@@ -335,9 +329,9 @@ func (a *App) AddDecryptBypass(host string) error {
 
 // ListDomainGroups 域名组清单（规则编辑器 @组名 引用候选）
 func (a *App) ListDomainGroups() map[string]interface{} {
-	a.mu.Lock()
+	a.projMu.Lock()
 	g := a.groups
-	a.mu.Unlock()
+	a.projMu.Unlock()
 	if g == nil {
 		return map[string]interface{}{"names": []string{}, "meta": []domains.GroupMeta{}, "titles": map[string]string{}}
 	}

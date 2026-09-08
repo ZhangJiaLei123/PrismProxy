@@ -27,6 +27,7 @@ var errUnsupported = errors.New("sysproxy: 仅支持 Windows")
 func Current() (Config, error)              { return Config{}, errUnsupported }
 func Status(string) (string, Config, error) { return StateOff, Config{}, errUnsupported }
 func Enable(string, []string, string) error { return errUnsupported }
+func Reapply(string, []string, string) error { return errUnsupported }
 func Disable(string, string) error          { return errUnsupported }
 func SelfHeal(string) (bool, error)         { return false, nil }
 func UpstreamFromSystem(string) string      { return "" }

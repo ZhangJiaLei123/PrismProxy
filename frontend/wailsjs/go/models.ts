@@ -322,6 +322,62 @@ export namespace app {
 	        this.warnings = source["warnings"];
 	    }
 	}
+	export class SettingsView {
+	    listenAddr: string;
+	    upstreamMode: string;
+	    upstreamProxy: string;
+	    maxFlows: number;
+	    maxBodyMB: number;
+	    showSysProxySwitch: boolean;
+	    autoSysProxy: boolean;
+	    bypassList: string[];
+	    persist: settings.PersistConfig;
+	    adb: settings.ADBConfig;
+	    filterGroups: rules.FilterGroup[];
+	    decryptRules: rules.DecryptRule[];
+	    currentProject: settings.ProjectMeta;
+	    rulesProject: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SettingsView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.listenAddr = source["listenAddr"];
+	        this.upstreamMode = source["upstreamMode"];
+	        this.upstreamProxy = source["upstreamProxy"];
+	        this.maxFlows = source["maxFlows"];
+	        this.maxBodyMB = source["maxBodyMB"];
+	        this.showSysProxySwitch = source["showSysProxySwitch"];
+	        this.autoSysProxy = source["autoSysProxy"];
+	        this.bypassList = source["bypassList"];
+	        this.persist = this.convertValues(source["persist"], settings.PersistConfig);
+	        this.adb = this.convertValues(source["adb"], settings.ADBConfig);
+	        this.filterGroups = this.convertValues(source["filterGroups"], rules.FilterGroup);
+	        this.decryptRules = this.convertValues(source["decryptRules"], rules.DecryptRule);
+	        this.currentProject = this.convertValues(source["currentProject"], settings.ProjectMeta);
+	        this.rulesProject = source["rulesProject"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class SystemProxyStatus {
 	    state: string;
 	    server: string;
@@ -470,24 +526,6 @@ export namespace capture {
 
 export namespace rules {
 	
-	export class CaptureRule {
-	    action: string;
-	    host: string;
-	    urlRe: string;
-	    method: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new CaptureRule(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.action = source["action"];
-	        this.host = source["host"];
-	        this.urlRe = source["urlRe"];
-	        this.method = source["method"];
-	    }
-	}
 	export class DecryptRule {
 	    action: string;
 	    host: string;
@@ -524,20 +562,6 @@ export namespace rules {
 	        this.hosts = source["hosts"];
 	        this.paths = source["paths"];
 	        this.processes = source["processes"];
-	    }
-	}
-	export class ProcessRule {
-	    action: string;
-	    name: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ProcessRule(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.action = source["action"];
-	        this.name = source["name"];
 	    }
 	}
 
@@ -598,7 +622,7 @@ export namespace settings {
 	
 	export class PersistConfig {
 	    enabled: boolean;
-	    dbPath: string;
+	    dbPath?: string;
 	    retainDays: number;
 	    maxMB: number;
 	
@@ -614,61 +638,19 @@ export namespace settings {
 	        this.maxMB = source["maxMB"];
 	    }
 	}
-	export class Settings {
-	    listenAddr: string;
-	    upstreamMode: string;
-	    upstreamProxy: string;
-	    maxFlows: number;
-	    maxBodyMB: number;
-	    showSysProxySwitch: boolean;
-	    autoSysProxy: boolean;
-	    bypassList: string[];
-	    filterGroups: rules.FilterGroup[];
-	    decryptRules: rules.DecryptRule[];
-	    persist: PersistConfig;
-	    adb: ADBConfig;
-	    captureRules?: rules.CaptureRule[];
-	    processRules?: rules.ProcessRule[];
+	export class ProjectMeta {
+	    id: string;
+	    name: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new Settings(source);
+	        return new ProjectMeta(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.listenAddr = source["listenAddr"];
-	        this.upstreamMode = source["upstreamMode"];
-	        this.upstreamProxy = source["upstreamProxy"];
-	        this.maxFlows = source["maxFlows"];
-	        this.maxBodyMB = source["maxBodyMB"];
-	        this.showSysProxySwitch = source["showSysProxySwitch"];
-	        this.autoSysProxy = source["autoSysProxy"];
-	        this.bypassList = source["bypassList"];
-	        this.filterGroups = this.convertValues(source["filterGroups"], rules.FilterGroup);
-	        this.decryptRules = this.convertValues(source["decryptRules"], rules.DecryptRule);
-	        this.persist = this.convertValues(source["persist"], PersistConfig);
-	        this.adb = this.convertValues(source["adb"], ADBConfig);
-	        this.captureRules = this.convertValues(source["captureRules"], rules.CaptureRule);
-	        this.processRules = this.convertValues(source["processRules"], rules.ProcessRule);
+	        this.id = source["id"];
+	        this.name = source["name"];
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 
 }

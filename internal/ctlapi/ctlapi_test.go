@@ -28,6 +28,8 @@ type fakeService struct {
 	decryptHost   string
 	sysproxyAct   string
 	savedSettings []byte
+	projSeen      string // 最近一次规则/设置调用的 project 参数
+	switchTo      string
 }
 
 func (f *fakeService) Status() map[string]any {
@@ -46,24 +48,27 @@ func (f *fakeService) ClearFlows() int {
 	f.cleared++
 	return 3
 }
-func (f *fakeService) ListRules() any {
-	return map[string]any{"filterGroups": []any{}}
+func (f *fakeService) ListRules(project string) (any, error) {
+	return map[string]any{"filterGroups": []any{}, "project": project}, nil
 }
-func (f *fakeService) RuleIgnore(target, value string) (bool, error) {
+func (f *fakeService) RuleIgnore(project, target, value string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.projSeen = project
 	f.ignoredTarget, f.ignoredValue = target, value
 	return true, nil
 }
-func (f *fakeService) RuleGroupSetEnabled(id string, enabled bool) error {
+func (f *fakeService) RuleGroupSetEnabled(project, id string, enabled bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.projSeen = project
 	f.groupID, f.groupEnabled = id, enabled
 	return nil
 }
-func (f *fakeService) RuleDecrypt(action, host string) error {
+func (f *fakeService) RuleDecrypt(project, action, host string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.projSeen = project
 	f.decryptAction, f.decryptHost = action, host
 	return nil
 }
@@ -76,15 +81,38 @@ func (f *fakeService) SysProxy(action string) (string, error) {
 	}
 	return action, nil
 }
-func (f *fakeService) GetSettings() any {
-	return map[string]any{"maxFlows": 2000}
+func (f *fakeService) GetSettings(project string) (any, error) {
+	return map[string]any{"maxFlows": 2000, "project": project}, nil
 }
-func (f *fakeService) SaveSettings(raw json.RawMessage) ([]string, error) {
+func (f *fakeService) SaveSettings(project string, raw json.RawMessage) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.projSeen = project
 	f.savedSettings = raw
 	return []string{"测试 warning"}, nil
 }
+
+// ---------- 项目（M9） ----------
+
+func (f *fakeService) ListProjects() any {
+	return map[string]any{
+		"projects":       []map[string]any{{"id": "p1", "name": "默认项目"}},
+		"currentProject": "p1",
+	}
+}
+func (f *fakeService) SwitchProject(idOrName string) (any, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.switchTo = idOrName
+	return map[string]any{"id": "p1", "name": "默认项目"}, nil
+}
+func (f *fakeService) CreateProject(name, from string) (any, error) {
+	return map[string]any{"id": "p2", "name": name, "from": from}, nil
+}
+func (f *fakeService) RenameProject(idOrName, name string) (any, error) {
+	return map[string]any{"ok": true, "id": idOrName, "name": name}, nil
+}
+func (f *fakeService) DeleteProject(idOrName string) error { return nil }
 func (f *fakeService) UIClear() (int, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -97,6 +125,47 @@ func (f *fakeService) UISettings(tab string) bool {
 	f.uiTab = tab
 	return f.uiOn
 }
+
+// ---------- M10 补面方法桩 ----------
+
+func (f *fakeService) StartProxy() error                          { return nil }
+func (f *fakeService) StopProxy() error                            { return nil }
+func (f *fakeService) InstallCA() error                            { return nil }
+func (f *fakeService) AdbTest(adbPath string) (string, error)      { return "ok", nil }
+func (f *fakeService) AdbSetProxy(adbPath, serial string) (string, error) {
+	return "已设置设备代理", nil
+}
+func (f *fakeService) AdbClearProxy(adbPath, serial string) (string, error) {
+	return "已清除设备代理", nil
+}
+func (f *fakeService) AdbDevices() any { return map[string]any{"devices": []any{}} }
+func (f *fakeService) ListDomainGroups(project string) (any, error) {
+	return map[string]any{"project": project, "groups": []any{}}, nil
+}
+func (f *fakeService) GetDomainGroup(project, id string) (any, error) {
+	return map[string]any{"id": id, "text": ""}, nil
+}
+func (f *fakeService) SaveDomainGroup(project, id, content string) (any, error) {
+	return map[string]any{"ok": true, "id": id}, nil
+}
+func (f *fakeService) DeleteDomainGroup(project, id string) error { return nil }
+func (f *fakeService) ImportDomainGroup(project, id, source string) (any, error) {
+	return map[string]any{"ok": true, "id": id}, nil
+}
+func (f *fakeService) ExportRules(project string, embedGroups bool) (json.RawMessage, error) {
+	return json.RawMessage(`{"version":1,"filterGroups":[],"decryptRules":[]}`), nil
+}
+func (f *fakeService) ImportRules(project, src string) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeService) SetFlowPinned(id string, pinned bool) error { return nil }
+func (f *fakeService) BuildCurl(id, shell string) (any, error) {
+	return map[string]any{"command": "curl " + id, "shell": shell}, nil
+}
+func (f *fakeService) Compose(raw json.RawMessage) (any, error) {
+	return map[string]any{"ID": "composer-1"}, nil
+}
+func (f *fakeService) ListProcesses() []string { return []string{"powershell.exe"} }
 
 func startTestServer(t *testing.T, svc Service) (*Server, string, string) {
 	t.Helper()

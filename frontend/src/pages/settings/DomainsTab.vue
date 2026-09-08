@@ -114,7 +114,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { NAlert, NButton, NCheckbox, NCheckboxGroup, NEmpty, NInput, NModal, NPopconfirm, NProgress, NTag, useDialog, useMessage } from 'naive-ui'
 import { EventsOff, EventsOn } from '../../../wailsjs/runtime/runtime'
 import {
@@ -330,6 +330,9 @@ async function saveEdit() {
   }
 }
 
+// M9：面板打开期间项目被切换 → 刷新组列表（目录随项目；不刷新会误删新项目同名组，设计 §7.2）
+EventsOn('project:changed', () => refresh())
+onUnmounted(() => EventsOff('project:changed'))
 onMounted(refresh)
 </script>
 

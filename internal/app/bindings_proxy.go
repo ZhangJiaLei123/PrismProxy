@@ -30,13 +30,18 @@ func (a *App) StartProxy(addr string) error {
 
 // startProxy 实际启动逻辑（不发布 status，供 SetSystemProxy 内部连调避免重复推送）
 func (a *App) startProxy(addr string) error {
+	// 全局环境配置快照（projMu → a.mu 锁序：先取 projMu 快照再进 a.mu，禁止反向）
+	a.projMu.Lock()
+	if addr == "" {
+		addr = a.gcfg.ListenAddr
+	}
+	upstreamMode, upstreamProxy := a.gcfg.UpstreamMode, a.gcfg.UpstreamProxy
+	a.projMu.Unlock()
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.srv != nil {
 		return fmt.Errorf("proxy already running on %s", a.addr)
-	}
-	if addr == "" {
-		addr = a.cfg.ListenAddr
 	}
 
 	var ca *mitm.CA
@@ -53,7 +58,7 @@ func (a *App) startProxy(addr string) error {
 		return fmt.Errorf("监听 %s 失败：%w（端口可能被占用，可在「设置」中更换监听地址/端口）", addr, err)
 	}
 	srv, err := proxy.NewServerOpts(addr, a.rec, ca, &proxy.Options{
-		UpstreamProxy: a.resolveUpstream(addr),
+		UpstreamProxy: resolveUpstream(upstreamMode, upstreamProxy, addr),
 		Engine:        a.eng,
 	})
 	if err != nil {
@@ -128,27 +133,25 @@ func (a *App) GetProxyStatus() ProxyStatus {
 	return ProxyStatus{Running: a.srv != nil, Addr: a.addr, Mode: mode, FlowCount: len(a.st.List()), StartError: a.startErr}
 }
 
-// resolveUpstream 按配置解析上游代理地址（空=直连）
-func (a *App) resolveUpstream(selfAddr string) string {
-	switch a.cfg.UpstreamMode {
+// resolveUpstream 按全局配置解析上游代理地址（空=直连）；mode/manual 为调用方快照值
+func resolveUpstream(mode, manual, selfAddr string) string {
+	switch mode {
 	case settings.UpstreamManual:
-		return a.cfg.UpstreamProxy
+		return manual
 	case settings.UpstreamSystem:
 		return sysproxy.UpstreamFromSystem(selfAddr)
 	}
 	return ""
 }
 
-// rebuildEngine 按当前配置重编译规则引擎并热替换（Holder 原子替换，持锁仅做快照）
+// rebuildEngine 按当前项目规则重编译规则引擎并热替换（Holder 原子替换）。
+// 调用方须持 projMu（a.proj/a.groups 均受 projMu 保护）。
 func (a *App) rebuildEngine() error {
-	a.mu.Lock()
-	fg, dr := a.cfg.FilterGroups, a.cfg.DecryptRules
 	var gmap map[string][]string
 	if a.groups != nil {
 		gmap = a.groups.Domains
 	}
-	a.mu.Unlock()
-	e, err := rules.NewEngine(fg, dr, gmap)
+	e, err := rules.NewEngine(a.proj.FilterGroups, a.proj.DecryptRules, gmap)
 	if err != nil {
 		return err
 	}
