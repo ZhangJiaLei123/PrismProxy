@@ -18,6 +18,8 @@ export function BuildCurl(arg1:string,arg2:string):Promise<capture.CurlResult>;
 
 export function ClearFlows():Promise<void>;
 
+export function CloseProject():Promise<void>;
+
 export function CreateProject(arg1:string,arg2:string):Promise<settings.ProjectMeta>;
 
 export function DeleteDomainGroup(arg1:string):Promise<void>;

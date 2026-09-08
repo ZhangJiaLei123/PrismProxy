@@ -166,6 +166,39 @@ func EnsureDefaultProject(cfgDir string, g *GlobalSettings) error {
 	return nil
 }
 
+// PruneMissingProjects 剔除清单中项目目录已不存在的幽灵条目（半迁移/手工删除目录导致）。
+// 返回 true 表示清单发生变化（调用方应落盘）。剔除后：currentProject 指向被删项时清空指针，
+// 由调用方按剩余清单回退；清单全空 → 无项目态（欢迎页）。
+func PruneMissingProjects(cfgDir string, g *GlobalSettings) bool {
+	alive := make([]ProjectMeta, 0, len(g.Projects))
+	removed := false
+	for _, m := range g.Projects {
+		if info, err := os.Stat(ProjectDir(cfgDir, m.ID)); err == nil && info.IsDir() {
+			alive = append(alive, m)
+		} else {
+			removed = true
+			log.Printf("settings: 项目 %q（%s）目录缺失，从清单剔除", m.Name, m.ID)
+		}
+	}
+	if !removed {
+		return false
+	}
+	g.Projects = alive
+	if g.CurrentProject != "" {
+		found := false
+		for _, m := range alive {
+			if m.ID == g.CurrentProject {
+				found = true
+				break
+			}
+		}
+		if !found {
+			g.CurrentProject = "" // 当前项已失效，交由调用方回退首个或进入无项目态
+		}
+	}
+	return true
+}
+
 // CreateProjectDir 创建项目目录与 project.json（项目配置设计 §5.4）。
 // fromID 为空=空白起点；非空=从该项目复制 filterGroups/decryptRules 与整个 domains/
 // （不复制 prism.db，历史流量不跟走）。仅改文件与内存清单 g.Projects，

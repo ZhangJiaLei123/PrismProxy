@@ -130,6 +130,56 @@ func TestEnsureDefaultProject(t *testing.T) {
 	}
 }
 
+func TestPruneMissingProjects(t *testing.T) {
+	dir := t.TempDir()
+	g := DefaultGlobal()
+	// 建两个真实项目
+	if err := EnsureDefaultProject(dir, g); err != nil {
+		t.Fatal(err)
+	}
+	keep, err := CreateProjectDir(dir, g, "存活项目", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 幽灵条目：在清单里但无目录（半迁移/手工删目录）
+	ghost := ProjectMeta{ID: "9999999999999-9", Name: "幽灵项目"}
+	g.Projects = append(g.Projects, ghost)
+	g.CurrentProject = ghost.ID // 当前指向幽灵
+
+	if changed := PruneMissingProjects(dir, g); !changed {
+		t.Fatal("存在目录缺失条目时应返回 changed=true")
+	}
+	if len(g.Projects) != 2 {
+		t.Fatalf("幽灵条目应被剔除，剩余 2 个，实际 %d: %+v", len(g.Projects), g.Projects)
+	}
+	for _, m := range g.Projects {
+		if m.ID == ghost.ID {
+			t.Fatal("幽灵条目仍在清单中")
+		}
+	}
+	if g.CurrentProject != "" {
+		t.Fatalf("当前项目是幽灵时指针应清空交回退，实际 %q", g.CurrentProject)
+	}
+
+	// 当前项目存活时指针保留
+	g.CurrentProject = keep.ID
+	if changed := PruneMissingProjects(dir, g); changed {
+		t.Fatal("清单全部存活时不应变化")
+	}
+	if g.CurrentProject != keep.ID {
+		t.Fatalf("存活的当前项目指针不应被改动: %q", g.CurrentProject)
+	}
+
+	// 全部目录缺失 → 清单清空（调用方据此进入欢迎页）
+	if err := os.RemoveAll(ProjectsRoot(dir)); err != nil {
+		t.Fatal(err)
+	}
+	g.CurrentProject = keep.ID
+	if changed := PruneMissingProjects(dir, g); !changed || len(g.Projects) != 0 || g.CurrentProject != "" {
+		t.Fatalf("全部缺失应清空清单与指针: changed 后 projects=%+v current=%q", g.Projects, g.CurrentProject)
+	}
+}
+
 func TestCreateProjectDirBlank(t *testing.T) {
 	dir := t.TempDir()
 	g := DefaultGlobal()

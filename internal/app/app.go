@@ -86,6 +86,13 @@ func NewApp(addr string, noMITM bool) *App {
 	// 首次启动直接进欢迎页由用户新建；全部项目删完后同样回到此态。
 	var proj *settings.ProjectConfig
 	var groups *domains.Groups
+	// 启动自愈：剔除清单中目录已缺失的幽灵条目（半迁移/手工删除 config/projects/<id> 导致），
+	// 并落盘修正。清洗后清单全空即进入欢迎页，避免打开无目录的幽灵项目。
+	if settings.PruneMissingProjects(cfgDir, gcfg) {
+		if serr := gcfg.SaveGlobal(cfgDir); serr != nil {
+			log.Printf("清洗项目清单后落盘失败: %v", serr)
+		}
+	}
 	if len(gcfg.Projects) > 0 {
 		// currentProject 校验：不在清单或目录缺失时回退清单第一个并落盘修正（设计 §5.1）
 		meta := gcfg.Projects[0]

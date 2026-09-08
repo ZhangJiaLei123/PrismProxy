@@ -380,12 +380,25 @@ func (s *ctlService) SaveSettings(project string, raw json.RawMessage) ([]string
 	}
 
 	a.projMu.Lock()
+	curID := a.currentID()
 	id, err := a.resolveProjectIDLocked(project)
 	a.projMu.Unlock()
 	if err != nil {
+		// 无项目态且未指定目标项目：放行环境半边保存（a.SaveSettings 内部 noProject
+		// 分支只存环境字段并热应用代理/bypass/ADB，规则半边跳过）；显式指定不存在的项目仍报错
+		if project == "" && curID == "" {
+			res, serr := a.SaveSettings(&nu)
+			if serr != nil {
+				return nil, serr
+			}
+			if res == nil {
+				return nil, nil
+			}
+			return res.Warnings, nil
+		}
 		return nil, err
 	}
-	if id == "" || id == currentProjectID(a) {
+	if id == "" || id == curID {
 		// 当前项目：标准保存路径（含 rulesProject 并发令牌校验与热应用）
 		res, err := a.SaveSettings(&nu)
 		if err != nil {

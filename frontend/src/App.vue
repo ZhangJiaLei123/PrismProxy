@@ -3,6 +3,9 @@
     <n-message-provider>
      <n-dialog-provider>
       <n-layout style="height: 100%">
+      <!-- M11：无打开项目时全屏欢迎页（参考 IDEA Welcome），项目/设置操作后自动回到主界面 -->
+      <welcome-page v-if="!hasOpenProject" @open-settings="openSettings" />
+      <template v-else>
       <n-layout-header bordered style="height: 40px; display: flex; align-items: center; padding: 0 12px; gap: 12px">
         <!-- <span style="font-weight: 600">PrismProxy</span> -->
         <!-- M9：项目切换器（规则/历史随项目隔离，运行中热切换） -->
@@ -109,6 +112,7 @@
         <span style="flex: 1"></span>
         <n-button size="tiny" secondary @click="openSettings">设置</n-button>
       </n-layout-footer>
+      </template>
     </n-layout>
       <settings-panel v-model:show="showSettings" :initial-tab="settingsTab" @changed="onSettingsChanged" />
       <composer />
@@ -124,13 +128,17 @@ import FlowList from './pages/FlowList.vue'
 import FlowDetail from './pages/FlowDetail.vue'
 import SettingsPanel from './pages/SettingsPanel.vue'
 import Composer from './pages/Composer.vue'
+import WelcomePage from './pages/WelcomePage.vue'
 import ProjectSwitcher from './components/ProjectSwitcher.vue'
 import { useFlowsStore } from './stores/flows'
+import { useProjects } from './composables/useProjects'
 import { GetProxyStatus, StartProxy, StopProxy, GetSystemProxyStatus, SetSystemProxy, GetSettings } from '../wailsjs/go/app/App'
 import { EventsOn, WindowUnminimise } from '../wailsjs/runtime/runtime'
 import type { app } from '../wailsjs/go/models'
 
 const store = useFlowsStore()
+// M11：无打开项目（currentId 为空）时主界面替换为欢迎页
+const { hasOpenProject } = useProjects()
 const status = ref<app.ProxyStatus>({ Running: false, Addr: '', Mode: '', FlowCount: 0 } as app.ProxyStatus)
 const showSettings = ref(false)
 // 设置抽屉初始标签：状态标签入口定位到「网络」（代理服务），底部按钮默认「常规」

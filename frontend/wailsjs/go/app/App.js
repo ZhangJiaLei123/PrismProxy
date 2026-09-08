@@ -30,6 +30,10 @@ export function ClearFlows() {
   return window['go']['app']['App']['ClearFlows']();
 }
 
+export function CloseProject() {
+  return window['go']['app']['App']['CloseProject']();
+}
+
 export function CreateProject(arg1, arg2) {
   return window['go']['app']['App']['CreateProject'](arg1, arg2);
 }

@@ -254,6 +254,34 @@ func TestNoProjectStateGuards(t *testing.T) {
 	}
 }
 
+// TestCtlSaveSettingsNoProjectEnvOnly M11 审计回归：CLI/HTTP 桥接在无项目态
+// 保存环境字段（端口/上游等）应放行走标准路径（环境热应用照常），不得被
+// resolveProjectIDLocked 的「尚未打开任何项目」提前拦截；显式指定不存在项目仍报错。
+func TestCtlSaveSettingsNoProjectEnvOnly(t *testing.T) {
+	a := newTestApp(t)
+	a.gcfg.Projects = nil
+	a.gcfg.CurrentProject = ""
+	a.gcfg.ListenAddr = "127.0.0.1:9090" // 环境字段校验需要合法监听地址
+	a.proj = nil
+	a.groups = nil
+	a.eng.Set(nil)
+	svc := newCtlService(a)
+
+	// 无项目态 + 不指定目标项目：环境字段保存成功（视图含完整环境字段，与 CLI settings set 合并后形态一致）
+	_, err := svc.SaveSettings("", []byte(`{"listenAddr":"127.0.0.1:9090","upstreamMode":"direct","maxFlows":1234}`))
+	if err != nil {
+		t.Fatalf("无项目态保存环境字段应放行: %v", err)
+	}
+	if a.gcfg.MaxFlows != 1234 {
+		t.Fatalf("环境字段应落盘全局: MaxFlows=%d", a.gcfg.MaxFlows)
+	}
+
+	// 无项目态 + 显式指定不存在的项目：仍报错
+	if _, err := svc.SaveSettings("ghost", []byte(`{"listenAddr":"127.0.0.1:9090","maxFlows":1}`)); err == nil {
+		t.Fatal("显式指定不存在项目应报错")
+	}
+}
+
 // ---------- SaveSettings 并发令牌与字段拆分（设计 §5.5/§6.1） ----------
 
 func TestSaveSettingsRulesProjectToken(t *testing.T) {
