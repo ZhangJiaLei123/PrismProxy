@@ -182,11 +182,33 @@ func (f *fakeService) Compose(raw json.RawMessage) (any, error) {
 }
 func (f *fakeService) ListProcesses() []string { return []string{"powershell.exe"} }
 
+// ---------- M12 标签/复盘方法桩 ----------
+
+func (f *fakeService) ListTagsForReview() (any, error) {
+	return map[string]any{"tags": []any{}}, nil
+}
+func (f *fakeService) TagFlowsForReview(raw json.RawMessage) (any, error) {
+	return map[string]any{"ok": true}, nil
+}
+func (f *fakeService) ListFlowsByTag(tagID string, limit, offset int) (any, error) {
+	return map[string]any{"flows": []any{}, "total": 0, "tag": tagID, "limit": limit, "offset": offset}, nil
+}
+func (f *fakeService) GetTaggedFlow(id string) (any, error) {
+	return map[string]any{"id": id}, nil
+}
+func (f *fakeService) GetTaggedFlowBody(id, which string) (any, error) {
+	return map[string]any{"id": id, "which": which}, nil
+}
+func (f *fakeService) RenameTag(raw json.RawMessage) error { return nil }
+func (f *fakeService) DeleteTag(tagID string, deleteFlows bool) (int, error) {
+	return 0, nil
+}
+
 func startTestServer(t *testing.T, svc Service) (*Server, string, string) {
 	t.Helper()
 	dir := t.TempDir()
 	epFile := filepath.Join(dir, endpointFileName)
-	srv := NewServer("127.0.0.1:0", "test-token-abc123", epFile, svc)
+	srv := NewServer("127.0.0.1:0", "test-token-abc123", epFile, svc, nil)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("启动控制服务失败: %v", err)
 	}
@@ -407,7 +429,7 @@ func TestSettingsPut(t *testing.T) {
 func TestEndpointFileLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	epFile := filepath.Join(dir, endpointFileName)
-	srv := NewServer("127.0.0.1:0", "", epFile, &fakeService{})
+	srv := NewServer("127.0.0.1:0", "", epFile, &fakeService{}, nil)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("启动失败: %v", err)
 	}

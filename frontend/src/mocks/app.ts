@@ -72,9 +72,12 @@ function makeFlow(t: number, idx: number, idTag: string): FlowRec {
     Pinned: idx % 9 === 4,
     Source: 'mock',
     Historical: false,
+    Tags: [] as string[], // M12：会话态标签名列表（Go FlowMeta.Tags 无 json tag，运行时为大写 Tags）
   }
   const detail = {
     ...meta,
+    // 展开是浅拷贝：Tags 数组会与 meta 共享引用，打标时两处 push 会重复入列，须独立副本
+    Tags: [] as string[],
     ReqURL: url,
     ReqProto: 'HTTP/1.1',
     ReqHeader: {
@@ -133,6 +136,36 @@ const state = {
 
 function currentProject() {
   return state.projects.find((p) => p.id === state.currentProjectId) ?? null
+}
+
+// ---- M12 标签（内存模拟；标签随项目隔离，切换/关闭/删除项目时重置） ----
+interface MockTag {
+  id: string
+  name: string
+  createdAt: number
+  lastUsedAt: number
+}
+const tagStore = new Map<string, MockTag>() // key = 标签 id
+const tagLinks = new Map<string, Set<string>>() // 标签 id → 已关联流 id（模拟归档库，清空列表不丢）
+function resetTags() {
+  tagStore.clear()
+  tagLinks.clear()
+}
+function normTagName(name: string) {
+  return (name || '').trim().replace(/\s+/g, ' ')
+}
+// 与后端 id 形态对齐：「t_」+ 归一化名（去全部空白 + lower）哈希前 12 位 hex（mock 用简化哈希，仅预览）
+function mockTagID(name: string) {
+  const key = name.toLowerCase().replace(/\s+/g, '')
+  let h1 = 0x811c9dc5
+  let h2 = 0x1000193
+  for (let i = 0; i < key.length; i++) {
+    const c = key.charCodeAt(i)
+    h1 = (Math.imul(h1 ^ c, 0x01000193)) | 0
+    h2 = (Math.imul(h2 + c, 31)) | 0
+  }
+  const hex = ((h1 >>> 0).toString(16) + (h2 >>> 0).toString(16) + '00000000').slice(0, 12)
+  return 't_' + hex
 }
 
 // 项目级规则（过滤组/解密规则）按项目隔离，支持 CreateProject(fromID) 复制与 SaveSettings 回读
@@ -332,6 +365,7 @@ const handlers: Record<string, (...args: any[]) => any> = {
     const oldIDs = state.flows.map((f) => f.meta.ID)
     state.currentProjectId = ''
     state.flows = []
+    resetTags()
     later(() => {
       emit('project:changed')
       emit('flow:evict', oldIDs)
@@ -386,6 +420,71 @@ const handlers: Record<string, (...args: any[]) => any> = {
   ClearFlows: async () => {
     state.flows = state.flows.filter((f) => f.meta.Pinned)
   },
+
+  // --- M12 标签 / 数据复盘 ---
+  // 返回小写字段 json 形态（与 Go TagInfo 的 json tag 一致；wails 绑定不会做 class 实例化）
+  ListTags: async () => {
+    return [...tagStore.values()]
+      .map((t) => ({ id: t.id, name: t.name, count: tagLinks.get(t.id)?.size ?? 0, createdAt: t.createdAt, lastUsedAt: t.lastUsedAt }))
+      .sort((a, b) => b.lastUsedAt - a.lastUsedAt)
+  },
+  TagFlows: async (ids: string[], name: string, autoClear: boolean) => {
+    const norm = normTagName(name)
+    if (!norm) throw new Error('标签名称不能为空')
+    const id = mockTagID(norm)
+    let tag = tagStore.get(id)
+    if (!tag) {
+      tag = { id, name: norm, createdAt: now(), lastUsedAt: now() }
+      tagStore.set(id, tag)
+      tagLinks.set(id, new Set())
+    } else {
+      tag.name = norm
+      tag.lastUsedAt = now()
+    }
+    const links = tagLinks.get(id)!
+    const uniq = [...new Set(ids)]
+    let tagged = 0
+    let skipped = 0
+    const taggedFlows: FlowRec[] = []
+    for (const fid of uniq) {
+      const f = findFlow(fid)
+      if (!f) {
+        // mock 无落盘归档库：内存没有即视为不可得（对齐后端「内存与库中均不可得」skipped）
+        skipped++
+        continue
+      }
+      if (!links.has(fid)) {
+        links.add(fid)
+        tagged++
+      }
+      if (!f.meta.Tags.includes(tag.name)) {
+        f.meta.Tags.push(tag.name)
+        if (f.detail && Array.isArray(f.detail.Tags)) f.detail.Tags.push(tag.name)
+      }
+      taggedFlows.push(f)
+    }
+    // 对齐后端时序（bindings_tags.go）：先 pendUp 回显打标流（upsert 带最新 Tags），
+    // autoClear 时 st.Clear 的 evict 会剔除同 id 待发 upsert——非置顶流消失不复活，置顶流保留
+    const pinnedFlows = taggedFlows.filter((f) => f.meta.Pinned)
+    later(() => {
+      if (autoClear) {
+        emit('flow:upsert', pinnedFlows.map((f) => f.meta))
+        const evictIDs = taggedFlows.filter((f) => !f.meta.Pinned).map((f) => f.meta.ID)
+        emit('flow:evict', evictIDs)
+        state.flows = state.flows.filter((f) => f.meta.Pinned)
+      } else {
+        emit('flow:upsert', taggedFlows.map((f) => f.meta))
+      }
+    })
+    return {
+      tag: { id: tag.id, name: tag.name, count: links.size, createdAt: tag.createdAt, lastUsedAt: tag.lastUsedAt },
+      tagged,
+      archived: tagged, // mock 内存即「库」：关联成功即归档成功
+      skipped,
+    }
+  },
+  // 设计 §7：mock 环境复盘页走 Vite dev 同源打开（主窗 window.open）；无 ctlapi/真实 token
+  GetReviewURL: async () => '/review.html?token=mock',
   GetFlowDetail: async (id: string) => {
     const f = findFlow(id)
     if (!f) throw new Error('流不存在或已过期')

@@ -46,6 +46,10 @@ export function DeleteProject(arg1) {
   return window['go']['app']['App']['DeleteProject'](arg1);
 }
 
+export function DeleteTagApp(arg1, arg2) {
+  return window['go']['app']['App']['DeleteTagApp'](arg1, arg2);
+}
+
 export function ExportDomainGroup(arg1) {
   return window['go']['app']['App']['ExportDomainGroup'](arg1);
 }
@@ -84,6 +88,10 @@ export function GetLocalAddrs() {
 
 export function GetProxyStatus() {
   return window['go']['app']['App']['GetProxyStatus']();
+}
+
+export function GetReviewURL() {
+  return window['go']['app']['App']['GetReviewURL']();
 }
 
 export function GetSettings() {
@@ -134,6 +142,10 @@ export function ListSystemProcesses() {
   return window['go']['app']['App']['ListSystemProcesses']();
 }
 
+export function ListTags() {
+  return window['go']['app']['App']['ListTags']();
+}
+
 export function PickAdbPath() {
   return window['go']['app']['App']['PickAdbPath']();
 }
@@ -144,6 +156,22 @@ export function ProbeURLImport(arg1) {
 
 export function RenameProject(arg1, arg2) {
   return window['go']['app']['App']['RenameProject'](arg1, arg2);
+}
+
+export function RenameTagApp(arg1, arg2) {
+  return window['go']['app']['App']['RenameTagApp'](arg1, arg2);
+}
+
+export function ReviewFlowBody(arg1, arg2) {
+  return window['go']['app']['App']['ReviewFlowBody'](arg1, arg2);
+}
+
+export function ReviewFlowDetail(arg1) {
+  return window['go']['app']['App']['ReviewFlowDetail'](arg1);
+}
+
+export function ReviewFlowList(arg1, arg2, arg3) {
+  return window['go']['app']['App']['ReviewFlowList'](arg1, arg2, arg3);
 }
 
 export function SaveDomainGroupText(arg1, arg2) {
@@ -176,4 +204,8 @@ export function StopProxy() {
 
 export function SwitchProject(arg1) {
   return window['go']['app']['App']['SwitchProject'](arg1);
+}
+
+export function TagFlows(arg1, arg2, arg3) {
+  return window['go']['app']['App']['TagFlows'](arg1, arg2, arg3);
 }

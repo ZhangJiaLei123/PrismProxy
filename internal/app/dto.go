@@ -31,6 +31,7 @@ type FlowMeta struct {
 	Pinned      bool   // M5 置顶：固定顶部、不参与淘汰、Clear 保留（会话内不持久化）
 	Source      string // capture | composer（M6 调试重发标记）| history（M7 历史库加载）
 	Historical  bool   // M7：是否为从 SQLite 历史库加载的历史流（正文惰性回查 DB）
+	Tags        []string // M12：该流所属标签名列表（会话态，由 App tagIndex COW 快照注入，不来自 flows.data）
 }
 
 // FilterFields 实现 ctlapi.Filterable：供 SSE Hub 按订阅者 filter 过滤 flows upsert
@@ -100,7 +101,9 @@ type SettingsView struct {
 
 // ---------- 转换 ----------
 
-func toMeta(f *capture.Flow) FlowMeta {
+// toMeta Flow → 列表 DTO。M12 起为 App 方法：从 tagIndex COW 快照注入 Tags
+// （零锁；未命中索引视为无标签，列表热路径不查 DB，设计 §4.5）。
+func (a *App) toMeta(f *capture.Flow) FlowMeta {
 	m := FlowMeta{
 		ID:         string(f.ID),
 		State:      string(f.State),
@@ -113,6 +116,7 @@ func toMeta(f *capture.Flow) FlowMeta {
 		Pinned:     f.Pinned,
 		Source:     f.Source,
 		Historical: f.Source == capture.SourceHistory,
+		Tags:       a.tagsOf(string(f.ID)),
 	}
 	if f.Timing != nil {
 		m.StartedAt = f.Timing.Start.UnixMilli()
@@ -139,8 +143,8 @@ func toMeta(f *capture.Flow) FlowMeta {
 }
 
 // flowDetail Flow → 详情 DTO（GetFlowDetail 与 M6 SendComposed 共用）
-func flowDetail(f *capture.Flow) *FlowDetail {
-	d := &FlowDetail{FlowMeta: toMeta(f), ServerAddr: f.ServerAddr, TLS: f.TLS}
+func (a *App) flowDetail(f *capture.Flow) *FlowDetail {
+	d := &FlowDetail{FlowMeta: a.toMeta(f), ServerAddr: f.ServerAddr, TLS: f.TLS}
 	if f.Request != nil {
 		d.ReqURL = f.Request.URL
 		d.ReqProto = f.Request.Proto

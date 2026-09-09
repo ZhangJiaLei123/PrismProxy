@@ -23,6 +23,12 @@
               {{ store.selected.ProcessName }} (pid={{ store.selected.PID }})
               <div v-if="detail?.ProcessPath" class="proc-path">{{ detail.ProcessPath }}</div>
             </n-descriptions-item>
+            <n-descriptions-item label="标签">
+              <template v-if="store.selected.Tags && store.selected.Tags.length">
+                <n-tag v-for="t in store.selected.Tags" :key="t" size="small" :bordered="false" class="ov-tag">{{ t }}</n-tag>
+              </template>
+              <span v-else style="color: rgba(255,255,255,0.35)">—</span>
+            </n-descriptions-item>
           </n-descriptions>
         </n-tab-pane>
 
@@ -66,6 +72,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { NButton, NDescriptions, NDescriptionsItem, NTabPane, NTabs, NTag } from 'naive-ui'
+// NTag 已用于标题状态与 M12 标签行
 import BodyViewer from '../components/BodyViewer.vue'
 import HeaderTable from '../components/HeaderTable.vue'
 import CopyBar from '../components/CopyBar.vue'
@@ -143,4 +150,5 @@ function fmtDate(s: string): string {
 .proc-path { font-size: 11px; color: rgba(255, 255, 255, 0.45); word-break: break-all; }
 .cert { margin-bottom: 10px; font-size: 12px; line-height: 1.7; }
 .ck { display: inline-block; width: 64px; color: rgba(255, 255, 255, 0.5); }
+.ov-tag { margin: 0 6px 4px 0; color: #c0a8f0; background: rgba(181, 126, 220, 0.16); }
 </style>

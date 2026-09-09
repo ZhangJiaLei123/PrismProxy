@@ -146,6 +146,7 @@ export namespace app {
 	    Pinned: boolean;
 	    Source: string;
 	    Historical: boolean;
+	    Tags: string[];
 	    ReqURL: string;
 	    ReqProto: string;
 	    ReqHeader: Record<string, Array<string>>;
@@ -182,6 +183,7 @@ export namespace app {
 	        this.Pinned = source["Pinned"];
 	        this.Source = source["Source"];
 	        this.Historical = source["Historical"];
+	        this.Tags = source["Tags"];
 	        this.ReqURL = source["ReqURL"];
 	        this.ReqProto = source["ReqProto"];
 	        this.ReqHeader = source["ReqHeader"];
@@ -232,6 +234,7 @@ export namespace app {
 	    Pinned: boolean;
 	    Source: string;
 	    Historical: boolean;
+	    Tags: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new FlowMeta(source);
@@ -258,6 +261,7 @@ export namespace app {
 	        this.Pinned = source["Pinned"];
 	        this.Source = source["Source"];
 	        this.Historical = source["Historical"];
+	        this.Tags = source["Tags"];
 	    }
 	}
 	export class ImportRulesResult {
@@ -393,6 +397,62 @@ export namespace app {
 	        this.server = source["server"];
 	        this.override = source["override"];
 	    }
+	}
+	export class TagInfo {
+	    id: string;
+	    name: string;
+	    count: number;
+	    createdAt: number;
+	    lastUsedAt: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new TagInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.count = source["count"];
+	        this.createdAt = source["createdAt"];
+	        this.lastUsedAt = source["lastUsedAt"];
+	    }
+	}
+	export class TagResult {
+	    tag?: TagInfo;
+	    tagged: number;
+	    archived: number;
+	    skipped: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new TagResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tag = this.convertValues(source["tag"], TagInfo);
+	        this.tagged = source["tagged"];
+	        this.archived = source["archived"];
+	        this.skipped = source["skipped"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class URLImportProbe {
 	    kind: string;

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"io/fs"
 	"log"
 	"os"
 	"os/signal"
@@ -11,8 +12,9 @@ import (
 
 // RunHeadless 无 UI 命令行模式（调试/冒烟用；吃 settings.json）。
 // M8 起复用 App 服务层并启动本地控制 API（cli 子命令可连），与 GUI 模式能力对齐。
-func RunHeadless(addr string, noMITM bool) {
-	a := NewApp(addr, noMITM)
+// staticFS 为前端 dist 静态资源（复盘页托管用；main 包 embed 注入）。
+func RunHeadless(addr string, noMITM bool, staticFS fs.FS) {
+	a := NewApp(addr, noMITM, staticFS)
 
 	// 崩溃自愈：上次接管系统代理期间被强杀 → 按备份还原（GUI/headless 共用）
 	if healed, err := sysproxy.SelfHeal(a.backupFile()); err != nil {

@@ -109,6 +109,15 @@ export const useFlowsStore = defineStore('flows', {
       this.rebuildIndex()
       if (!this.index.has(this.selectedId)) this.selectedId = ''
     },
+    // M12：暂停刷新期间事件（upsert/evict）被前端丢弃且不补发——打标成功后由调用方
+    // 手动重拉一次列表，刷新标签徽章/自动清空显示（设计 §5.2 paused 例外）。
+    async relist() {
+      const all = (await ListFlows()) ?? []
+      all.sort((a, b) => b.StartedAt - a.StartedAt)
+      this.flows = all
+      this.rebuildIndex()
+      if (this.selectedId && !this.index.has(this.selectedId)) this.selectedId = ''
+    },
     // 快捷忽略生效后，清理列表中已存在的匹配流（后端引擎只过滤后续新流，不回溯清理存量；
     // 匹配语义对齐 rules.Engine：host=自身+全部子域，process=不区分大小写精确，
     // path=精确或段边界前缀。置顶流命中同样移除——黑名单命中即不应再显示）。

@@ -55,7 +55,7 @@ func readSSEEvent(t *testing.T, r *bufio.Reader, timeout time.Duration) (event, 
 func startCtlWithEvents(t *testing.T, a *App) (srv *ctlapi.Server, r *bufio.Reader, closeFn func()) {
 	t.Helper()
 	epFile := filepath.Join(t.TempDir(), "ctl-endpoint.json")
-	srv = ctlapi.NewServer("127.0.0.1:0", "test-token", epFile, newCtlService(a))
+	srv = ctlapi.NewServer("127.0.0.1:0", "test-token", epFile, newCtlService(a), nil)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("启动控制 API 失败: %v", err)
 	}

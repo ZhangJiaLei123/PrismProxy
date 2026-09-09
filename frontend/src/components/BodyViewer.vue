@@ -65,8 +65,13 @@ import JsonTree from './JsonTree.vue'
 import { GetFlowBody, GetFlowDetail } from '../../wailsjs/go/app/App'
 import type { app } from '../../wailsjs/go/models'
 import { b64ToBytes, bytesToText, fmtBytes } from '../lib/format'
+// M12：数据源可注入——数据复盘页（系统浏览器，无 wails runtime）传 fetch 版 loader；
+// 主窗不传，回落 wails 绑定（两个调用点行为与此前完全一致）。
+import type { BodyLoader } from '../lib/types'
 
-const props = defineProps<{ flowId: string; which: 'req' | 'resp' }>()
+const props = withDefaults(defineProps<{ flowId: string; which: 'req' | 'resp'; loader?: BodyLoader }>(), {
+  loader: undefined,
+})
 
 const payload = ref<app.BodyPayload | null>(null)
 const detail = ref<app.FlowDetail | null>(null)
@@ -81,12 +86,14 @@ async function load() {
   if (!props.flowId) return
   try {
     // body 与详情并行拉取；详情提供网页预览的相对资源基址（ReqURL）
+    const bodyFn = props.loader?.loadBody ?? ((id: string, which: 'req' | 'resp') => GetFlowBody(id, which))
+    const detailFn = props.loader?.loadDetail ?? ((id: string) => GetFlowDetail(id))
     const [b, d] = await Promise.all([
-      GetFlowBody(props.flowId, props.which),
-      GetFlowDetail(props.flowId).catch(() => null),
+      bodyFn(props.flowId, props.which),
+      detailFn(props.flowId).catch(() => null),
     ])
-    payload.value = b
-    detail.value = d
+    payload.value = b as app.BodyPayload
+    detail.value = d as app.FlowDetail
   } catch {
     payload.value = null
   }

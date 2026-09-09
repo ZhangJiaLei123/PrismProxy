@@ -15,11 +15,13 @@ package persist
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -58,10 +60,55 @@ type Writer struct {
 	written atomic.Int64 // 已落盘流数
 	active  atomic.Bool  // Start 后 true；Close 后 false
 	paused  atomic.Bool  // 测试用：暂停消费排空（仅队列丢弃测试使用）
+
+	// M12 审计修复 M2：墓碑过滤（仅录制 Writer 由 app 层注入）。消费侧每批落盘前
+	// 过滤被判删的 flow id——它们可能在删除前已滞留队列（容量 2048、flush 500ms），
+	// 仅在入队侧检查挡不住出队时的 ON CONFLICT 复活。归档 Writer 不注入（nil=不过滤）。
+	isTombstoned func(flowID string) bool
 }
 
 // Open 打开（必要时创建）DB 并建表。dbPath 为 DB 文件路径（相对路径按 cwd 解析）。
+// 录制库专用（busy_timeout=5s）。
 func Open(dbPath string, retainDays, maxMB int) (*Writer, error) {
+	return open(dbPath, retainDays, maxMB, 5000)
+}
+
+// OpenArchive 打开标签归档专用 Writer（M12）：retainDays=0/maxMB=0 关闭保留清理
+// （归档数据永不自动删除）；busy_timeout=15s——与录制 Writer 同库跨连接池并发写时，
+// 现代 SQLite 单写者模型下另一写者持锁窗口可能较长（批量 100 条 × 大 body zstd），
+// 配合 ArchiveFlow 的 BUSY 退避重试兜底（设计 §4.2）。
+func OpenArchive(dbPath string) (*Writer, error) {
+	return open(dbPath, 0, 0, 15000)
+}
+
+// ErrDBNotExist 只读打开时库文件不存在（M12 审计修复 L2：只读路径不得凭空建库）。
+var ErrDBNotExist = errors.New("数据库文件不存在")
+
+// OpenReadOnly 以只读模式打开既有 DB（不创建文件、不跑 migrate/VACUUM），供复盘查询/
+// 标签列表/索引回填等只读路径使用。库文件不存在返回包装了 ErrDBNotExist 的错误，
+// 调用方据此静默为空结果（fs.ErrNotExist 一并视为不存在）。
+func OpenReadOnly(dbPath string) (*Writer, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %s", ErrDBNotExist, dbPath)
+		}
+		return nil, fmt.Errorf("检查数据库文件: %w", err)
+	}
+	// mode=ro 只读；query_only 连接级 PRAGMA 双保险，杜绝只读连接误写。
+	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(true)", dbPath)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("打开数据库: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("连接数据库: %w", err)
+	}
+	return &Writer{db: db}, nil
+}
+
+func open(dbPath string, retainDays, maxMB, busyTimeoutMS int) (*Writer, error) {
 	if dir := filepath.Dir(dbPath); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("创建数据库目录: %w", err)
@@ -71,7 +118,7 @@ func Open(dbPath string, retainDays, maxMB int) (*Writer, error) {
 	// auto_vacuum=INCREMENTAL(2) 让删除产生的空闲页可经 PRAGMA incremental_vacuum 归还给 OS——
 	// 否则 DELETE 不缩小主 .db 文件，体积上限裁剪会失效（只在文件尾空闲页能被释放）。
 	// 注：auto_vacuum 仅在建表前生效，既有库由 migrate 做一次性 VACUUM 迁移（见下）。
-	dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=auto_vacuum(2)"
+	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=auto_vacuum(2)", dbPath, busyTimeoutMS)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库: %w", err)
@@ -133,6 +180,24 @@ CREATE TABLE IF NOT EXISTS bodies (
     data     BLOB NOT NULL,
     PRIMARY KEY (flow_id, kind)
 );
+
+-- M12 标签字典（标签 = 归档；id 为 hash，见 tags.go）
+CREATE TABLE IF NOT EXISTS tags (
+    id           TEXT PRIMARY KEY,   -- "t_" + sha256(归一化名) 前 12 位 hex（碰撞时 16 位）
+    name         TEXT NOT NULL,      -- 展示名（用户原始输入 trim 后）
+    created_at   INTEGER NOT NULL,   -- unix 毫秒
+    last_used_at INTEGER NOT NULL    -- unix 毫秒，最近一次打标时间
+);
+
+-- M12 流 ↔ 标签 多对多关联
+CREATE TABLE IF NOT EXISTS flow_tags (
+    flow_id   TEXT NOT NULL,
+    tag_id    TEXT NOT NULL,
+    tagged_at INTEGER NOT NULL,      -- unix 毫秒
+    PRIMARY KEY (flow_id, tag_id)
+);
+CREATE INDEX IF NOT EXISTS idx_flow_tags_tag ON flow_tags(tag_id);
+CREATE INDEX IF NOT EXISTS idx_flow_tags_flow ON flow_tags(flow_id);
 `)
 	return err
 }
@@ -186,12 +251,41 @@ func (w *Writer) Path() string { return w.dbPath() }
 // setPaused 暂停/恢复消费排空（仅测试用：确定性灌满队列验证丢弃）
 func (w *Writer) setPaused(p bool) { w.paused.Store(p) }
 
+// SetTombstoneFilter 注入墓碑判定回调（M12 审计修复 M2，仅录制 Writer 调用）。
+// 消费侧每批落盘前剔除被判删的流，防止删除前已滞留队列的批次 ON CONFLICT 复活数据。
+func (w *Writer) SetTombstoneFilter(fn func(flowID string) bool) {
+	w.isTombstoned = fn
+}
+
+// queued 队列滞留数（仅测试用：暂停消费后确认批次确已滞留再解除暂停）。
+func (w *Writer) queued() int {
+	if w.queue == nil {
+		return 0
+	}
+	return len(w.queue)
+}
+
 func (w *Writer) consumeLoop() {
 	defer w.wg.Done()
 	batch := make([]*capture.Flow, 0, batchSize)
 	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()
 	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		// M12 审计修复 M2：落盘前剔除墓碑流（删除前已滞留队列的批次），
+		// 防止 ON CONFLICT DO UPDATE 让已删数据复活。
+		if w.isTombstoned != nil {
+			kept := batch[:0]
+			for _, f := range batch {
+				if f != nil && w.isTombstoned(string(f.ID)) {
+					continue
+				}
+				kept = append(kept, f)
+			}
+			batch = kept
+		}
 		if len(batch) == 0 {
 			return
 		}
@@ -313,6 +407,53 @@ func upsertBody(stmt *sql.Stmt, flowID, kind string, raw []byte) error {
 	return err
 }
 
+// archiveMaxRetries / archiveRetryBackoff：ArchiveFlow 遇 SQLITE_BUSY/LOCKED 时的
+// 退避重试参数（跨 Writer 连接池并发写兜底，设计 §4.2）。
+const (
+	archiveMaxRetries   = 3
+	archiveRetryBackoff = time.Second
+)
+
+// ArchiveFlow 归档单条流（M12，标签 = 归档）：同步 upsert flows 元数据 + bodies 正文，
+// 幂等（INSERT ... ON CONFLICT DO UPDATE）。与录制 Enqueue 的区别：同步写、不走队列、
+// 不受自动录制开关影响；内置 SQLITE_BUSY/LOCKED 退避重试——归档 Writer 与录制 Writer
+// 可能同时打开同一 prism.db（两个独立连接池），busy_timeout 之外再兜一层重试。
+func (w *Writer) ArchiveFlow(f *capture.Flow) error {
+	if f == nil {
+		return nil
+	}
+	// 深拷贝隔离：调用方（打标 goroutine）持有的是 store 内存真源流，marshalFlow 虽为
+	// 只读浅拷贝，但 cloneFlow 与 Enqueue 口径一致，彻底避免与代理热路径/UI 并发读写。
+	cp := cloneFlow(f)
+	var lastErr error
+	for attempt := 0; attempt < archiveMaxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(archiveRetryBackoff)
+		}
+		err := w.writeBatch([]*capture.Flow{cp})
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isSQLiteBusy(err) {
+			return err
+		}
+		log.Printf("persist: 归档写入遇到 BUSY（第 %d 次重试）: %v", attempt+1, err)
+	}
+	return fmt.Errorf("归档流 %s 重试耗尽: %w", f.ID, lastErr)
+}
+
+// isSQLiteBusy 判断是否 SQLITE_BUSY/SQLITE_LOCKED（modernc.org/sqlite 错误经字符串识别，
+// 驱动错误码常量在不同版本间路径不稳定；busy_timeout 内通常不会到达这里，仅重试兜底用）。
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "SQLITE_LOCKED") || strings.Contains(msg, "database table is locked")
+}
+
 // zstd 编解码器（并发安全，包级复用）
 var (
 	zstdEncoder, _ = zstd.NewWriter(nil)
@@ -414,10 +555,12 @@ func (w *Writer) retentionLoop() {
 
 // Retention 按 retainDays / maxMB 清理过期与超限数据。retainDays>0 删超龄流；
 // maxMB>0 时在超量后从最旧流删除直到 DB 文件回落至阈值以下。
+// M12：两处清理均排除已打标签的流（标签 = 归档，保留策略永不删已标记流，设计 §4.6）。
 func (w *Writer) Retention() error {
 	if w.retainDays > 0 {
 		cutoff := time.Now().Add(-time.Duration(w.retainDays) * 24 * time.Hour).UnixMilli()
-		if _, err := w.db.Exec(`DELETE FROM flows WHERE started_at < ?`, cutoff); err != nil {
+		if _, err := w.db.Exec(`DELETE FROM flows WHERE started_at < ?
+			AND id NOT IN (SELECT flow_id FROM flow_tags)`, cutoff); err != nil {
 			return err
 		}
 	}
@@ -464,7 +607,10 @@ func (w *Writer) enforceSize(maxBytes int64) error {
 	const chunk = 64 // 每批删除条数：平衡 VACUUM 次数与删除粒度
 	for size() > maxBytes {
 		var ids []string
-		rows, err := w.db.Query(`SELECT id FROM flows ORDER BY started_at ASC, id ASC LIMIT ?`, chunk)
+		// M12：排除已打标签的流（归档流不参与容量裁剪）；全表皆标签流时返回空 → 提前返回
+		rows, err := w.db.Query(`SELECT id FROM flows
+			WHERE id NOT IN (SELECT flow_id FROM flow_tags)
+			ORDER BY started_at ASC, id ASC LIMIT ?`, chunk)
 		if err != nil {
 			return err
 		}

@@ -30,7 +30,7 @@ func main() {
 	flag.Parse()
 
 	if *headless {
-		app.RunHeadless(*addr, *noMITM)
+		app.RunHeadless(*addr, *noMITM, assets)
 		return
 	}
 
@@ -39,7 +39,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	a := app.NewApp(*addr, *noMITM)
+	a := app.NewApp(*addr, *noMITM, assets)
 	err := wails.Run(&options.App{
 		Title:     "PrismProxy",
 		Width:     1280,

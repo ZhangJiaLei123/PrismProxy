@@ -26,6 +26,8 @@ export function DeleteDomainGroup(arg1:string):Promise<void>;
 
 export function DeleteProject(arg1:string):Promise<void>;
 
+export function DeleteTagApp(arg1:string,arg2:boolean):Promise<number>;
+
 export function ExportDomainGroup(arg1:string):Promise<string>;
 
 export function ExportRules(arg1:boolean):Promise<string>;
@@ -45,6 +47,8 @@ export function GetFlowRawText(arg1:string,arg2:string,arg3:string):Promise<stri
 export function GetLocalAddrs():Promise<Array<string>>;
 
 export function GetProxyStatus():Promise<app.ProxyStatus>;
+
+export function GetReviewURL():Promise<string>;
 
 export function GetSettings():Promise<app.SettingsView>;
 
@@ -70,11 +74,21 @@ export function ListProjects():Promise<Array<settings.ProjectMeta>>;
 
 export function ListSystemProcesses():Promise<Array<string>>;
 
+export function ListTags():Promise<Array<app.TagInfo>>;
+
 export function PickAdbPath():Promise<string>;
 
 export function ProbeURLImport(arg1:string):Promise<app.URLImportProbe>;
 
 export function RenameProject(arg1:string,arg2:string):Promise<void>;
+
+export function RenameTagApp(arg1:string,arg2:string):Promise<void>;
+
+export function ReviewFlowBody(arg1:string,arg2:string):Promise<app.BodyPayload>;
+
+export function ReviewFlowDetail(arg1:string):Promise<app.FlowDetail>;
+
+export function ReviewFlowList(arg1:string,arg2:number,arg3:number):Promise<Array<app.FlowMeta>>;
 
 export function SaveDomainGroupText(arg1:string,arg2:string):Promise<app.DomainGroupImportResult>;
 
@@ -91,3 +105,5 @@ export function StartProxy(arg1:string):Promise<void>;
 export function StopProxy():Promise<void>;
 
 export function SwitchProject(arg1:string):Promise<void>;
+
+export function TagFlows(arg1:Array<string>,arg2:string,arg3:boolean):Promise<app.TagResult>;

@@ -977,3 +977,62 @@ func (s *ctlService) Compose(raw json.RawMessage) (any, error) {
 func (s *ctlService) ListProcesses() []string {
 	return s.app.ListSystemProcesses()
 }
+
+// ---------- 标签与数据复盘（M12，设计 §4.4） ----------
+
+// ListTagsForReview GET /tags：标签列表（含计数）
+func (s *ctlService) ListTagsForReview() (any, error) {
+	tags, err := s.app.ListTags()
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"tags": tags}, nil
+}
+
+// TagFlowsForReview POST /tags/flows：打标签并归档（HTTP 入口 autoClear 恒 false）
+func (s *ctlService) TagFlowsForReview(raw json.RawMessage) (any, error) {
+	var req struct {
+		IDs  []string `json:"ids"`
+		Name string   `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, fmt.Errorf("请求体解析失败: %w", err)
+	}
+	return s.app.TagFlows(req.IDs, req.Name, false)
+}
+
+// ListFlowsByTag GET /tags/{id}/flows：标签下流分页列表（id=all 全部已标记）
+func (s *ctlService) ListFlowsByTag(tagID string, limit, offset int) (any, error) {
+	flows, total, err := s.app.ReviewFlowList(tagID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"flows": flows, "total": total, "tag": tagID, "limit": limit, "offset": offset}, nil
+}
+
+// GetTaggedFlow GET /tags/flows/{id}：归档单流详情
+func (s *ctlService) GetTaggedFlow(id string) (any, error) {
+	return s.app.ReviewFlowDetail(id)
+}
+
+// GetTaggedFlowBody GET /tags/flows/{id}/body?which=：归档单流正文
+func (s *ctlService) GetTaggedFlowBody(id, which string) (any, error) {
+	return s.app.ReviewFlowBody(id, which)
+}
+
+// RenameTag POST /tags/{id}/rename：重命名（目标名已存在则合并关联）
+func (s *ctlService) RenameTag(raw json.RawMessage) error {
+	var req struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return fmt.Errorf("请求体解析失败: %w", err)
+	}
+	return s.app.RenameTagApp(req.ID, req.Name)
+}
+
+// DeleteTag DELETE /tags/{id}?flows=：删除标签（flows=true 连带删流）
+func (s *ctlService) DeleteTag(tagID string, deleteFlows bool) (int, error) {
+	return s.app.DeleteTagApp(tagID, deleteFlows)
+}

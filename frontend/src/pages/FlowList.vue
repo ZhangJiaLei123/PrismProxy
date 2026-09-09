@@ -38,11 +38,17 @@
             v-for="col in visColumns"
             :key="col.key"
             :class="cellCls(col, f)"
-            :title="col.key === 'host' ? f.Host : col.key === 'path' ? f.URL : col.key === 'proc' ? f.ProcessName + ' (' + f.PID + ')' : ''"
+            :title="col.key === 'host' ? f.Host : col.key === 'path' ? f.URL : col.key === 'proc' ? f.ProcessName + ' (' + f.PID + ')' : col.key === 'tags' ? (f.Tags || []).join('、') : ''"
             @dblclick.stop="copyCell(cellText(col, f))"
           >
             <template v-if="col.key === 'host'">
               <svg v-if="f.Pinned" class="pin-ic" viewBox="0 0 24 24" title="已置顶"><path fill="currentColor" d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"/></svg><span v-if="f.Historical" class="hist-badge" title="从本地数据库加载的历史流量">历史</span>{{ f.Host }}
+            </template>
+            <template v-else-if="col.key === 'tags'">
+              <template v-if="f.Tags && f.Tags.length">
+                <n-tag v-for="t in f.Tags.slice(0, 2)" :key="t" size="tiny" :bordered="false" class="tag-badge">{{ t }}</n-tag>
+                <span v-if="f.Tags.length > 2" class="tag-more">+{{ f.Tags.length - 2 }}</span>
+              </template>
             </template>
             <template v-else>{{ cellText(col, f) }}</template>
           </span>
@@ -94,7 +100,7 @@ import type { app } from '../../wailsjs/go/models'
 const store = useFlowsStore()
 const message = useMessage()
 
-type SortKey = 'time' | 'method' | 'status' | 'host' | 'path' | 'dur' | 'size' | 'proc'
+type SortKey = 'time' | 'method' | 'status' | 'host' | 'path' | 'dur' | 'size' | 'proc' | 'tags'
 type SortDir = 'asc' | 'desc'
 
 const columns: { key: SortKey; label: string; cls: string; wi: number }[] = [
@@ -106,22 +112,28 @@ const columns: { key: SortKey; label: string; cls: string; wi: number }[] = [
   { key: 'dur', label: '耗时', cls: 'c-dur', wi: 6 },
   { key: 'size', label: '大小', cls: 'c-size', wi: 7 },
   { key: 'proc', label: '进程', cls: 'c-proc', wi: 8 },
+  // M12：标签列（wi=9），默认可见、排在最后；老用户布局 v1→v2 迁移追加
+  { key: 'tags', label: '标签', cls: 'c-tags', wi: 9 },
 ]
 
 // ---- 列宽拖动 ----
 // 列宽（px），与 grid 模板一一对应（首列状态点 22px 固定）；null = 1fr 弹性（路径列默认）
-const colWidths = ref<(number | null)[]>([22, 92, 56, 56, 150, null, 66, 64, 100])
-const colMins = [22, 52, 44, 40, 60, 60, 48, 48, 60]
+// M12：9→10 元素（新增标签列默认 110px）
+const DEFAULT_WIDTHS: (number | null)[] = [22, 92, 56, 56, 150, null, 66, 64, 100, 110]
+const colWidths = ref<(number | null)[]>([...DEFAULT_WIDTHS])
+const colMins = [22, 52, 44, 40, 60, 60, 48, 48, 60, 70]
 const COL_MAX = 400
 const resizingWi = ref<number | null>(null)
 
-// 列顺序：元素为 colWidths 的索引（0=固定状态点列，1-8=数据列），仅可见列出现在序中
-const DEFAULT_ORDER = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+// 列顺序：元素为 colWidths 的索引（0=固定状态点列，1-9=数据列），仅可见列出现在序中
+const DEFAULT_ORDER = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 const colOrder = ref<number[]>([...DEFAULT_ORDER])
 const visColumns = computed(() => colOrder.value.filter((w) => w >= 1).map((w) => columns[w - 1]))
 
 // ---- 列布局持久化（顺序 + 列宽）到 localStorage，损坏/非法配置静默回退默认 ----
-const LAYOUT_KEY = 'prismproxy:flowlist-col-layout-v1'
+// M12：v1（8 数据列）→ v2（9 数据列，新增标签列）；老布局迁移：宽度沿用、order 末尾追加 9
+const LAYOUT_KEY = 'prismproxy:flowlist-col-layout-v2'
+const LAYOUT_KEY_V1 = 'prismproxy:flowlist-col-layout-v1'
 
 function saveLayout() {
   try {
@@ -131,25 +143,42 @@ function saveLayout() {
   }
 }
 
+// 校验并应用一组布局；数据列索引范围 maxWi（v1=8、v2=9），widths 长度须匹配 colMins
+function applyLayout(order: unknown, widths: unknown, maxWi: number, widthLen: number): boolean {
+  if (!Array.isArray(order) || order[0] !== 0 || order.length < 2) return false
+  const rest = order.slice(1) as unknown[]
+  if (!rest.every((n) => Number.isInteger(n) && n >= 1 && n <= maxWi) || new Set(rest).size !== rest.length) return false
+  if (!Array.isArray(widths) || widths.length !== widthLen) return false
+  for (let i = 0; i < widths.length; i++) {
+    const w = widths[i]
+    if (w !== null && (typeof w !== 'number' || w < colMins[i] || w > COL_MAX)) return false
+  }
+  colOrder.value = order as number[]
+  colWidths.value = widths as (number | null)[]
+  return true
+}
+
 function loadLayout() {
   try {
+    // v2：order 1-9、widths 长度 10
     const raw = localStorage.getItem(LAYOUT_KEY)
-    if (!raw) return
-    const v = JSON.parse(raw) as { order?: unknown; widths?: unknown }
-    // 校验 order：数组、首项恒为 0（状态点列）、其余为 1-8 且不重复
-    const order = v.order
-    if (!Array.isArray(order) || order[0] !== 0 || order.length < 2) return
-    const rest = order.slice(1) as unknown[]
-    if (!rest.every((n) => Number.isInteger(n) && n >= 1 && n <= 8) || new Set(rest).size !== rest.length) return
-    // 校验 widths：长度 9，每项 null 或落在 [colMins, COL_MAX] 的数字
-    const widths = v.widths
-    if (!Array.isArray(widths) || widths.length !== colMins.length) return
-    for (let i = 0; i < widths.length; i++) {
-      const w = widths[i]
-      if (w !== null && (typeof w !== 'number' || w < colMins[i] || w > COL_MAX)) return
+    if (raw) {
+      const v = JSON.parse(raw) as { order?: unknown; widths?: unknown }
+      if (applyLayout(v.order, v.widths, 9, colMins.length)) return
     }
-    colOrder.value = order as number[]
-    colWidths.value = widths as (number | null)[]
+    // v1 → v2 迁移：order 末尾追加标签列（9）、widths 末尾补默认宽度
+    const old = localStorage.getItem(LAYOUT_KEY_V1)
+    if (old) {
+      const v = JSON.parse(old) as { order?: unknown; widths?: unknown }
+      if (
+        Array.isArray(v.order) && Array.isArray(v.widths) &&
+        applyLayout(v.order, v.widths, 8, 9)
+      ) {
+        colOrder.value = [...(colOrder.value as number[]), 9]
+        colWidths.value = [...(colWidths.value as (number | null)[]), DEFAULT_WIDTHS[9]]
+        saveLayout() // 迁移后落 v2 key
+      }
+    }
   } catch {
     // JSON 损坏等：保持默认布局
   }
@@ -211,6 +240,8 @@ const valOf: Record<SortKey, (f: app.FlowMeta) => number | string> = {
   dur: (f) => f.DurationMS,
   size: (f) => f.BytesDown,
   proc: (f) => f.ProcessName,
+  // 标签列按标签名字典序（与 cellText 的 tags 分支口径一致）
+  tags: (f) => (f.Tags || []).join('、'),
 }
 
 const sortedFlows = computed(() => {
@@ -380,11 +411,12 @@ function cellText(col: { key: SortKey }, f: app.FlowMeta): string {
     case 'dur': return fmtDuration(f.DurationMS)
     case 'size': return fmtBytes(f.BytesDown)
     case 'proc': return f.ProcessName
+    case 'tags': return (f.Tags || []).join('、')
   }
 }
 
 function cellCls(col: { key: SortKey; cls: string }, f: app.FlowMeta): string {
-  const base = col.cls + (col.key === 'host' || col.key === 'path' || col.key === 'proc' ? ' ellipsis' : '')
+  const base = col.cls + (col.key === 'host' || col.key === 'path' || col.key === 'proc' || col.key === 'tags' ? ' ellipsis' : '')
   if (col.key === 'method') return base + ' m-' + f.Method
   if (col.key === 'status') return base + ' ' + statusClass(f)
   return base
@@ -542,6 +574,10 @@ function onHeadCtxSelect(key: string) {
 .item.pinned.selected { background: rgba(32, 128, 240, 0.28); }
 .pin-ic { width: 11px; height: 11px; margin-right: 3px; vertical-align: -1px; color: #e5c07b; flex: none; }
 .hist-badge { flex: none; margin-right: 4px; padding: 0 4px; border-radius: 3px; font-size: 10px; line-height: 16px; color: #56b6c2; background: rgba(86, 182, 194, 0.14); }
+/* M12 标签列：n-tag 小徽章（最多 2 个 + +N） */
+.c-tags { display: flex; align-items: center; gap: 3px; overflow: hidden; }
+.c-tags .tag-badge { flex: none; max-width: 72px; height: 18px; font-size: 10px; line-height: 18px; padding: 0 5px; color: #c0a8f0; background: rgba(181, 126, 220, 0.16); }
+.c-tags .tag-more { flex: none; font-size: 10px; color: rgba(255, 255, 255, 0.5); }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .c-time { font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.65); }
 .list-head .c-time { color: inherit; }

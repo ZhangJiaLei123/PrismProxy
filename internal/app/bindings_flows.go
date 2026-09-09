@@ -21,7 +21,7 @@ func (a *App) ListFlows() []FlowMeta {
 	flows := a.st.List()
 	out := make([]FlowMeta, 0, len(flows))
 	for _, f := range flows {
-		out = append(out, toMeta(f))
+		out = append(out, a.toMeta(f))
 	}
 	return out
 }
@@ -31,7 +31,7 @@ func (a *App) GetFlowDetail(id string) (*FlowDetail, error) {
 	if !ok {
 		return nil, fmt.Errorf("flow %s not found（可能已淘汰）", id)
 	}
-	return flowDetail(f), nil
+	return a.flowDetail(f), nil
 }
 
 // ComposedHeader Composer 请求首部行（前端逐行编辑，顺序保留）
@@ -86,11 +86,11 @@ func (a *App) SendComposed(req *ComposedRequest) (*FlowDetail, error) {
 	if err != nil {
 		// 参数校验失败（无落库 Flow）时 flow 为 nil；网络失败已落一条 error 态 Flow
 		if flow != nil {
-			return flowDetail(flow), err
+			return a.flowDetail(flow), err
 		}
 		return nil, err
 	}
-	return flowDetail(flow), nil
+	return a.flowDetail(flow), nil
 }
 
 // hostOfAddr / portOfAddr 从监听地址拆出 host/port（供上游代理环路防护；失败返回零值由 Guard 容错）

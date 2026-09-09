@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"prismproxy/internal/ctlapi"
 	"prismproxy/internal/domains"
 	"prismproxy/internal/mitm"
+	"prismproxy/internal/persist"
 	"prismproxy/internal/proxy"
 	"prismproxy/internal/rules"
 	"prismproxy/internal/settings"
@@ -56,6 +58,32 @@ type App struct {
 	persist      *persistOwner
 	persistSubbed bool // store 持久化订阅是否已挂（订阅一次，靠 writer 启停控制写入）
 
+	// M12 标签归档（标签 = 归档，设计 §4.2）：与自动录制解耦的独立 Writer
+	// （retainDays/maxMB=0，不做保留清理），按需懒打开、随项目切换关闭。
+	// 锁序：projMu → archiveMu / tagIndex 写重建；tagIndex 写重建期间不得触发
+	// store 事件发射（onStoreEvent→toMeta 读 tagIndex，重入/竞态，设计 §4.3 铁律）。
+	archiveMu sync.Mutex
+	archive   *persist.Writer
+	// archiveWG 在途归档库操作计数（M12 审计修复 M1）：取到 writer 指针后 Add(1)、
+	// 用完 Done()；closeArchive 置 nil 拒新后 Wait() 等全部在途操作结束才 Close，
+	// 杜绝「锁外 Close 与在途批量写并发 → database is closed」。
+	archiveWG sync.WaitGroup
+	// archiveGen 常驻 archive 创建时绑定的项目代际（M12 审计修复 M1）：
+	// acquireArchive 在 archiveMu 内创建+Add 单次临界区完成，并记录当时 projGen；
+	// 调用方核对与入口代际一致后才允许写，封死「打标期间项目切换→旧 archive 已置 nil
+	// 却懒打开新库写进新项目」的错库窗口。closeArchive 后清零。
+	archiveGen uint64
+	// tagIndex：flowID → 标签名列表。copy-on-write + atomic.Pointer——
+	// 读侧（toMeta，store 事件/绑定/HTTP 三类 goroutine）零锁取快照；
+	// 写侧（打标/重命名/删除/历史回填/项目切换）整体重建新 map 后原子替换。
+	tagIndex atomic.Pointer[map[string][]string]
+	// deletedFlows tombstone（仅 DeleteTag(deleteFlows=true) 记录）：封幽灵复活——
+	// 已连删的流若仍存活于内存环形队列，其后续 update 事件会被 onPersistEvent
+	// 拦截不入录制队列，避免录制 Writer 重新 upsert 让已删数据复活（设计 §4.4）。
+	tombMu       sync.Mutex
+	deletedFlows map[string]struct{}
+	tombOrder    []string // FIFO 淘汰序（M12 审计修复 L5：墓碑集合有界）
+
 	// ADB 自动代理：启停代际号（每次启动/停止自增）+ 单 worker 串行任务队列，
 	// worker 只执行最新代际的任务，收敛热重启/快速启停时 clear 与 set 的乱序竞态。
 	adbGen atomic.Uint64
@@ -66,10 +94,15 @@ type App struct {
 	pendUp   map[string]FlowMeta // 同 ID new/update 合并，取最新快照
 	pendEv   []string
 	flushDue bool
+
+	// M12 复盘页静态资源（main 包 //go:embed frontend/dist 注入；ctlapi 托管 /review.html）。
+	// 根 embed.FS——ctlapi 子树 fs.Sub 由 startCtlAPI 完成；nil（测试）时不托管静态资源。
+	staticFS fs.FS
 }
 
-// NewApp addr 为空时使用全局配置里的监听地址
-func NewApp(addr string, noMITM bool) *App {
+// NewApp addr 为空时使用全局配置里的监听地址。
+// staticFS 为前端 dist 静态资源（main 包 //go:embed 注入，供 ctlapi 托管复盘页）；测试传 nil。
+func NewApp(addr string, noMITM bool, staticFS fs.FS) *App {
 	cfgDir := settings.DefaultConfigDir()
 
 	// M9：旧版单配置 → 多项目结构一次性迁移（幂等；失败仅记录，按新结构兜底启动）
@@ -155,14 +188,15 @@ func NewApp(addr string, noMITM bool) *App {
 		addr = gcfg.ListenAddr
 	}
 	a := &App{
-		gcfg:   gcfg,
-		proj:   proj,
-		cfgDir: cfgDir,
-		eng:    eng,
-		groups: groups,
-		addr:   addr,
-		noMITM: noMITM,
-		pendUp: make(map[string]FlowMeta),
+		gcfg:     gcfg,
+		proj:     proj,
+		cfgDir:   cfgDir,
+		eng:      eng,
+		groups:   groups,
+		addr:     addr,
+		noMITM:   noMITM,
+		pendUp:   make(map[string]FlowMeta),
+		staticFS: staticFS,
 	}
 	a.st = store.New(gcfg.MaxFlows)
 	a.st.SetLimits(gcfg.MaxFlows, int64(gcfg.MaxBodyMB)<<20)
@@ -228,7 +262,8 @@ func (a *App) Shutdown(ctx context.Context) {
 	a.restoreSystemProxy()
 	_ = a.stopProxyNoHooks()
 	a.stopCtlAPI()
-	a.stopPersist() // M7：刷盘剩余队列并关闭数据库
+	a.stopPersist()  // M7：刷盘剩余队列并关闭录制数据库
+	a.closeArchive() // M12：关闭标签归档库（幂等）
 }
 
 // onSessionEnd 系统关机/注销/重启回调（WM_ENDSESSION，见 session_windows.go）：
@@ -289,7 +324,7 @@ func (a *App) onStoreEvent(ev store.Event) {
 	a.pendMu.Lock()
 	switch ev.Type {
 	case "new", "update":
-		a.pendUp[ev.Flow.ID] = toMeta(ev.Flow) // 值拷贝快照，规避并发读 Flow
+		a.pendUp[ev.Flow.ID] = a.toMeta(ev.Flow) // 值拷贝快照，规避并发读 Flow（M12 注入 Tags）
 	case "evict":
 		for _, id := range ev.IDs {
 			delete(a.pendUp, id)

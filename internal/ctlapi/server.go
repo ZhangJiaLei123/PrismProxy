@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -75,6 +76,14 @@ type Service interface {
 	BuildCurl(id, shell string) (any, error)
 	Compose(raw json.RawMessage) (any, error)
 	ListProcesses() []string
+	// 标签与数据复盘（M12，设计 §4.4）：HTTP 入口的打标 autoClear 恒 false
+	ListTagsForReview() (any, error)
+	TagFlowsForReview(raw json.RawMessage) (any, error)
+	ListFlowsByTag(tagID string, limit, offset int) (any, error)
+	GetTaggedFlow(id string) (any, error)
+	GetTaggedFlowBody(id, which string) (any, error)
+	RenameTag(raw json.RawMessage) error
+	DeleteTag(tagID string, deleteFlows bool) (int, error)
 }
 
 // Server 控制 API HTTP 服务（仅回环）
@@ -83,6 +92,7 @@ type Server struct {
 	token    string
 	endpoint string // 落盘文件（endpoint.json）
 	svc      Service
+	staticFS fs.FS  // M12：前端 dist 静态资源（复盘页托管；nil=不托管，/api/ 外全部 404）
 
 	mu         sync.Mutex
 	listener   net.Listener
@@ -93,14 +103,15 @@ type Server struct {
 }
 
 // NewServer 创建控制服务；addr 为空用 DefaultAddr，token 为空则生成新随机 token。
-func NewServer(addr, token, endpointFile string, svc Service) *Server {
+// staticFS 为前端 dist 目录子树（用于复盘页静态托管，设计 §6.3）；nil 时不托管静态资源。
+func NewServer(addr, token, endpointFile string, svc Service, staticFS fs.FS) *Server {
 	if strings.TrimSpace(addr) == "" {
 		addr = DefaultAddr
 	}
 	if token == "" {
 		token = newToken()
 	}
-	return &Server{addr: addr, token: token, endpoint: endpointFile, svc: svc}
+	return &Server{addr: addr, token: token, endpoint: endpointFile, svc: svc, staticFS: staticFS}
 }
 
 // Addr 返回实际监听地址（Start 之后有效）。
@@ -210,8 +221,15 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/v1/domains/", s.auth(s.handleDomains))
 	mux.HandleFunc("/api/v1/processes", s.auth(s.handleProcesses))
 	mux.HandleFunc("/api/v1/compose", s.auth(s.handleCompose))
+	// M12 标签/复盘（设计 §4.4）：/tags 列表/打标 与 /tags/ 子树（手动分段解析）
+	mux.HandleFunc("/api/v1/tags", s.auth(s.handleTags))
+	mux.HandleFunc("/api/v1/tags/flows", s.auth(s.handleTags)) // POST 打标（显式注册，防落到子树被当 flowId）
+	mux.HandleFunc("/api/v1/tags/", s.auth(s.handleTagSub))
 	// SSE 推送（query token 仅此端点接受：EventSource 无法自定义请求头）
 	mux.HandleFunc("/api/v1/events", s.auth(s.handleEvents, true))
+	// M12 复盘页静态托管（设计 §6.3）：不套 auth（静态页无敏感数据，数据 API 仍鉴权，
+	// token 由页面从 URL query 取出带入 fetch）。静态路由统一兜底，未匹配的 /api/ 仍 404。
+	mux.HandleFunc("/", s.handleStatic)
 	return mux
 }
 
@@ -465,6 +483,192 @@ func (s *Server) handleFlowSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeErr(w, http.StatusNotFound, "未知路径（可用：/flows/{id}、/flows/{id}/body、/flows/{id}/pin、/flows/{id}/curl）")
+}
+
+// ---------- 标签与数据复盘（M12，设计 §4.4） ----------
+
+// handleTags 处理 /api/v1/tags（GET 标签列表）与 /api/v1/tags/flows（POST 打标）。
+// 打标经显式注册的 /tags/flows 精确路由进入（ServeMux 中 /tags 不匹配子路径）。
+func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/tags":
+		v, err := s.svc.ListTagsForReview()
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/tags/flows":
+		raw, err := readBody(r, 4<<20)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		v, err := s.svc.TagFlowsForReview(raw)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "可用：GET /tags、POST /tags/flows")
+	}
+}
+
+// handleTagSub 处理 /api/v1/tags/ 子树（手动分段解析，范式同 handleFlowSub）：
+//
+//	GET    /tags/{id}/flows?limit=&offset=   某标签下流列表（id=all 全部已标记）
+//	DELETE /tags/{id}?flows=0|1              删除标签（flows=1 连带删流）
+//	POST   /tags/{id}/rename  {name}         重命名/合并标签
+//	GET    /tags/flows/{flowId}              单流详情
+//	GET    /tags/flows/{flowId}/body?which=  正文
+func (s *Server) handleTagSub(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/tags/")
+	parts := strings.Split(rest, "/")
+	if parts[0] == "" {
+		writeErr(w, http.StatusNotFound, "未知路径")
+		return
+	}
+
+	// /tags/flows/{flowId}[/body]：单流详情/正文（flows 为保留首段）
+	if parts[0] == "flows" {
+		if len(parts) < 2 || parts[1] == "" {
+			writeErr(w, http.StatusNotFound, "未知路径（打标请用 POST /tags/flows）")
+			return
+		}
+		flowID := parts[1]
+		if len(parts) == 2 {
+			if r.Method != http.MethodGet {
+				writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+				return
+			}
+			v, err := s.svc.GetTaggedFlow(flowID)
+			if err != nil {
+				writeErr(w, http.StatusNotFound, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, v)
+			return
+		}
+		if len(parts) == 3 && parts[2] == "body" {
+			if r.Method != http.MethodGet {
+				writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+				return
+			}
+			which := r.URL.Query().Get("which")
+			if which == "" {
+				which = "resp"
+			}
+			v, err := s.svc.GetTaggedFlowBody(flowID, which)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, v)
+			return
+		}
+		writeErr(w, http.StatusNotFound, "未知路径（可用：/tags/flows/{flowId}、/tags/flows/{flowId}/body）")
+		return
+	}
+
+	// 以下首段为标签 id
+	tagID := parts[0]
+	switch {
+	case len(parts) == 1 && r.Method == http.MethodDelete:
+		// DELETE /tags/{id}?flows=0|1（缺省 0：仅删关联保留流）
+		flows := false
+		switch r.URL.Query().Get("flows") {
+		case "1", "true":
+			flows = true
+		}
+		n, err := s.svc.DeleteTag(tagID, flows)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": tagID, "deletedFlows": n})
+	case len(parts) == 2 && parts[1] == "flows" && r.Method == http.MethodGet:
+		// GET /tags/{id}/flows?limit=&offset=（limit 默认 200、上限 1000）
+		limit := 200
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				limit = n
+			}
+		}
+		if limit <= 0 {
+			limit = 200
+		}
+		if limit > 1000 {
+			limit = 1000
+		}
+		offset := 0
+		if v := r.URL.Query().Get("offset"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				offset = n
+			}
+		}
+		v, err := s.svc.ListFlowsByTag(tagID, limit, offset)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	case len(parts) == 2 && parts[1] == "rename" && r.Method == http.MethodPost:
+		// POST /tags/{id}/rename  {name}
+		raw, err := readBody(r, 1<<20)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// 注入 id 供桥接层解析（body 只带 name）
+		raw, err = injectJSONID(raw, tagID)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+			return
+		}
+		if err := s.svc.RenameTag(raw); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	default:
+		writeErr(w, http.StatusNotFound, "未知路径（可用：GET /tags/{id}/flows、DELETE /tags/{id}、POST /tags/{id}/rename、GET /tags/flows/{flowId}）")
+	}
+}
+
+// injectJSONID 把路径参数 id 注入请求体 JSON（{name:...} → {id:..., name:...}）。
+// body 为空时构造仅含 id 的对象；非法 JSON 返回错误。
+func injectJSONID(raw json.RawMessage, id string) (json.RawMessage, error) {
+	var m map[string]json.RawMessage
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return json.Marshal(map[string]string{"id": id})
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	idRaw, _ := json.Marshal(id)
+	m["id"] = idRaw
+	return json.Marshal(m)
+}
+
+// handleStatic 复盘页静态托管（设计 §6.3）：/api/ 未匹配路径 404；
+// / 与 /review 302 短链到 /review.html；其余路径从 dist 子树提供文件服务（缺失 404）。
+// 不套 auth：静态页本身不含数据，数据 API 仍需 Bearer token（页面从 URL query 取 token）。
+func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeErr(w, http.StatusNotFound, "未知 API 路径")
+		return
+	}
+	if r.URL.Path == "/" || r.URL.Path == "/review" {
+		http.Redirect(w, r, "/review.html", http.StatusFound)
+		return
+	}
+	if s.staticFS == nil {
+		writeErr(w, http.StatusNotFound, "静态资源未托管")
+		return
+	}
+	http.FileServer(http.FS(s.staticFS)).ServeHTTP(w, r)
 }
 
 func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
