@@ -67,16 +67,16 @@ func TestTagFlowsBasic(t *testing.T) {
 	}
 
 	// 复盘列表（all 与指定标签）
-	flows, total, err := a.ReviewFlowList("all", 200, 0)
+	flows, total, err := a.ReviewFlowList("all", "archived", 0, 0, 200, 0, "")
 	if err != nil || total != 2 || len(flows) != 2 {
 		t.Fatalf("ReviewFlowList all = %d 条 total=%d, %v", len(flows), total, err)
 	}
-	flows, total, err = a.ReviewFlowList(res.Tag.ID, 200, 0)
+	flows, total, err = a.ReviewFlowList(res.Tag.ID, "archived", 0, 0, 200, 0, "")
 	if err != nil || total != 2 || len(flows) != 2 {
 		t.Fatalf("ReviewFlowList 标签 = %d 条 total=%d, %v", len(flows), total, err)
 	}
 	// 分页：limit=1 offset=1 → 1 条
-	page, _, err := a.ReviewFlowList(res.Tag.ID, 1, 1)
+	page, _, err := a.ReviewFlowList(res.Tag.ID, "archived", 0, 0, 1, 1, "")
 	if err != nil || len(page) != 1 {
 		t.Fatalf("分页 = %d 条, %v", len(page), err)
 	}
@@ -121,8 +121,12 @@ func TestTagFlowsValidation(t *testing.T) {
 	if err != nil || res.Skipped != 1 || res.Tagged != 0 {
 		t.Fatalf("不可得流应计 skipped: %+v, %v", res, err)
 	}
-	if _, _, err := a.ReviewFlowList("not-a-tag-id", 10, 0); err == nil {
+	if _, _, err := a.ReviewFlowList("not-a-tag-id", "archived", 0, 0, 10, 0, ""); err == nil {
 		t.Fatal("非法标签 id 查询应报错")
+	}
+	// 非法 scope 报错
+	if _, _, err := a.ReviewFlowList("all", "weird", 0, 0, 10, 0, ""); err == nil {
+		t.Fatal("非法 scope 应报错")
 	}
 }
 
@@ -146,7 +150,7 @@ func TestTagFlowsAutoClear(t *testing.T) {
 		t.Fatalf("autoClear 应保留置顶 1 条，得 %d", len(left))
 	}
 	// 归档库中两条仍在（标签=归档，清空列表不影响已归档数据）
-	flows, total, err := a.ReviewFlowList("all", 10, 0)
+	flows, total, err := a.ReviewFlowList("all", "archived", 0, 0, 10, 0, "")
 	if err != nil || total != 2 || len(flows) != 2 {
 		t.Fatalf("归档库应保留 2 条，得 %d (total=%d), %v", len(flows), total, err)
 	}
@@ -187,7 +191,7 @@ func TestTagRenameAndDelete(t *testing.T) {
 		return m != nil && len(m.Tags) == 0
 	}, "删关联后徽章清空")
 	if total := func() int {
-		_, total, _ := a.ReviewFlowList("all", 10, 0)
+		_, total, _ := a.ReviewFlowList("all", "archived", 0, 0, 10, 0, "")
 		return total
 	}(); total != 0 {
 		t.Fatalf("标签删完后已标记流总数应为 0，得 %d", total)
@@ -445,6 +449,34 @@ func itoa(n int) string {
 		b[i] = '-'
 	}
 	return string(b[i:])
+}
+
+// TestReviewEmptyState v3.1 AC18：归档库从未打开（全新项目未录制/打标）时，
+// 复盘查询返回业务空态（空列表/双 0/空直方图）而非错误——首开不应 fatal。
+func TestReviewEmptyState(t *testing.T) {
+	a := newTestApp(t) // TempDir 下无 prism.db
+
+	flows, total, err := a.ReviewFlowList("all", "archived", 0, 0, 200, 0, "")
+	if err != nil {
+		t.Fatalf("空态 ReviewFlowList 不应报错: %v", err)
+	}
+	if total != 0 || len(flows) != 0 {
+		t.Fatalf("空态应为空列表 total=0，得 %d 条 total=%d", len(flows), total)
+	}
+	tags, tagged, all, err := a.ReviewTagsOverview()
+	if err != nil {
+		t.Fatalf("空态 ReviewTagsOverview 不应报错: %v", err)
+	}
+	if len(tags) != 0 || tagged != 0 || all != 0 {
+		t.Fatalf("空态概览应为空/双0，得 tags=%d tagged=%d all=%d", len(tags), tagged, all)
+	}
+	t0, t1, hist, err := a.ReviewHistogram("all", "archived", 0, 0, 120)
+	if err != nil {
+		t.Fatalf("空态 ReviewHistogram 不应报错: %v", err)
+	}
+	if len(hist) != 0 || t0 != 0 || t1 != 0 {
+		t.Fatalf("空态直方图应为空，得 len=%d [%d,%d]", len(hist), t0, t1)
+	}
 }
 
 // TestGetReviewURLGuard AC15/守卫：无项目报错；无 ctl（9595 被占）报明确错误。

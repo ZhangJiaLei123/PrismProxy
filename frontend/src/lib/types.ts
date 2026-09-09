@@ -73,3 +73,37 @@ export interface ReviewTagResult {
   archived: number
   skipped: number
 }
+
+// M12.1 复盘取数范围：archived=打标流（默认）；all=库内全部 flows（含自动录制未打标）。
+export type ReviewScope = 'archived' | 'all'
+
+/** /api/v1/tags 根级响应：标签列表 + total（去重打标流数）+ totalFlows（库内全部流）。 */
+export interface ReviewTagsOverview {
+  tags: ReviewTagInfo[]
+  total: number
+  totalFlows: number
+}
+
+/** 密度直方图分桶（[t0,t1) 半开，末桶右端闭）。 */
+export interface ReviewHistBucket {
+  t0: number
+  t1: number
+  count: number
+}
+
+/** GET /tags/{id}/histogram 响应：全域/窗口边界与分桶。 */
+export interface ReviewHistogram {
+  start: number
+  end: number
+  buckets: ReviewHistBucket[]
+}
+
+/** 列表查询参数（start/end 为 unix 毫秒含头尾，0=不限，支持半开窗口；q 为 method/host/path 子串）。 */
+export interface ReviewFlowQuery {
+  scope: ReviewScope
+  start: number
+  end: number
+  limit: number
+  offset: number
+  q: string
+}

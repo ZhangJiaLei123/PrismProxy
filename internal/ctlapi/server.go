@@ -79,7 +79,8 @@ type Service interface {
 	// 标签与数据复盘（M12，设计 §4.4）：HTTP 入口的打标 autoClear 恒 false
 	ListTagsForReview() (any, error)
 	TagFlowsForReview(raw json.RawMessage) (any, error)
-	ListFlowsByTag(tagID string, limit, offset int) (any, error)
+	ListFlowsByTag(tagID, scope string, start, end int64, limit, offset int, q string) (any, error)
+	TagHistogram(tagID, scope string, start, end int64, buckets int) (any, error)
 	GetTaggedFlow(id string) (any, error)
 	GetTaggedFlowBody(id, which string) (any, error)
 	RenameTag(raw json.RawMessage) error
@@ -517,11 +518,12 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 
 // handleTagSub 处理 /api/v1/tags/ 子树（手动分段解析，范式同 handleFlowSub）：
 //
-//	GET    /tags/{id}/flows?limit=&offset=   某标签下流列表（id=all 全部已标记）
-//	DELETE /tags/{id}?flows=0|1              删除标签（flows=1 连带删流）
-//	POST   /tags/{id}/rename  {name}         重命名/合并标签
-//	GET    /tags/flows/{flowId}              单流详情
-//	GET    /tags/flows/{flowId}/body?which=  正文
+//	GET    /tags/{id}/flows?scope=&start=&end=&limit=&offset=   范围内流（id=all 全部）
+//	GET    /tags/{id}/histogram?scope=&start=&end=&buckets=      密度直方图
+//	DELETE /tags/{id}?flows=0|1                                 删除标签（flows=1 连带删流）
+//	POST   /tags/{id}/rename  {name}                            重命名/合并标签
+//	GET    /tags/flows/{flowId}                                 单流详情
+//	GET    /tags/flows/{flowId}/body?which=                     正文
 func (s *Server) handleTagSub(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/tags/")
 	parts := strings.Split(rest, "/")
@@ -588,9 +590,33 @@ func (s *Server) handleTagSub(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": tagID, "deletedFlows": n})
 	case len(parts) == 2 && parts[1] == "flows" && r.Method == http.MethodGet:
-		// GET /tags/{id}/flows?limit=&offset=（limit 默认 200、上限 1000）
+		// GET /tags/{id}/flows?scope=&start=&end=&limit=&offset=&q=
+		// scope=archived（默认，打标流）|all（库内全量，仅 id=all 生效）；
+		// start/end unix 毫秒含头尾、0=不限（支持半开）；limit 默认 200、上限 1000；
+		// q=method/host/path 子串（服务端全库搜索，与分页/时间窗同一套谓词）。
+		params := r.URL.Query()
+		scope := params.Get("scope")
+		if scope == "" {
+			scope = "archived"
+		}
+		if scope != "archived" && scope != "all" {
+			writeErr(w, http.StatusBadRequest, "非法 scope（仅支持 archived|all）")
+			return
+		}
+		start, ok1 := parseInt64Param(params.Get("start"))
+		end, ok2 := parseInt64Param(params.Get("end"))
+		if !ok1 || !ok2 || start < 0 || end < 0 {
+			writeErr(w, http.StatusBadRequest, "start/end 须为非负 unix 毫秒")
+			return
+		}
+		// 半开窗口合法（start>0,end=0 仅下限；start=0,end>0 仅上限）；
+		// 仅双端均非 0 且 start>end 才是错误（v3.1，朴素 start>end 会误杀半开窗口）。
+		if start > 0 && end > 0 && start > end {
+			writeErr(w, http.StatusBadRequest, "start 不得晚于 end")
+			return
+		}
 		limit := 200
-		if v := r.URL.Query().Get("limit"); v != "" {
+		if v := params.Get("limit"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
 				limit = n
 			}
@@ -602,12 +628,49 @@ func (s *Server) handleTagSub(w http.ResponseWriter, r *http.Request) {
 			limit = 1000
 		}
 		offset := 0
-		if v := r.URL.Query().Get("offset"); v != "" {
+		if v := params.Get("offset"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
 				offset = n
 			}
 		}
-		v, err := s.svc.ListFlowsByTag(tagID, limit, offset)
+		keyword := params.Get("q")
+		v, err := s.svc.ListFlowsByTag(tagID, scope, start, end, limit, offset, keyword)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	case len(parts) == 2 && parts[1] == "histogram" && r.Method == http.MethodGet:
+		// GET /tags/{id}/histogram?scope=&start=&end=&buckets=（buckets 默认 120、上限 500）
+		q := r.URL.Query()
+		scope := q.Get("scope")
+		if scope == "" {
+			scope = "archived"
+		}
+		if scope != "archived" && scope != "all" {
+			writeErr(w, http.StatusBadRequest, "非法 scope（仅支持 archived|all）")
+			return
+		}
+		start, ok1 := parseInt64Param(q.Get("start"))
+		end, ok2 := parseInt64Param(q.Get("end"))
+		if !ok1 || !ok2 || start < 0 || end < 0 {
+			writeErr(w, http.StatusBadRequest, "start/end 须为非负 unix 毫秒")
+			return
+		}
+		if start > 0 && end > 0 && start > end {
+			writeErr(w, http.StatusBadRequest, "start 不得晚于 end")
+			return
+		}
+		buckets := 120
+		if v := q.Get("buckets"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				buckets = n
+			}
+		}
+		if buckets > 500 {
+			buckets = 500
+		}
+		v, err := s.svc.TagHistogram(tagID, scope, start, end, buckets)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -632,8 +695,21 @@ func (s *Server) handleTagSub(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:
-		writeErr(w, http.StatusNotFound, "未知路径（可用：GET /tags/{id}/flows、DELETE /tags/{id}、POST /tags/{id}/rename、GET /tags/flows/{flowId}）")
+		writeErr(w, http.StatusNotFound, "未知路径（可用：GET /tags/{id}/flows、GET /tags/{id}/histogram、DELETE /tags/{id}、POST /tags/{id}/rename、GET /tags/flows/{flowId}）")
 	}
+}
+
+// parseInt64Param 解析 unix 毫秒 query 参数：空串→(0,true)（0=不限）；
+// 非法整数→(0,false) 由调用方返回 400。
+func parseInt64Param(v string) (int64, bool) {
+	if v == "" {
+		return 0, true
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // injectJSONID 把路径参数 id 注入请求体 JSON（{name:...} → {id:..., name:...}）。

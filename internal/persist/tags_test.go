@@ -125,23 +125,23 @@ func TestTagFlowsArchiveIdempotentAndQuery(t *testing.T) {
 	}
 
 	// FlowsByTag 分页：limit=2 offset=0 → 2 条（倒序最新在前）
-	page1, err := w.FlowsByTag(tag.ID, 2, 0)
+	page1, err := w.FlowsByTag(tag.ID, "archived", 0, 0, 2, 0, "")
 	if err != nil || len(page1) != 2 {
 		t.Fatalf("FlowsByTag page1 = %d, %v", len(page1), err)
 	}
 	if page1[0].ID != ids[4] || page1[0].Source != capture.SourceHistory || page1[0].Pinned {
 		t.Fatalf("倒序/历史标记错误: %+v", page1[0])
 	}
-	page3, err := w.FlowsByTag(tag.ID, 2, 4)
+	page3, err := w.FlowsByTag(tag.ID, "archived", 0, 0, 2, 4, "")
 	if err != nil || len(page3) != 1 {
 		t.Fatalf("FlowsByTag page3 = %d, %v", len(page3), err)
 	}
 	// all：全部已标记
-	all, err := w.FlowsByTag("all", 0, 0) // limit<=0 默认 200
+	all, err := w.FlowsByTag("all", "archived", 0, 0, 0, 0, "") // limit<=0 默认 200
 	if err != nil || len(all) != 5 {
 		t.Fatalf("FlowsByTag all = %d, %v", len(all), err)
 	}
-	if _, err := w.FlowsByTag("bad-id", 10, 0); err == nil {
+	if _, err := w.FlowsByTag("bad-id", "archived", 0, 0, 10, 0, ""); err == nil {
 		t.Fatal("非法标签 id 应报错")
 	}
 
@@ -484,5 +484,313 @@ func TestAddFlowTagsReturnsAdded(t *testing.T) {
 	added3, err := w.AddFlowTags([]string{"cnt-1", "cnt-2"}, tag.ID, time.Now().UnixMilli())
 	if err != nil || added3 != 1 {
 		t.Fatalf("混合关联应新增 1，得 %d, %v", added3, err)
+	}
+}
+
+// seedTimed 归档 n 条指定 started_at 的流（不打标签），返回按时间升序的 id 列表。
+func seedTimed(t *testing.T, w *Writer, prefix string, starts []int64) []string {
+	t.Helper()
+	flows := make([]*capture.Flow, 0, len(starts))
+	ids := make([]string, 0, len(starts))
+	for i, ts := range starts {
+		id := fmt.Sprintf("time-%s-%02d", prefix, i)
+		f := testFlow(id, "timed.com", capture.StateDone, "x")
+		f.Timing.Start = time.UnixMilli(ts)
+		flows = append(flows, f)
+		ids = append(ids, id)
+	}
+	if err := w.ArchiveFlows(flows); err != nil {
+		t.Fatalf("ArchiveFlows: %v", err)
+	}
+	return ids
+}
+
+// TestNormalizeScope scope 归一化：空→archived，非法报错。
+func TestNormalizeScope(t *testing.T) {
+	if s, err := NormalizeScope(""); err != nil || s != ScopeArchived {
+		t.Fatalf("空 scope 应归一 archived，得 %q %v", s, err)
+	}
+	if s, err := NormalizeScope("all"); err != nil || s != ScopeAll {
+		t.Fatalf("all 应保留，得 %q %v", s, err)
+	}
+	if _, err := NormalizeScope("weird"); err == nil {
+		t.Fatal("非法 scope 应报错")
+	}
+}
+
+// TestScopeMatrix M12.1 需求5：archived 只含打标流，all 含库内全部流；具体标签恒为打标流。
+func TestScopeMatrix(t *testing.T) {
+	w := archiveWriter(t)
+	tag, _ := seedTagged(t, w, "scope", "范围标签", 3)
+	// 额外归档 2 条未打标流（时间夹在打标流之间不影响范围语义）
+	plain := seedTimed(t, w, "plain", []int64{
+		time.Now().Add(-time.Hour).UnixMilli(),
+		time.Now().Add(-2 * time.Hour).UnixMilli(),
+	})
+
+	// tagID=all：archived=3（仅打标流），all=5（全部）
+	if n, err := w.CountFlows("all", "archived", 0, 0, ""); err != nil || n != 3 {
+		t.Fatalf("CountFlows all/archived = %d, %v（期望 3）", n, err)
+	}
+	if n, err := w.CountFlows("all", "all", 0, 0, ""); err != nil || n != 5 {
+		t.Fatalf("CountFlows all/all = %d, %v（期望 5）", n, err)
+	}
+	if n, _ := w.CountAllFlows(); n != 5 {
+		t.Fatalf("CountAllFlows = %d（期望 5）", n)
+	}
+	if n, _ := w.CountTaggedFlows(); n != 3 {
+		t.Fatalf("CountTaggedFlows = %d（期望 3）", n)
+	}
+	rows, err := w.FlowsByTag("all", "archived", 0, 0, 200, 0, "")
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("FlowsByTag all/archived = %d, %v", len(rows), err)
+	}
+	rows, err = w.FlowsByTag("all", "all", 0, 0, 200, 0, "")
+	if err != nil || len(rows) != 5 {
+		t.Fatalf("FlowsByTag all/all = %d, %v", len(rows), err)
+	}
+	// 具体标签：scope 被忽略，恒为该标签 3 条（打标流），未打标 plain 不出现
+	rows, err = w.FlowsByTag(tag.ID, "all", 0, 0, 200, 0, "")
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("具体标签 scope=all = %d, %v（期望 3）", len(rows), err)
+	}
+	for _, f := range rows {
+		for _, pid := range plain {
+			if string(f.ID) == pid {
+				t.Fatalf("未打标流 %s 不应出现在具体标签视图", pid)
+			}
+		}
+	}
+	// tagID=all + 非法 scope 报错
+	if _, err := w.FlowsByTag("all", "bad", 0, 0, 10, 0, ""); err == nil {
+		t.Fatal("非法 scope 应报错")
+	}
+}
+
+// TestKeywordQuery q 子串过滤：method/host/path 三列 OR，与分页 total 同谓词；
+// q 不参与直方图底图（此处只验列表/计数口径）。
+func TestKeywordQuery(t *testing.T) {
+	w := archiveWriter(t)
+	// 5 条流，host/path 各有差异（seedTimed 内默认 method=GET，见其实现）
+	base := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC).UnixMilli()
+	ids := seedTimed(t, w, "kw", []int64{base, base + 60000, base + 120000, base + 180000, base + 240000})
+	// 直接改两条流的 method/host/path：更新 flows.data 中的 JSON 成本高，
+	// 这里通过 DB 更新独立列（method/host/path 是冗余列，与 data 解耦）
+	for i, upd := range []struct{ method, host, path string }{
+		{"POST", "api.example.com", "/v1/login"},
+		{"GET", "cdn.example.com", "/assets/app.js"},
+	} {
+		if _, err := w.db.Exec(`UPDATE flows SET method=?, host=?, path=? WHERE id=?`, upd.method, upd.host, upd.path, ids[i]); err != nil {
+			t.Fatalf("更新列失败: %v", err)
+		}
+	}
+	// host 子串命中 1 条
+	if n, _ := w.CountFlows("all", "all", 0, 0, "cdn.example"); n != 1 {
+		t.Fatalf("q=cdn.example 应 1 条，得 %d", n)
+	}
+	// method 命中：POST 1 条
+	if n, _ := w.CountFlows("all", "all", 0, 0, "post"); n != 1 {
+		t.Fatalf("q=post（大小写不敏感）应 1 条，得 %d", n)
+	}
+	// path 子串：/v1/ 命中 1 条
+	rows, err := w.FlowsByTag("all", "all", 0, 0, 200, 0, "/v1/")
+	if err != nil || len(rows) != 1 || string(rows[0].ID) != ids[0] {
+		t.Fatalf("q=/v1/ 列表 = %d, %v（期望仅 ids[0]）", len(rows), err)
+	}
+	// 元字符转义：% 不应扩大匹配
+	if n, _ := w.CountFlows("all", "all", 0, 0, "%"); n != 0 {
+		t.Fatalf("q=%% 应 0 条（元字符已转义），得 %d", n)
+	}
+	// 空白 q 等同不过滤
+	if n, _ := w.CountFlows("all", "all", 0, 0, "   "); n != 5 {
+		t.Fatalf("空白 q 应 5 条，得 %d", n)
+	}
+}
+
+// TestTimeWindow M12.1 需求7：start/end 含头尾、半开窗口，与 total 同谓词。
+func TestTimeWindow(t *testing.T) {
+	w := archiveWriter(t)
+	base := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC).UnixMilli()
+	min := int64(60 * 1000)
+	// 5 条流：base, +1m, +2m, +3m, +4m
+	starts := []int64{base, base + min, base + 2*min, base + 3*min, base + 4*min}
+	ids := seedTimed(t, w, "win", starts)
+
+	// 含头尾：start=第2条 end=第4条 → 3 条（两端都含）
+	if n, _ := w.CountFlows("all", "all", starts[1], starts[3], ""); n != 3 {
+		t.Fatalf("闭窗 [1,3] 应 3 条，得 %d", n)
+	}
+	rows, err := w.FlowsByTag("all", "all", starts[1], starts[3], 200, 0, "")
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("闭窗列表 = %d, %v", len(rows), err)
+	}
+	// 倒序：第4条在前
+	if string(rows[0].ID) != ids[3] || string(rows[2].ID) != ids[1] {
+		t.Fatalf("窗口内倒序错误: %s,%s", rows[0].ID, rows[2].ID)
+	}
+	// 半开：仅下限 start=第3条 → 3 条（第3/4/5）
+	if n, _ := w.CountFlows("all", "all", starts[2], 0, ""); n != 3 {
+		t.Fatalf("[第3条,+∞) 应 3 条，得 %d", n)
+	}
+	// 半开：仅上限 end=第2条 → 2 条（第1/2）
+	if n, _ := w.CountFlows("all", "all", 0, starts[1], ""); n != 2 {
+		t.Fatalf("(-∞,第2条] 应 2 条，得 %d", n)
+	}
+	// 窗口外：无结果
+	if n, _ := w.CountFlows("all", "all", starts[4]+min, 0, ""); n != 0 {
+		t.Fatalf("全在窗口之后应 0 条，得 %d", n)
+	}
+	// 含头尾等值：单毫秒窗口落在某条流上 → 1 条
+	if n, _ := w.CountFlows("all", "all", starts[0], starts[0], ""); n != 1 {
+		t.Fatalf("等值闭窗应 1 条，得 %d", n)
+	}
+}
+
+// TestHistogramBucketing M12.1 P0：分桶守恒（不整除/单流/空库/溢出并入末桶）。
+func TestHistogramBucketing(t *testing.T) {
+	// 空库：空切片、边界 0
+	wEmpty := archiveWriter(t)
+	t0, t1, hist, err := wEmpty.Histogram("all", "all", 0, 0, 120)
+	if err != nil {
+		t.Fatalf("空库 Histogram: %v", err)
+	}
+	if len(hist) != 0 || t0 != 0 || t1 != 0 {
+		t.Fatalf("空库应返回空切片与 0 边界，得 len=%d [%d,%d]", len(hist), t0, t1)
+	}
+
+	// 单流库（MAX==MIN）：退化单桶 width=1，count=1，禁止除零
+	wOne := archiveWriter(t)
+	only := time.Now().UnixMilli()
+	seedTimed(t, wOne, "one", []int64{only})
+	_, _, histOne, err := wOne.Histogram("all", "all", 0, 0, 120)
+	if err != nil {
+		t.Fatalf("单流 Histogram: %v", err)
+	}
+	if len(histOne) != 1 || histOne[0].Count != 1 {
+		t.Fatalf("单流应退化单桶 count=1，得 %+v", histOne)
+	}
+
+	// 多流库：全域 1000ms、buckets=120 → width=ceil(1000/120)=9，Σcount 守恒=6
+	w := archiveWriter(t)
+	base := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC).UnixMilli()
+	span := int64(1000)
+	starts := []int64{
+		base, base + 100, base + 200, base + 500, base + 900, base + span,
+	}
+	seedTimed(t, w, "multi", starts)
+	t0, t1, hist, err = w.Histogram("all", "all", 0, 0, 120)
+	if err != nil {
+		t.Fatalf("多流 Histogram: %v", err)
+	}
+	if t0 != base || t1 != base+span {
+		t.Fatalf("全域边界 = [%d,%d]，期望 [%d,%d]", t0, t1, base, base+span)
+	}
+	sum := 0
+	for _, b := range hist {
+		sum += b.Count
+	}
+	if sum != 6 {
+		t.Fatalf("Σcount=%d，期望 6（分桶守恒）", sum)
+	}
+	if len(hist) > 120 {
+		t.Fatalf("桶数 %d 不得超过请求 120", len(hist))
+	}
+	// 末桶必须接住 base+span（不整除溢出点）：width=9 → b=1000/9=111
+	if hist[len(hist)-1].Count == 0 {
+		t.Fatal("末桶 count=0：base+span 溢出点未并入末桶")
+	}
+	// 桶区间单调、相邻衔接、首桶从 t0 起
+	if hist[0].T0 != t0 {
+		t.Fatalf("首桶 T0=%d，应为 t0=%d", hist[0].T0, t0)
+	}
+	for i := 1; i < len(hist); i++ {
+		if hist[i].T0 != hist[i-1].T1 {
+			t.Fatalf("桶 %d 不衔接：%d != %d", i, hist[i].T0, hist[i-1].T1)
+		}
+	}
+	if hist[len(hist)-1].T1 != t1 {
+		t.Fatalf("末桶 T1=%d 应为全域 MAX=%d", hist[len(hist)-1].T1, t1)
+	}
+
+	// 整除场景：span=1000、buckets=10 → width=100、n=11（ceil(span+1)/width），
+	// n>buckets 钳到 10，base+1000 点 b=10 溢出并入末桶，仍守恒。
+	_, _, hist2, err := w.Histogram("all", "all", 0, 0, 10)
+	if err != nil || len(hist2) != 10 {
+		t.Fatalf("整除非溢出桶数应钳为 10，得 %d, %v", len(hist2), err)
+	}
+	sum = 0
+	for _, b := range hist2 {
+		sum += b.Count
+	}
+	if sum != 6 {
+		t.Fatalf("整除分桶 Σcount=%d，期望 6", sum)
+	}
+
+	// buckets 钳制：>500 钳 500（桶数不越界）
+	_, _, histBig, err := w.Histogram("all", "all", 0, 0, 5000)
+	if err != nil || len(histBig) > 500 {
+		t.Fatalf("buckets 超上限应钳 500，得 %d, %v", len(histBig), err)
+	}
+}
+
+// TestHistogramScopeAndWindow 底图范围跟随 tagID+scope；窗口分桶；窗口内无数据空切片。
+func TestHistogramScopeAndWindow(t *testing.T) {
+	w := archiveWriter(t)
+	tag, _ := seedTagged(t, w, "hist", "直方图标签", 3)
+	seedTimed(t, w, "hplain", []int64{
+		time.Now().Add(-30 * time.Hour).UnixMilli(),
+		time.Now().Add(-60 * time.Hour).UnixMilli(),
+	})
+
+	// archived 全域：Σcount=3（不含 2 条未打标）
+	_, _, hist, err := w.Histogram("all", "archived", 0, 0, 120)
+	if err != nil {
+		t.Fatalf("archived Histogram: %v", err)
+	}
+	sum := 0
+	for _, b := range hist {
+		sum += b.Count
+	}
+	if sum != 3 {
+		t.Fatalf("archived 底图 Σcount=%d，期望 3（同谓词）", sum)
+	}
+	// all 全域：Σcount=5
+	_, _, histAll, err := w.Histogram("all", "all", 0, 0, 120)
+	if err != nil {
+		t.Fatalf("all Histogram: %v", err)
+	}
+	sum = 0
+	for _, b := range histAll {
+		sum += b.Count
+	}
+	if sum != 5 {
+		t.Fatalf("all 底图 Σcount=%d，期望 5", sum)
+	}
+	// 具体标签：Σcount=3
+	_, _, histTag, err := w.Histogram(tag.ID, "all", 0, 0, 120)
+	if err != nil {
+		t.Fatalf("tag Histogram: %v", err)
+	}
+	sum = 0
+	for _, b := range histTag {
+		sum += b.Count
+	}
+	if sum != 3 {
+		t.Fatalf("具体标签底图 Σcount=%d，期望 3", sum)
+	}
+	// 窗口（双端）分桶：取一个远早于打标流的区间 → 回显窗口形状的全零桶
+	// （坐标系稳定；无窗口空库才返回空切片）
+	far := time.Now().Add(-90 * 24 * time.Hour).UnixMilli()
+	t0, t1, h, err := w.Histogram("all", "all", far, far+3600_000, 120)
+	if err != nil {
+		t.Fatalf("窗口 Histogram: %v", err)
+	}
+	if t0 != far || t1 != far+3600_000 || len(h) == 0 {
+		t.Fatalf("窗口应回显窗口边界并返回桶形，得 len=%d [%d,%d]", len(h), t0, t1)
+	}
+	for _, b := range h {
+		if b.Count != 0 {
+			t.Fatalf("窗口内无数据应全零桶，得 %+v", b)
+		}
 	}
 }

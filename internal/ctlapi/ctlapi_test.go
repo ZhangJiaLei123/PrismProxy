@@ -36,6 +36,12 @@ type fakeService struct {
 	pinCalls   int
 	curlID     string
 	curlShell  string
+
+	lastTagID string // 最近一次 ListFlowsByTag 的查询参数
+	lastScope string
+	lastStart int64
+	lastEnd   int64
+	lastQ     string
 }
 
 func (f *fakeService) Status() map[string]any {
@@ -190,8 +196,17 @@ func (f *fakeService) ListTagsForReview() (any, error) {
 func (f *fakeService) TagFlowsForReview(raw json.RawMessage) (any, error) {
 	return map[string]any{"ok": true}, nil
 }
-func (f *fakeService) ListFlowsByTag(tagID string, limit, offset int) (any, error) {
-	return map[string]any{"flows": []any{}, "total": 0, "tag": tagID, "limit": limit, "offset": offset}, nil
+func (f *fakeService) ListFlowsByTag(tagID, scope string, start, end int64, limit, offset int, q string) (any, error) {
+	f.mu.Lock()
+	f.lastTagID, f.lastScope, f.lastStart, f.lastEnd, f.lastQ = tagID, scope, start, end, q
+	f.mu.Unlock()
+	return map[string]any{
+		"flows": []any{}, "total": 0, "tag": tagID, "scope": scope,
+		"start": start, "end": end, "limit": limit, "offset": offset, "q": q,
+	}, nil
+}
+func (f *fakeService) TagHistogram(tagID, scope string, start, end int64, buckets int) (any, error) {
+	return map[string]any{"start": 0, "end": 0, "buckets": []any{}}, nil
 }
 func (f *fakeService) GetTaggedFlow(id string) (any, error) {
 	return map[string]any{"id": id}, nil

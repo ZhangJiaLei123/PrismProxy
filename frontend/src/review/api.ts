@@ -1,29 +1,52 @@
-// 数据复盘页数据层（设计 §6.2）：
+// 数据复盘页数据层（设计 §6.2/§4.4 M12.1）：
 // - 生产：ctlapi（127.0.0.1:9595）HTTP，Authorization: Bearer <token>（token 来自 URL ?token=）
 // - 浏览器预览（无 token / fetch 失败）：降级内置 demo 数据，UI 可独立调试（设计 §7）
 // 字段形态（已逐行核实 Go 侧）：TagInfo 小写 json（id/name/count/createdAt/lastUsedAt）；
-// FlowMeta/FlowDetail/BodyPayload 无 json tag → 大写字段（Tags/Encoding/ContentType/Raw/Body/...）。
+// FlowMeta/FlowDetail/BodyPayload 无 json tag → 大写字段（Tags/Encoding/ContentType/Raw/Body/...）；
+// HistBucket 带小写 json tag（t0/t1/count）。
 import type {
   ReviewBodyPayload,
   ReviewFlowDetail,
   ReviewFlowMeta,
+  ReviewHistogram,
+  ReviewScope,
   ReviewTagInfo,
+  ReviewTagsOverview,
 } from '../lib/types'
 
 export interface TagFlowsResp {
   flows: ReviewFlowMeta[]
   total: number
   tag: string
+  scope?: string
+  start?: number
+  end?: number
   limit: number
   offset: number
+  q?: string
 }
 
 export type ApiMode = 'http' | 'demo' | 'unauthorized' | 'offline'
 
 export interface ReviewApi {
   mode: ApiMode
-  listTags(): Promise<ReviewTagInfo[]>
-  listFlows(tagID: string, limit: number, offset: number): Promise<TagFlowsResp>
+  listTags(): Promise<ReviewTagsOverview>
+  listFlows(
+    tagID: string,
+    scope: ReviewScope,
+    start: number,
+    end: number,
+    limit: number,
+    offset: number,
+    q: string,
+  ): Promise<TagFlowsResp>
+  histogram(
+    tagID: string,
+    scope: ReviewScope,
+    start: number,
+    end: number,
+    buckets: number,
+  ): Promise<ReviewHistogram>
   flowDetail(flowID: string): Promise<ReviewFlowDetail>
   flowBody(flowID: string, which: 'req' | 'resp'): Promise<ReviewBodyPayload>
   renameTag(tagID: string, name: string): Promise<void>
@@ -61,14 +84,36 @@ class HttpApi implements ReviewApi {
     return (await resp.json()) as T
   }
 
-  async listTags(): Promise<ReviewTagInfo[]> {
-    const v = await this.req<{ tags: ReviewTagInfo[] }>('/api/v1/tags')
-    return v.tags ?? []
+  async listTags(): Promise<ReviewTagsOverview> {
+    const v = await this.req<ReviewTagsOverview>('/api/v1/tags')
+    return { tags: v.tags ?? [], total: v.total ?? 0, totalFlows: v.totalFlows ?? 0 }
   }
 
-  async listFlows(tagID: string, limit: number, offset: number): Promise<TagFlowsResp> {
-    const q = `?limit=${limit}&offset=${offset}`
-    return this.req<TagFlowsResp>(`/api/v1/tags/${encodeURIComponent(tagID)}/flows${q}`)
+  async listFlows(
+    tagID: string,
+    scope: ReviewScope,
+    start: number,
+    end: number,
+    limit: number,
+    offset: number,
+    q: string,
+  ): Promise<TagFlowsResp> {
+    const query = `?scope=${scope}&start=${start}&end=${end}&limit=${limit}&offset=${offset}&q=${encodeURIComponent(q)}`
+    return this.req<TagFlowsResp>(`/api/v1/tags/${encodeURIComponent(tagID)}/flows${query}`)
+  }
+
+  async histogram(
+    tagID: string,
+    scope: ReviewScope,
+    start: number,
+    end: number,
+    buckets: number,
+  ): Promise<ReviewHistogram> {
+    const q = `?scope=${scope}&start=${start}&end=${end}&buckets=${buckets}`
+    const v = await this.req<ReviewHistogram>(
+      `/api/v1/tags/${encodeURIComponent(tagID)}/histogram${q}`,
+    )
+    return { start: v.start ?? 0, end: v.end ?? 0, buckets: v.buckets ?? [] }
   }
 
   async flowDetail(flowID: string): Promise<ReviewFlowDetail> {
@@ -112,6 +157,18 @@ interface DemoDB {
   bodies: Map<string, { req: string; resp: string }>
 }
 
+interface DemoTpl {
+  method: string
+  host: string
+  path: string
+  status: number
+  scheme: string
+  ct: string
+  tag: string // 标签名；'' = 未打标（自动录制落库流，仅 scope=all 可见）
+  proc: string
+  agoMin: number
+}
+
 function demoData(): DemoDB {
   const now = Date.now()
   const mkTag = (id: string, name: string, count: number, agoMin: number): ReviewTagInfo => ({
@@ -123,22 +180,33 @@ function demoData(): DemoDB {
   })
   const tags = [
     mkTag('t_demo_login', '登录流程排查', 3, 5),
-    mkTag('t_demo_order', '下单接口', 2, 46),
-    mkTag('t_demo_static', '静态资源', 1, 180),
+    mkTag('t_demo_order', '下单接口', 2, 60 * 26),
+    mkTag('t_demo_static', '静态资源', 1, 60 * 72),
   ]
-  const tpl = [
-    { method: 'POST', host: 'api.example.com', path: '/v1/auth/login', status: 200, scheme: 'https', ct: 'application/json; charset=utf-8', tag: '登录流程排查', proc: 'WeChat.exe' },
-    { method: 'GET', host: 'api.example.com', path: '/v1/auth/captcha', status: 200, scheme: 'https', ct: 'application/json; charset=utf-8', tag: '登录流程排查', proc: 'WeChat.exe' },
-    { method: 'POST', host: 'api.example.com', path: '/v1/auth/login', status: 401, scheme: 'https', ct: 'application/json; charset=utf-8', tag: '登录流程排查', proc: 'WeChat.exe' },
-    { method: 'POST', host: 'api.example.com', path: '/v1/orders', status: 201, scheme: 'https', ct: 'application/json; charset=utf-8', tag: '下单接口', proc: 'chrome.exe' },
-    { method: 'GET', host: 'api.example.com', path: '/v1/orders/10086', status: 200, scheme: 'https', ct: 'application/json; charset=utf-8', tag: '下单接口', proc: 'chrome.exe' },
-    { method: 'GET', host: 'cdn.static.net', path: '/assets/app.js', status: 200, scheme: 'https', ct: 'application/javascript', tag: '静态资源', proc: 'chrome.exe' },
+  // 时间分布拉宽到数天（设计 §7）：6 条打标流 + 8 条未打标自动录制流
+  const tpl: DemoTpl[] = [
+    { method: 'POST', host: 'api.example.com', path: '/v1/auth/login', status: 200, scheme: 'https', ct: 'application/json; charset=utf-8', tag: '登录流程排查', proc: 'WeChat.exe', agoMin: 8 },
+    { method: 'GET', host: 'api.example.com', path: '/v1/auth/captcha', status: 200, scheme: 'https', ct: 'application/json; charset=utf-8', tag: '登录流程排查', proc: 'WeChat.exe', agoMin: 40 },
+    { method: 'POST', host: 'api.example.com', path: '/v1/auth/login', status: 401, scheme: 'https', ct: 'application/json; charset=utf-8', tag: '登录流程排查', proc: 'WeChat.exe', agoMin: 60 * 3 },
+    { method: 'POST', host: 'api.example.com', path: '/v1/orders', status: 201, scheme: 'https', ct: 'application/json; charset=utf-8', tag: '下单接口', proc: 'chrome.exe', agoMin: 60 * 26 },
+    { method: 'GET', host: 'api.example.com', path: '/v1/orders/10086', status: 200, scheme: 'https', ct: 'application/json; charset=utf-8', tag: '下单接口', proc: 'chrome.exe', agoMin: 60 * 30 },
+    { method: 'GET', host: 'cdn.static.net', path: '/assets/app.js', status: 200, scheme: 'https', ct: 'application/javascript', tag: '静态资源', proc: 'chrome.exe', agoMin: 60 * 72 },
+    // 未打标流（自动录制落库）
+    { method: 'GET', host: 'api.example.com', path: '/v1/home/banners', status: 200, scheme: 'https', ct: 'application/json', tag: '', proc: 'WeChat.exe', agoMin: 15 },
+    { method: 'GET', host: 'api.example.com', path: '/v1/home/feed', status: 200, scheme: 'https', ct: 'application/json', tag: '', proc: 'WeChat.exe', agoMin: 90 },
+    { method: 'POST', host: 'api.example.com', path: '/v1/metrics/report', status: 204, scheme: 'https', ct: 'application/json', tag: '', proc: 'WeChat.exe', agoMin: 60 * 6 },
+    { method: 'GET', host: 'img.example.com', path: '/avatar/1001.jpg', status: 200, scheme: 'https', ct: 'image/jpeg', tag: '', proc: 'WeChat.exe', agoMin: 60 * 20 },
+    { method: 'GET', host: 'api.example.com', path: '/v1/config/bootstrap', status: 200, scheme: 'https', ct: 'application/json', tag: '', proc: 'WeChat.exe', agoMin: 60 * 40 },
+    { method: 'GET', host: 'cdn.static.net', path: '/assets/vendor.js', status: 200, scheme: 'https', ct: 'application/javascript', tag: '', proc: 'chrome.exe', agoMin: 60 * 55 },
+    { method: 'POST', host: 'api.example.com', path: '/v1/log/collect', status: 500, scheme: 'https', ct: 'application/json', tag: '', proc: 'WeChat.exe', agoMin: 60 * 66 },
+    { method: 'GET', host: 'api.example.com', path: '/v1/health', status: 200, scheme: 'http', ct: 'application/json', tag: '', proc: 'healthcheck.exe', agoMin: 60 * 90 },
   ]
   const flows: ReviewFlowMeta[] = []
   const details = new Map<string, ReviewFlowDetail>()
   const bodies = new Map<string, { req: string; resp: string }>()
   tpl.forEach((t, i) => {
     const id = 'demo-flow-' + (i + 1)
+    const startedAt = now - t.agoMin * 60000
     const reqBody = t.path.includes('login')
       ? JSON.stringify({ account: '138****0000', password: '******', device: 'demo' }, null, 2)
       : t.method === 'POST'
@@ -146,7 +214,7 @@ function demoData(): DemoDB {
         : ''
     const respBody = t.status === 401
       ? JSON.stringify({ code: 401, msg: '账号或密码错误' }, null, 2)
-      : JSON.stringify({ code: t.status, msg: 'ok（演示数据）', data: { id: i + 1, ts: now - i * 60000 } }, null, 2)
+      : JSON.stringify({ code: t.status, msg: 'ok（演示数据）', data: { id: i + 1, ts: startedAt } }, null, 2)
     const meta: ReviewFlowMeta = {
       ID: id,
       State: t.status >= 500 ? 'error' : 'done',
@@ -162,12 +230,12 @@ function demoData(): DemoDB {
       ProcessName: t.proc,
       PID: 4000 + i * 11,
       ClientAddr: '127.0.0.1:' + (51000 + i),
-      StartedAt: now - i * 3 * 60000,
+      StartedAt: startedAt,
       Err: '',
       Pinned: false,
       Source: 'history',
       Historical: true,
-      Tags: [t.tag],
+      Tags: t.tag ? [t.tag] : [],
     }
     flows.push(meta)
     const detail: ReviewFlowDetail = {
@@ -208,22 +276,113 @@ class DemoApi implements ReviewApi {
   mode: ApiMode = 'demo'
   private db: DemoDB = demoData()
 
-  async listTags(): Promise<ReviewTagInfo[]> {
-    return [...this.db.tags].sort((a, b) => b.lastUsedAt - a.lastUsedAt)
+  // selectRows 复刻服务端谓词：tagID=all 时 archived 仅打标流 / all 全量；
+  // 具体标签恒为该标签流（scope 忽略）；start/end 含头尾、0=不限（支持半开）；
+  // q 在 method/host/path 三列做小写子串匹配（对应服务端 LIKE 的 ASCII 大小写不敏感）。
+  private selectRows(tagID: string, scope: ReviewScope, start: number, end: number, q = ''): ReviewFlowMeta[] {
+    let rows: ReviewFlowMeta[]
+    if (tagID === 'all') {
+      rows = scope === 'all' ? [...this.db.flows] : this.db.flows.filter((f) => f.Tags.length > 0)
+    } else {
+      const t = this.db.tags.find((x) => x.id === tagID)
+      rows = t ? this.db.flows.filter((f) => f.Tags.includes(t.name)) : []
+    }
+    if (start > 0) rows = rows.filter((f) => f.StartedAt >= start)
+    if (end > 0) rows = rows.filter((f) => f.StartedAt <= end)
+    const kw = q.trim().toLowerCase()
+    if (kw) {
+      rows = rows.filter(
+        (f) =>
+          f.Method.toLowerCase().includes(kw) ||
+          f.Host.toLowerCase().includes(kw) ||
+          f.Path.toLowerCase().includes(kw),
+      )
+    }
+    return rows
   }
 
-  async listFlows(tagID: string, limit: number, offset: number): Promise<TagFlowsResp> {
-    const all = tagID === 'all'
-      ? this.db.flows
-      : this.db.flows.filter((f) => this.db.tags.some((t) => t.id === tagID && f.Tags.includes(t.name)))
-    const sorted = [...all].sort((a, b) => b.StartedAt - a.StartedAt)
+  async listTags(): Promise<ReviewTagsOverview> {
+    const tags = [...this.db.tags].sort((a, b) => b.lastUsedAt - a.lastUsedAt)
+    const total = new Set(this.db.flows.filter((f) => f.Tags.length > 0).map((f) => f.ID)).size
+    return { tags, total, totalFlows: this.db.flows.length }
+  }
+
+  async listFlows(
+    tagID: string,
+    scope: ReviewScope,
+    start: number,
+    end: number,
+    limit: number,
+    offset: number,
+    q: string,
+  ): Promise<TagFlowsResp> {
+    const sorted = this.selectRows(tagID, scope, start, end, q).sort((a, b) => b.StartedAt - a.StartedAt)
+    const lim = limit <= 0 ? 200 : Math.min(limit, 1000)
+    const off = Math.max(0, offset)
     return {
-      flows: sorted.slice(offset, offset + limit),
+      flows: sorted.slice(off, off + lim),
       total: sorted.length,
       tag: tagID,
-      limit,
-      offset,
+      scope,
+      start,
+      end,
+      limit: lim,
+      offset: off,
+      q,
     }
+  }
+
+  async histogram(
+    tagID: string,
+    scope: ReviewScope,
+    winStart: number,
+    winEnd: number,
+    buckets: number,
+  ): Promise<ReviewHistogram> {
+    let n = buckets <= 0 ? 120 : Math.min(buckets, 500)
+    const rows = this.selectRows(tagID, scope, winStart, winEnd)
+    if (rows.length === 0) {
+      // 与服务端一致：无窗口空库返空数组；带窗口返窗口形状全零桶
+      if (winStart > 0 && winEnd > 0) {
+        return { start: winStart, end: winEnd, buckets: this.emptyBuckets(winStart, winEnd, n) }
+      }
+      return { start: 0, end: 0, buckets: [] }
+    }
+    let t0: number
+    let t1: number
+    if (winStart > 0 && winEnd > 0) {
+      t0, t1 = winStart, winEnd
+    } else {
+      t0 = Math.min(...rows.map((f) => f.StartedAt))
+      t1 = Math.max(...rows.map((f) => f.StartedAt))
+      if (winStart > 0) t0 = winStart
+      if (winEnd > 0) t1 = winEnd
+    }
+    if (t1 === t0) {
+      return { start: t0, end: t1, buckets: [{ t0, t1, count: rows.length }] }
+    }
+    const span = t1 - t0
+    let width = Math.floor(span / n)
+    if (span % n !== 0) width++
+    n = Math.min(Math.floor(span / width) + 1, n)
+    const out = this.emptyBuckets(t0, t1, n, width)
+    for (const f of rows) {
+      let b = Math.floor((f.StartedAt - t0) / width)
+      if (b < 0) b = 0
+      if (b >= n) b = n - 1
+      out[b].count++
+    }
+    out[n - 1].t1 = t1
+    return { start: t0, end: t1, buckets: out }
+  }
+
+  private emptyBuckets(t0: number, t1: number, n: number, width?: number): { t0: number; t1: number; count: number }[] {
+    const span = t1 - t0
+    const w = width ?? (span > 0 ? Math.ceil(span / n) : 1)
+    const out: { t0: number; t1: number; count: number }[] = []
+    for (let i = 0; i < n; i++) out.push({ t0: t0 + i * w, t1: t0 + (i + 1) * w, count: 0 })
+    if (out.length) out[n - 1].t1 = t1
+    return out
   }
 
   async flowDetail(flowID: string): Promise<ReviewFlowDetail> {
@@ -278,7 +437,12 @@ class DemoApi implements ReviewApi {
     const linked = this.db.flows.filter((f) => f.Tags.includes(t.name))
     let deletedFlows = 0
     if (deleteFlows) {
-      const ids = new Set(linked.map((f) => f.ID))
+      // 与服务端口径一致：仅删「不再被任何标签引用」的流（共享流保留）
+      const ids = new Set(
+        linked
+          .filter((f) => f.Tags.length === 1 && f.Tags[0] === t.name)
+          .map((f) => f.ID),
+      )
       this.db.flows = this.db.flows.filter((f) => !ids.has(f.ID))
       for (const id of ids) {
         this.db.details.delete(id)

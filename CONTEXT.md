@@ -26,6 +26,13 @@
 - 注意：AppFooter 仅在有打开项目时挂载，欢迎页阶段 `footerRef` 为 null（refreshFooter 已用可选链兜底）。
 - 错误条（startError）归属 App.vue：内容区错误条的「打开设置」按钮保持原版行为 `showSettings = true`（不重置当前 settingsTab）。
 
+## 数据复盘页（M12/M12.1）
+- 独立 Vite 多页入口 `review.html` + `src/review/`（独立 createApp，不依赖 Wails runtime），经 ctlapi（127.0.0.1:9595，Bearer token，静态 dist 不鉴权、`/api/` 鉴权）由系统浏览器开独立窗口；Wails v2 无多窗口能力。**Vite base 保持默认 `/` 是红线**（改 `/review/` 主窗 404 白屏）。
+- 数据层 `review/api.ts`：HttpApi（fetch Bearer）+ DemoApi（无 token/?token=mock）双实现，任何新接口两端都要补；DTO 形态：TagInfo/HistBucket 小写 json、FlowMeta/FlowDetail 大写字段。
+- M12.1：列表/直方图查 `scope=archived|all`（默认 archived=打标流；具体标签恒归档，服务端宽容忽略 scope）+ `start/end` unix 毫秒含头尾半开（0=不限）；`/api/v1/tags` 根级 `total`（DISTINCT 去重，前端禁止 count 累加）/`totalFlows`；`GET /tags/{id}/histogram`（buckets 默认 120 上限 500），底图随 tagID+scope 重拉但**恒全域分桶不随窗口变焦**。ReviewTimeline.vue 纯 SVG + pointer 手势状态机（4px 阈值/选区三分区 ±6px/最小 2 桶），拖拽中不刷列表；ReviewApp 用 flowSeq/histSeq 双代际防护。
+- ReviewApp 三栏（sidebar 220px / list 46% / detail flex1）支持拖拽调宽：`.splitter` 6px 分隔条 ×2，宽度状态 sidebarW/listW（px，listW 挂载后按 46% 换算，listW=0 时 CSS 46% 兜底；fatal 重试成功后 refreshAll 内 nextTick+initListW 补测）；window 级 pointermove + setPointerCapture，约束 SIDEBAR_MIN 150/侧栏≤45% 总宽/LIST_MIN 320/DETAIL_MIN 360；时间轴 ResizeObserver 随容器宽自动重测桶数，无需手动处理。
+- **复盘页全屏高度链路**：NConfigProvider 默认 `abstract=false` 会渲染真实 `<div class="n-config-provider">`（NDialogProvider 是 Fragment、NMessageProvider 仅 teleport 消息到 body，均不占布局），它插在 `#app` 与 `.review-root` 之间；`review.css` 必须给 `.n-config-provider { height:100% }`，否则 `.review-root{height:100%}` 参照 auto 高度，整页只占内容自然高度、下方大片空白。
+
 ## 构建与验证
 - 前端：`frontend/` 下 `npm run build`（vite build；无独立 type-check 脚本，可用 IDE 诊断）。
 - 代码风格：注释为中文，Naive UI 组件按需 import；scoped 样式，深度选择器用 `:deep()`。

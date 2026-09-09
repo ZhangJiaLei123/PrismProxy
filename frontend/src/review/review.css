@@ -13,6 +13,11 @@ body {
 #app {
   height: 100%;
 }
+/* NConfigProvider 默认渲染真实 div，位于 #app 与 .review-root 之间，
+   不补高度会导致 .review-root 的 height:100% 参照为 auto，页面只占内容自然高度 */
+.n-config-provider {
+  height: 100%;
+}
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;

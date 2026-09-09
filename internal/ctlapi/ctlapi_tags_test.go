@@ -97,6 +97,103 @@ func TestTagRoutesMatrix(t *testing.T) {
 	ok(code, 404, "GET /tags/{id}（无此单层分支）")
 }
 
+// TestTagQueryParams M12.1：scope/start/end/buckets 参数解析与 400 校验矩阵。
+func TestTagQueryParams(t *testing.T) {
+	svc := &fakeService{}
+	_, addr, token := startTestServer(t, svc)
+	tid := "t_001122334455"
+
+	// histogram 路由 200
+	code, body := tagDo(t, "GET", addr, token, "/tags/all/histogram", "")
+	if code != 200 || !strings.Contains(body, `"buckets"`) {
+		t.Fatalf("GET /tags/all/histogram = %d %s", code, body)
+	}
+	// 非法方法：POST histogram → 不落任何分支 → 404
+	code, _ = tagDo(t, "POST", addr, token, "/tags/all/histogram", "")
+	if code != 404 {
+		t.Fatalf("POST histogram 应 404，得 %d", code)
+	}
+	// 非法 scope → 400（flows 与 histogram 两分支）
+	code, _ = tagDo(t, "GET", addr, token, "/tags/all/flows?scope=weird", "")
+	if code != 400 {
+		t.Fatalf("flows 非法 scope 应 400，得 %d", code)
+	}
+	code, _ = tagDo(t, "GET", addr, token, "/tags/all/histogram?scope=weird", "")
+	if code != 400 {
+		t.Fatalf("histogram 非法 scope 应 400，得 %d", code)
+	}
+	// 具体标签 + scope=all 宽容（不报错，scope 仍透传）
+	code, _ = tagDo(t, "GET", addr, token, "/tags/"+tid+"/flows?scope=all", "")
+	if code != 200 {
+		t.Fatalf("具体标签 scope=all 应宽容 200，得 %d", code)
+	}
+	// 双端且 start>end → 400；半开窗口合法 200
+	code, _ = tagDo(t, "GET", addr, token, "/tags/all/flows?start=2000&end=1000", "")
+	if code != 400 {
+		t.Fatalf("start>end 应 400，得 %d", code)
+	}
+	code, _ = tagDo(t, "GET", addr, token, "/tags/all/flows?start=2000&end=0", "")
+	if code != 200 {
+		t.Fatalf("半开窗口（仅下限）应 200，得 %d", code)
+	}
+	code, _ = tagDo(t, "GET", addr, token, "/tags/all/flows?start=0&end=2000", "")
+	if code != 200 {
+		t.Fatalf("半开窗口（仅上限）应 200，得 %d", code)
+	}
+	// 非法 start/end → 400；负数 → 400
+	code, _ = tagDo(t, "GET", addr, token, "/tags/all/flows?start=abc", "")
+	if code != 400 {
+		t.Fatalf("非法 start 应 400，得 %d", code)
+	}
+	code, _ = tagDo(t, "GET", addr, token, "/tags/all/histogram?end=-5", "")
+	if code != 400 {
+		t.Fatalf("负数 end 应 400，得 %d", code)
+	}
+	// scope/start/end 透传 service 层
+	code, _ = tagDo(t, "GET", addr, token, "/tags/all/flows?scope=all&start=1000&end=2000&limit=50", "")
+	if code != 200 {
+		t.Fatalf("合法组合应 200，得 %d", code)
+	}
+	svc.mu.Lock()
+	gotScope, gotStart, gotEnd := svc.lastScope, svc.lastStart, svc.lastEnd
+	svc.mu.Unlock()
+	if gotScope != "all" || gotStart != 1000 || gotEnd != 2000 {
+		t.Fatalf("参数未透传：scope=%q start=%d end=%d", gotScope, gotStart, gotEnd)
+	}
+	// q 关键字透传 service 层并由响应回显（含 URL 编码与空格原样保留）
+	code, body = tagDo(t, "GET", addr, token, "/tags/all/flows?q=api%2Fv1%25", "")
+	if code != 200 {
+		t.Fatalf("带 q 查询应 200，得 %d", code)
+	}
+	svc.mu.Lock()
+	gotQ := svc.lastQ
+	svc.mu.Unlock()
+	if gotQ != "api/v1%" {
+		t.Fatalf("q 未原样透传：%q", gotQ)
+	}
+	if !strings.Contains(body, `"q":"api/v1%"`) {
+		t.Fatalf("响应未回显 q: %s", body)
+	}
+	// 缺省 q 为空串
+	tagDo(t, "GET", addr, token, "/tags/all/flows", "")
+	svc.mu.Lock()
+	gotQ = svc.lastQ
+	svc.mu.Unlock()
+	if gotQ != "" {
+		t.Fatalf("缺省 q 应为空串，得 %q", gotQ)
+	}
+	// buckets 超上限钳 500（非法/非正 buckets 回退默认 120；fake 不回显 buckets，
+	// 这里仅保证合法/非法均不 400——钳制由 persist 层单测覆盖）
+	code, _ = tagDo(t, "GET", addr, token, "/tags/all/histogram?buckets=5000", "")
+	if code != 200 {
+		t.Fatalf("buckets 超上限应钳制后 200，得 %d", code)
+	}
+	code, _ = tagDo(t, "GET", addr, token, "/tags/all/histogram?buckets=abc", "")
+	if code != 200 {
+		t.Fatalf("非法 buckets 应回退默认后 200，得 %d", code)
+	}
+}
+
 // TestStaticHosting 复盘页静态托管（不套 auth；/api/ 未匹配 404；短链 302）。
 func TestStaticHosting(t *testing.T) {
 	dist := fstest.MapFS{

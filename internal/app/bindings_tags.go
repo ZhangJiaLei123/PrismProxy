@@ -426,21 +426,30 @@ func (a *App) GetReviewURL() (string, error) {
 
 // ---------- 复盘页查询/管理（供 ctl_bridge 转调，设计 §4.4） ----------
 
-// ReviewFlowList 复盘流列表：tagID="all" 为全部已标记流；limit/offset 分页。
+// ReviewFlowList 复盘流列表：tagID="all" 时按 scope 取数（archived=打标流，
+// all=库内全量含自动录制未打标流）；start/end 为 unix 毫秒时间窗（含头尾，
+// 0=不限，支持半开）；limit/offset 分页；q 非空时在 method/host/path 子串过滤。
 // 返回的 FlowMeta 带 Tags（从归档库批量查，不依赖内存 tagIndex——流可能已淘汰）。
-func (a *App) ReviewFlowList(tagID string, limit, offset int) ([]FlowMeta, int, error) {
+//
+// v3.1：归档库从未打开（w==nil，全新项目从未录制/打标）时返回空列表 + total=0，
+// 不报错——复盘页首开应是空态引导而非 fatal（设计 §6.4、AC18）。
+func (a *App) ReviewFlowList(tagID, scope string, start, end int64, limit, offset int, q string) ([]FlowMeta, int, error) {
+	if tagID != "all" && !persist.ValidTagID(tagID) {
+		return nil, 0, fmt.Errorf("非法标签 id")
+	}
+	if _, err := persist.NormalizeScope(scope); err != nil {
+		return nil, 0, err
+	}
 	w, done, err := a.reviewReader()
 	if err != nil {
 		return nil, 0, err
 	}
 	defer done()
 	if w == nil {
-		return nil, 0, fmt.Errorf("暂无已归档的流量")
+		// 库文件不存在（从未录制/打标）：业务空态，非错误（v3.1 AC18）
+		return []FlowMeta{}, 0, nil
 	}
-	if tagID != "all" && !persist.ValidTagID(tagID) {
-		return nil, 0, fmt.Errorf("非法标签 id")
-	}
-	flows, err := w.FlowsByTag(tagID, limit, offset)
+	flows, err := w.FlowsByTag(tagID, scope, start, end, limit, offset, q)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -460,25 +469,61 @@ func (a *App) ReviewFlowList(tagID string, limit, offset int) ([]FlowMeta, int, 
 		}
 		out = append(out, m)
 	}
-	// 总数：all 取已标记流总数；指定标签取标签计数
-	total := 0
-	if tagID == "all" {
-		if n, err := w.CountTaggedFlows(); err == nil {
-			total = n
-		}
-	} else {
-		tags, err := w.ListTags()
-		if err != nil {
-			return nil, 0, err
-		}
-		for _, t := range tags {
-			if t.ID == tagID {
-				total = t.Count
-				break
-			}
-		}
+	// 总数：与列表同谓词（tagID+scope+窗口+q），避免分页 total 与数据不一致
+	total, err := w.CountFlows(tagID, scope, start, end, q)
+	if err != nil {
+		return nil, 0, err
 	}
 	return out, total, nil
+}
+
+// ReviewTagsOverview 标签侧栏概览（设计 §4.4 v3.1）：标签列表 + total（去重打标流数，
+// COUNT(DISTINCT) 口径——禁止前端各标签 count 累加，流多标签时会虚高）+
+// totalFlows（库内全部 flows 行数，含未打标自动录制流）。
+// 归档库从未打开时返回空列表 + 双 0（空态，不报错）。
+func (a *App) ReviewTagsOverview() ([]TagInfo, int, int, error) {
+	w, done, err := a.reviewReader()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	defer done()
+	if w == nil {
+		return []TagInfo{}, 0, 0, nil
+	}
+	tags, err := w.ListTags()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	tagged, err := w.CountTaggedFlows()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	allFlows, err := w.CountAllFlows()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return toTagInfoDTOs(tags), tagged, allFlows, nil
+}
+
+// ReviewHistogram 复盘密度直方图（M12.1，时间轴底图；HTTP-only，不新增 wails 绑定）。
+// 参数语义同 ReviewFlowList；buckets<=0 默认 120、上限 500。
+// 返回全域边界 start/end（供前端时间轴坐标系）与分桶。
+func (a *App) ReviewHistogram(tagID, scope string, winStart, winEnd int64, buckets int) (int64, int64, []persist.HistBucket, error) {
+	if tagID != "all" && !persist.ValidTagID(tagID) {
+		return 0, 0, nil, fmt.Errorf("非法标签 id")
+	}
+	if _, err := persist.NormalizeScope(scope); err != nil {
+		return 0, 0, nil, err
+	}
+	w, done, err := a.reviewReader()
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	defer done()
+	if w == nil {
+		return 0, 0, []persist.HistBucket{}, nil
+	}
+	return w.Histogram(tagID, scope, winStart, winEnd, buckets)
 }
 
 // ReviewFlowDetail 复盘单流详情（含标签）：流可能已被内存淘汰，走归档库 LoadFlowByID。

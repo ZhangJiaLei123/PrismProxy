@@ -980,13 +980,13 @@ func (s *ctlService) ListProcesses() []string {
 
 // ---------- 标签与数据复盘（M12，设计 §4.4） ----------
 
-// ListTagsForReview GET /tags：标签列表（含计数）
+// ListTagsForReview GET /tags：标签列表 + total（去重打标流数）+ totalFlows（库内全部流）
 func (s *ctlService) ListTagsForReview() (any, error) {
-	tags, err := s.app.ListTags()
+	tags, tagged, all, err := s.app.ReviewTagsOverview()
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"tags": tags}, nil
+	return map[string]any{"tags": tags, "total": tagged, "totalFlows": all}, nil
 }
 
 // TagFlowsForReview POST /tags/flows：打标签并归档（HTTP 入口 autoClear 恒 false）
@@ -1001,13 +1001,26 @@ func (s *ctlService) TagFlowsForReview(raw json.RawMessage) (any, error) {
 	return s.app.TagFlows(req.IDs, req.Name, false)
 }
 
-// ListFlowsByTag GET /tags/{id}/flows：标签下流分页列表（id=all 全部已标记）
-func (s *ctlService) ListFlowsByTag(tagID string, limit, offset int) (any, error) {
-	flows, total, err := s.app.ReviewFlowList(tagID, limit, offset)
+// ListFlowsByTag GET /tags/{id}/flows：范围内流分页（id=all 时 scope 生效）；
+// q 非空时按 method/host/path 子串过滤（服务端全库搜索）
+func (s *ctlService) ListFlowsByTag(tagID, scope string, start, end int64, limit, offset int, q string) (any, error) {
+	flows, total, err := s.app.ReviewFlowList(tagID, scope, start, end, limit, offset, q)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"flows": flows, "total": total, "tag": tagID, "limit": limit, "offset": offset}, nil
+	return map[string]any{
+		"flows": flows, "total": total, "tag": tagID, "scope": scope,
+		"start": start, "end": end, "limit": limit, "offset": offset, "q": q,
+	}, nil
+}
+
+// TagHistogram GET /tags/{id}/histogram：密度直方图（时间轴底图）
+func (s *ctlService) TagHistogram(tagID, scope string, start, end int64, buckets int) (any, error) {
+	t0, t1, hist, err := s.app.ReviewHistogram(tagID, scope, start, end, buckets)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"start": t0, "end": t1, "buckets": hist}, nil
 }
 
 // GetTaggedFlow GET /tags/flows/{id}：归档单流详情

@@ -243,10 +243,82 @@ func scanTagInfo(s scanner) (*TagInfo, error) {
 	return &ti, nil
 }
 
-// FlowsByTag 分页返回某标签下的流（时间倒序；tagID="all" = 全部已标记流，按最近打标倒序）。
-// limit<=0 用默认 200，上限 1000；offset 为跳过条数。仅元数据（body 惰性回查），
-// 复盘流以 capture.SourceHistory 标记（与启动补载口径一致）。
-func (w *Writer) FlowsByTag(tagID string, limit, offset int) ([]*capture.Flow, error) {
+// 复盘取数范围（M12.1，设计 §4.4）：
+// ScopeArchived＝打标流（flow_tags 关联谓词，v2 现状语义，默认）；
+// ScopeAll＝库内全部 flows（含自动录制落库未打标流）。
+// scope 仅在 tagID="all" 时生效；选中具体标签时该参数被忽略（标签下必然是打标流）。
+const (
+	ScopeArchived = "archived"
+	ScopeAll      = "all"
+)
+
+// NormalizeScope 归一化 scope：空串→archived（缺省）；非 archived/all 报错（HTTP 400）。
+func NormalizeScope(scope string) (string, error) {
+	switch scope {
+	case "", ScopeArchived:
+		return ScopeArchived, nil
+	case ScopeAll:
+		return ScopeAll, nil
+	default:
+		return "", fmt.Errorf("非法 scope（仅支持 archived|all）")
+	}
+}
+
+// likePattern 把用户输入转成安全的 SQLite LIKE 子串模式：转义 \ % _ 三个元字符，
+// 两端补 %。SQLite LIKE 对 ASCII 大小写不敏感（method/host 均 ASCII，足够使用）。
+func likePattern(q string) string {
+	esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
+	return "%" + esc + "%"
+}
+
+// buildFlowQuery 组装复盘取数的 FROM/WHERE（设计 §4.4，列表/计数/直方图共用同一套谓词）：
+//   - tagID="all"：archived 加 id IN (SELECT flow_id FROM flow_tags)，all 放开谓词；
+//   - 具体标签：JOIN flow_tags + ft.tag_id=?（每流每标签至多一行，JOIN 不产生重复）；
+//   - start/end 为 unix 毫秒时间窗，含头尾（started_at>=start AND <=end），0=不限，
+//     支持半开窗口（start>0,end=0 仅下限；start=0,end>0 仅上限），走 idx_flows_started；
+//   - q 非空时在 method/host/path 三列做子串匹配（OR，复盘页关键字搜索，全库可搜）。
+func buildFlowQuery(tagID, scope string, start, end int64, q string) (from, where string, args []any, err error) {
+	from = "flows f"
+	conds := make([]string, 0, 4)
+	switch {
+	case tagID == "all":
+		sc, serr := NormalizeScope(scope)
+		if serr != nil {
+			return "", "", nil, serr
+		}
+		if sc == ScopeArchived {
+			conds = append(conds, "f.id IN (SELECT flow_id FROM flow_tags)")
+		}
+	case ValidTagID(tagID):
+		from = "flows f JOIN flow_tags ft ON ft.flow_id=f.id"
+		conds = append(conds, "ft.tag_id=?")
+		args = append(args, tagID)
+	default:
+		return "", "", nil, fmt.Errorf("非法标签 id")
+	}
+	if start > 0 {
+		conds = append(conds, "f.started_at>=?")
+		args = append(args, start)
+	}
+	if end > 0 {
+		conds = append(conds, "f.started_at<=?")
+		args = append(args, end)
+	}
+	if q = strings.TrimSpace(q); q != "" {
+		p := likePattern(q)
+		conds = append(conds, "(f.method LIKE ? ESCAPE '\\' OR f.host LIKE ? ESCAPE '\\' OR f.path LIKE ? ESCAPE '\\')")
+		args = append(args, p, p, p)
+	}
+	if len(conds) > 0 {
+		where = strings.Join(conds, " AND ")
+	}
+	return from, where, args, nil
+}
+
+// FlowsByTag 分页返回范围内的流（时间倒序；tagID="all" 时按 scope 取数）。
+// limit<=0 用默认 200，上限 1000；offset 为跳过条数；q 非空时在 method/host/path
+// 子串过滤。仅元数据（body 惰性回查），复盘流以 capture.SourceHistory 标记（与启动补载口径一致）。
+func (w *Writer) FlowsByTag(tagID, scope string, start, end int64, limit, offset int, q string) ([]*capture.Flow, error) {
 	if limit <= 0 {
 		limit = 200
 	}
@@ -256,23 +328,17 @@ func (w *Writer) FlowsByTag(tagID string, limit, offset int) ([]*capture.Flow, e
 	if offset < 0 {
 		offset = 0
 	}
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if tagID == "all" {
-		rows, err = w.db.Query(`SELECT f.data FROM flows f
-			WHERE f.id IN (SELECT flow_id FROM flow_tags)
-			ORDER BY f.started_at DESC, f.id DESC LIMIT ? OFFSET ?`, limit, offset)
-	} else {
-		if !ValidTagID(tagID) {
-			return nil, fmt.Errorf("非法标签 id")
-		}
-		rows, err = w.db.Query(`SELECT f.data FROM flows f
-			JOIN flow_tags ft ON ft.flow_id=f.id
-			WHERE ft.tag_id=?
-			ORDER BY f.started_at DESC, f.id DESC LIMIT ? OFFSET ?`, tagID, limit, offset)
+	from, where, args, err := buildFlowQuery(tagID, scope, start, end, q)
+	if err != nil {
+		return nil, err
 	}
+	query := "SELECT f.data FROM " + from
+	if where != "" {
+		query += " WHERE " + where
+	}
+	query += " ORDER BY f.started_at DESC, f.id DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+	rows, err := w.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -299,6 +365,144 @@ func (w *Writer) CountTaggedFlows() (int, error) {
 	var n int
 	err := w.db.QueryRow(`SELECT COUNT(DISTINCT flow_id) FROM flow_tags`).Scan(&n)
 	return n, err
+}
+
+// CountFlows 返回与列表同谓词（tagID+scope+窗口+q）的流总数（设计 §4.4：
+// total 与列表同谓词，避免分页 total 与数据不一致）。
+func (w *Writer) CountFlows(tagID, scope string, start, end int64, q string) (int, error) {
+	from, where, args, err := buildFlowQuery(tagID, scope, start, end, q)
+	if err != nil {
+		return 0, err
+	}
+	query := "SELECT COUNT(1) FROM " + from
+	if where != "" {
+		query += " WHERE " + where
+	}
+	var n int
+	if err := w.db.QueryRow(query, args...).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// CountAllFlows 返回库内全部 flows 行数（/api/v1/tags 的 totalFlows，
+// 「全部数据」范围计数；含自动录制落库但未打标的流）。
+func (w *Writer) CountAllFlows() (int, error) {
+	var n int
+	err := w.db.QueryRow(`SELECT COUNT(1) FROM flows`).Scan(&n)
+	return n, err
+}
+
+// HistBucket 密度直方图分桶（M12.1，设计 §4.4）：[T0,T1) 半开区间内流计数，
+// 末桶右端闭（T1 含）。
+type HistBucket struct {
+	T0    int64 `json:"t0"`
+	T1    int64 `json:"t1"`
+	Count int   `json:"count"`
+}
+
+// Histogram 密度直方图（时间轴底图）。buckets<=0 默认 120、上限 500。
+//   - 有窗口（start/end 非 0 端）：以 [start,end] 为界（半开合法，见 buildFlowQuery）；
+//   - 无窗口：服务端在「当前取数范围（同 tagID+scope 谓词）」内探测 MIN/MAX 再等宽分桶，
+//     避免 archived 视图底图两端出现不属于本范围的空段；
+//   - 分桶守恒（v3.1 P0）：width=ceil((t1-t0)/buckets)（向上取整），桶序号
+//     (started_at-t0)/width 钳制到 [0,n-1]（不整除时溢出桶并入末桶，尾部流不丢弃）；
+//     t1-t0==0（单流库/同毫秒）退化为单桶 width=1（禁止除零）。
+//
+// 返回 (t0,t1,buckets)：空库返回空切片（start=end=0）。
+func (w *Writer) Histogram(tagID, scope string, winStart, winEnd int64, buckets int) (int64, int64, []HistBucket, error) {
+	if buckets <= 0 {
+		buckets = 120
+	}
+	if buckets > 500 {
+		buckets = 500
+	}
+	// 直方图底图只跟 tagID+scope+窗口，不随列表关键字 q 过滤。
+	from, where, wargs, err := buildFlowQuery(tagID, scope, winStart, winEnd, "")
+	if err != nil {
+		return 0, 0, nil, err
+	}
+
+	// 边界：有窗口直接用窗口端（0 端由 MIN/MAX 补）；无窗口全域探测 MIN/MAX（同谓词）。
+	var t0, t1 sql.NullInt64
+	if winStart > 0 && winEnd > 0 {
+		t0 = sql.NullInt64{Int64: winStart, Valid: true}
+		t1 = sql.NullInt64{Int64: winEnd, Valid: true}
+	} else {
+		q := "SELECT MIN(f.started_at), MAX(f.started_at) FROM " + from
+		if where != "" {
+			q += " WHERE " + where
+		}
+		if err := w.db.QueryRow(q, wargs...).Scan(&t0, &t1); err != nil {
+			return 0, 0, nil, err
+		}
+	}
+	if !t0.Valid || !t1.Valid {
+		return 0, 0, []HistBucket{}, nil // 空库/窗口内无数据
+	}
+	span := t1.Int64 - t0.Int64
+	if span < 0 {
+		span = 0
+	}
+	if span == 0 {
+		// 单流库/同毫秒：退化为单桶（width=1），禁止除零
+		only := HistBucket{T0: t0.Int64, T1: t1.Int64, Count: 0}
+		q := "SELECT COUNT(1) FROM " + from
+		if where != "" {
+			q += " WHERE " + where
+		}
+		if err := w.db.QueryRow(q, wargs...).Scan(&only.Count); err != nil {
+			return 0, 0, nil, err
+		}
+		return t0.Int64, t1.Int64, []HistBucket{only}, nil
+	}
+	// width=ceil(span/buckets)：非整除时最后一个桶可能偏窄（溢出并入），实际桶数
+	// 由 span/width 决定，钳制到 buckets——响应桶数 ≤ 请求值。
+	width := span / int64(buckets)
+	if span%int64(buckets) != 0 {
+		width++
+	}
+	n := int(span/width) + 1 // ceil(span+1)/width 的桶数
+	if n > buckets {
+		n = buckets
+	}
+	out := make([]HistBucket, n)
+	for i := 0; i < n; i++ {
+		out[i].T0 = t0.Int64 + int64(i)*width
+		out[i].T1 = t0.Int64 + int64(i+1)*width
+	}
+	// 末桶右端取全域 MAX（含）：[t0,t1] 内的流都落在末桶，Σcount 守恒
+	out[n-1].T1 = t1.Int64
+
+	// 稀疏 GROUP BY（NULLIF/COALESCE 无需：Go 侧钳制序号并填充空桶）
+	q := "SELECT CAST((f.started_at-?)/? AS INTEGER) AS b, COUNT(1) FROM " + from
+	if where != "" {
+		q += " WHERE " + where
+	}
+	q += " GROUP BY b ORDER BY b"
+	args := append([]any{t0.Int64, width}, wargs...)
+	rows, err := w.db.Query(q, args...)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var b, cnt int
+		if err := rows.Scan(&b, &cnt); err != nil {
+			return 0, 0, nil, err
+		}
+		if b < 0 {
+			b = 0
+		}
+		if b >= n {
+			b = n - 1 // 溢出桶并入末桶（分桶守恒）
+		}
+		out[b].Count += cnt // 钳制后多个原始桶可能并入同一末桶，须累加
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, nil, err
+	}
+	return t0.Int64, t1.Int64, out, nil
 }
 
 // FlowIDsByTag 返回某标签下全部关联流 id（不分页；删除标签前收集受影响流用，
