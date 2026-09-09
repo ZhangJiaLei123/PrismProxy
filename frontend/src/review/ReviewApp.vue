@@ -145,7 +145,7 @@
                     {{ fmtDateTime(winStart) }} ~ {{ fmtDateTime(winEnd) }}
                     <i class="win-x" title="清除时间筛选" @click="clearWindow">✕</i>
                   </span>
-                  <span class="list-count">{{ currentTagName }} · {{ rangeText }} · {{ filteredFlows.length }} / {{ total }} 条</span>
+                  <span class="list-count">{{ currentTagName }} · {{ rangeText }} · 第 {{ page }} 页 · 共 {{ total }} 条</span>
                 </div>
 
                 <!-- 密度时间轴（§6.4 需求7）：置于列表 pane 顶部，可折叠 -->
@@ -163,6 +163,12 @@
                     <div class="le-icon">⏱️</div>
                     <div>选定时间范围内暂无流</div>
                     <n-button size="tiny" quaternary @click="clearWindow">清除时间筛选</n-button>
+                  </template>
+                  <!-- 关键字无匹配：须与"本无数据"区分，避免把搜索无结果谎报成标签/库内为空 -->
+                  <template v-else-if="keyword.trim()">
+                    <div class="le-icon">🔍</div>
+                    <div>没有匹配「{{ keyword.trim() }}」的流量</div>
+                    <n-button size="tiny" quaternary @click="clearKeyword">清除关键字</n-button>
                   </template>
                   <template v-else-if="!tags.length">
                     <div class="le-icon">🏷️</div>
@@ -193,9 +199,9 @@
                   </template>
                 </div>
 
-                <div v-else class="flow-list" @scroll="onScroll">
+                <div v-else class="flow-list">
                   <div
-                    v-for="f in filteredFlows"
+                    v-for="f in flows"
                     :key="f.ID"
                     class="flow-row"
                     :class="{ active: f.ID === selectedFlow }"
@@ -208,10 +214,21 @@
                     <span class="fr-time">{{ fmtTime(f.StartedAt) }}</span>
                     <span class="fr-size">{{ fmtBytes(f.BytesDown) }}</span>
                   </div>
-                  <div v-if="hasMore" class="load-more" @click="loadMore">
-                    {{ loadingMore ? '加载中…' : `加载更多（已显示 ${filteredFlows.length} / ${total}）` }}
-                  </div>
-                  <div v-else-if="filteredFlows.length" class="list-end">— 已全部加载 —</div>
+                </div>
+
+                <!-- 页码分页：上一页/下一页/页码/跳页 + 每页条数切换 -->
+                <div v-if="total > 0" class="pager-bar">
+                  <n-pagination
+                    size="small"
+                    :page="page"
+                    :page-size="pageSize"
+                    :item-count="total"
+                    :page-sizes="PAGE_SIZES"
+                    show-size-picker
+                    show-quick-jumper
+                    @update:page="onPageChange"
+                    @update:page-size="onPageSizeChange"
+                  />
                 </div>
               </div>
 
@@ -231,8 +248,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { NButton, NDatePicker, NInput, NPopconfirm, NPopover, NRadioButton, NRadioGroup, NTag, NTooltip, useMessage } from 'naive-ui'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { NButton, NDatePicker, NInput, NPagination, NPopconfirm, NPopover, NRadioButton, NRadioGroup, NTag, NTooltip, useMessage } from 'naive-ui'
 import ReviewSidebar from './ReviewSidebar.vue'
 import ReviewDetail from './ReviewDetail.vue'
 import ReviewTimeline from './ReviewTimeline.vue'
@@ -253,7 +270,11 @@ const total = ref(0)
 const selectedFlow = ref('')
 const keyword = ref('')
 const loading = ref(false)
-const loadingMore = ref(false)
+// 页码分页（1 起）；页大小可选 50/100/200/500，默认 100
+const page = ref(1)
+const pageSize = ref(100)
+const PAGE_SIZES = [50, 100, 200, 500]
+let kwTimer: ReturnType<typeof setTimeout> | null = null
 const fatal = ref<{ title: string; sub: string } | null>(null)
 
 // 敏感凭据黄条：关闭后写 localStorage（'1'），下次打开不再展示（隐私模式读取失败则照常显示）
@@ -356,8 +377,6 @@ function onDragEnd(e: PointerEvent) {
 let bucketCount = 120
 let bucketsReady = false // ReviewTimeline 首次上报容器自适应桶数前不发 histogram 请求
 
-const PAGE = 200
-let loadedAll = false
 let flowSeq = 0 // 列表请求代际序号（L3：快速切标签时丢弃过期响应）
 let histSeq = 0 // 直方图请求代际序号（v3.1：底图随 tagID+scope 重拉，丢弃过期响应）
 
@@ -377,20 +396,6 @@ const emptyText = computed(() =>
       : '暂无归档数据'
     : '该标签下暂无流',
 )
-
-const filteredFlows = computed(() => {
-  const kw = keyword.value.trim().toLowerCase()
-  if (!kw) return flows.value
-  return flows.value.filter(
-    (f) =>
-      f.Host.toLowerCase().includes(kw) ||
-      f.Path.toLowerCase().includes(kw) ||
-      f.Method.toLowerCase().includes(kw) ||
-      (f.Tags ?? []).some((t) => t.toLowerCase().includes(kw)),
-  )
-})
-
-const hasMore = computed(() => !loadedAll && flows.value.length < total.value)
 
 function statusCls(status: number, state: string): string {
   if (state === 'error' || status === 0) return 's-err'
@@ -412,42 +417,84 @@ function effectiveScope(): ReviewScope {
   return selectedTag.value === 'all' ? scope.value : 'archived'
 }
 
-async function loadFlows(reset = true) {
-  // 请求代际防护（M12 审计修复 L3）：快速切换标签/刷新时，旧请求若晚于新请求
-  // 返回，不得覆盖新标签的列表/总数，过期响应（含其 catch 的 fatal）整体丢弃。
+// 按当前页码/页大小/关键字单页拉取；reset=true 表示筛选条件变化（回到第 1 页），
+// 此时清空旧列表与选中项。restoreOnError 仅用于「关键字/页大小」这类筛选维度本身未变、
+// 仅刷新结果的 reset：普通失败时恢复旧列表；切标签/scope/时间窗等不恢复（否则会显示
+// 与当前选中维度不符的跨筛选旧数据）。请求代际防护（M12 审计修复 L3）：丢弃过期响应。
+// 返回本次请求是否成功（过期请求恒视为不成功，供调用方决定是否回滚 UI 状态）。
+async function loadFlows(reset = false, restoreOnError = false): Promise<boolean> {
   const my = ++flowSeq
+  // restoreOnError 失败时回滚用的快照
+  const prevFlows = flows.value
+  const prevTotal = total.value
   if (reset) {
+    // 筛选条件变化（标签/scope/时间窗/关键字/页大小）一律回到第 1 页
+    page.value = 1
     flows.value = []
     total.value = 0
-    loadedAll = false
     selectedFlow.value = ''
   }
-  loading.value = reset
-  loadingMore.value = !reset
+  loading.value = true
   try {
-    const offset = reset ? 0 : flows.value.length
+    const limit = pageSize.value
+    const offset = (page.value - 1) * pageSize.value
     const resp = await api.listFlows(
       selectedTag.value,
       effectiveScope(),
       winStart.value,
       winEnd.value,
-      PAGE,
+      limit,
       offset,
+      keyword.value.trim(),
     )
-    if (my !== flowSeq) return // 已被更新的请求取代
-    flows.value = reset ? resp.flows : [...flows.value, ...resp.flows]
+    if (my !== flowSeq) return false // 已被更新的请求取代
+    flows.value = resp.flows
     total.value = resp.total
-    if (resp.flows.length < PAGE || flows.value.length >= resp.total) loadedAll = true
+    return true
   } catch (e) {
-    if (my !== flowSeq) return // 过期错误不弹 fatal
+    if (my !== flowSeq) return false // 过期错误不弹 fatal、不回滚
     handleFatal(e)
+    // 普通失败（非未授权/离线致命遮罩）且调用方要求时：恢复清空前的列表与总数，
+    // 避免关键字/页大小刷新失败导致空态或分页栏消失
+    if (restoreOnError && !fatal.value) {
+      flows.value = prevFlows
+      total.value = prevTotal
+    }
+    return false
   } finally {
     // 仅最新请求负责复位加载态（过期请求不能清掉新请求的 loading）
-    if (my === flowSeq) {
-      loading.value = false
-      loadingMore.value = false
-    }
+    if (my === flowSeq) loading.value = false
   }
+}
+
+// 翻页：保持筛选条件，仅替换列表（不清屏，旧行保留到新响应返回）；失败回滚到原页码
+async function onPageChange(p: number) {
+  const prev = page.value
+  page.value = p
+  selectedFlow.value = ''
+  const ok = await loadFlows()
+  if (!ok && !fatal.value) page.value = prev
+}
+
+// 每页条数变化：回到第 1 页；普通失败恢复原页大小（loadFlows 已恢复旧列表/总数）
+async function onPageSizeChange(size: number) {
+  const prev = pageSize.value
+  pageSize.value = size
+  const ok = await loadFlows(true, true)
+  if (!ok && !fatal.value) pageSize.value = prev
+}
+
+// 关键字输入防抖约 300ms 下沉服务端搜索（method/host/path 子串），并回到第 1 页
+watch(keyword, () => {
+  if (kwTimer) clearTimeout(kwTimer)
+  kwTimer = setTimeout(() => void loadFlows(true, true), 300)
+})
+
+// 空态「清除关键字」：清空后由 keyword watcher 统一防抖重拉（回第 1 页），
+// 此处取消挂起定时器避免与即将触发的 watcher 重复请求
+function clearKeyword() {
+  if (kwTimer) clearTimeout(kwTimer)
+  keyword.value = ''
 }
 
 // 直方图：随 tagID+scope 重拉全域底图（§6.4；恒 start=0/end=0，底图不随窗口变焦 §九-12）
@@ -563,16 +610,6 @@ function onScopeChange(v: ReviewScope) {
   void loadHistogram()
 }
 
-function loadMore() {
-  if (hasMore.value && !loadingMore.value) void loadFlows(false)
-}
-
-function onScroll(e: Event) {
-  const el = e.target as HTMLElement
-  // 距底 120px 内自动加载下一页
-  if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) loadMore()
-}
-
 async function refreshAll() {
   fatal.value = null
   await nextTick() // fatal 重试成功后 .body 才挂载，需等 DOM 就绪再测宽
@@ -649,6 +686,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (kwTimer) clearTimeout(kwTimer)
   window.removeEventListener('pointermove', onDragMove)
   window.removeEventListener('pointerup', onDragEnd)
 })
@@ -735,8 +773,10 @@ onBeforeUnmount(() => {
 .fr-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255,255,255,0.82); }
 .fr-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255,255,255,0.55); font-family: Consolas, monospace; font-size: 11px; }
 .fr-time, .fr-size { font-size: 11px; color: rgba(255,255,255,0.45); text-align: right; white-space: nowrap; }
-.load-more, .list-end { padding: 10px; text-align: center; font-size: 12px; color: rgba(255,255,255,0.5); cursor: pointer; }
-.load-more:hover { color: #c0a8f0; }
+.pager-bar {
+  flex: none; display: flex; justify-content: center; align-items: center;
+  padding: 6px 8px; border-top: 1px solid rgba(255,255,255,0.06);
+}
 .list-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: rgba(255,255,255,0.4); text-align: center; padding: 20px; }
 .le-icon { font-size: 30px; opacity: 0.7; }
 .le-sub { font-size: 11px; color: rgba(255,255,255,0.32); max-width: 300px; line-height: 1.7; }
