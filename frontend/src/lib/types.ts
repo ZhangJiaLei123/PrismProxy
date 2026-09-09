@@ -54,7 +54,8 @@ export interface ReviewFlowDetail extends ReviewFlowMeta {
     ClientVersion: string
     ServerVersion: string
     ServerName: string
-    PeerCerts: Array<{ Subject: string; Issuer: string; DNSNames: string[]; NotBefore: number; NotAfter: number }>
+    // 证书有效期：wails/Go time.Time 无 json tag → RFC3339 字符串；demo mock 为 unix 秒数（fmtCertDate 双形态兼容）
+    PeerCerts: Array<{ Subject: string; Issuer: string; DNSNames: string[]; NotBefore: string | number; NotAfter: string | number }>
   } | null
 }
 
@@ -65,6 +66,15 @@ export interface ReviewBodyPayload {
   Raw: string
   Body: string
   DecodeErr: string
+}
+
+/** POST /api/v1/compose 请求体（与 Go app.ComposedRequest 同构，小写 json tag）。 */
+export interface ReviewComposedRequest {
+  method: string
+  url: string
+  headers: Array<{ key: string; value: string }>
+  body: string
+  skipVerify: boolean
 }
 
 export interface ReviewTagResult {
@@ -106,4 +116,36 @@ export interface ReviewFlowQuery {
   limit: number
   offset: number
   q: string
+  /** M12.2 服务端排序：time|method|status|host|path|size|proc；空=time。 */
+  sort?: ReviewSortKey
+  /** asc|desc；空走服务端默认（time=desc，其余=asc）。 */
+  dir?: ReviewSortDir
+  /** true=显示被忽略数据（眼睛开启，不拼排除条件）；默认 false 隐藏。 */
+  showIgnored?: boolean
+}
+
+/** 可排序列（与后端 flowOrderBy 白名单一致）。 */
+export type ReviewSortKey = 'time' | 'method' | 'status' | 'host' | 'path' | 'size' | 'proc'
+export type ReviewSortDir = 'asc' | 'desc'
+
+/** M12.2 忽略名单类型：host=域名（含子域/端口口径）；path=路径前缀；proc=进程名。 */
+export type ReviewIgnoreKind = 'host' | 'path' | 'proc'
+
+/** review_ignores 表一行（小写 json）。 */
+export interface ReviewIgnoreItem {
+  kind: ReviewIgnoreKind
+  value: string
+  createdAt: number
+  note: string
+}
+
+/** GET /tags/ignores 响应。 */
+export interface ReviewIgnoreList {
+  ignores: ReviewIgnoreItem[]
+}
+
+/** POST /tags/ignores 响应：added=false 表示已存在（幂等，仅刷新 note）。 */
+export interface ReviewIgnoreAddResult {
+  ignore: ReviewIgnoreItem
+  added: boolean
 }

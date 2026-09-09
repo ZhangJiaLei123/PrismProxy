@@ -6,10 +6,16 @@
 // HistBucket 带小写 json tag（t0/t1/count）。
 import type {
   ReviewBodyPayload,
+  ReviewComposedRequest,
   ReviewFlowDetail,
   ReviewFlowMeta,
   ReviewHistogram,
+  ReviewIgnoreAddResult,
+  ReviewIgnoreItem,
+  ReviewIgnoreKind,
   ReviewScope,
+  ReviewSortDir,
+  ReviewSortKey,
   ReviewTagInfo,
   ReviewTagsOverview,
 } from '../lib/types'
@@ -24,6 +30,16 @@ export interface TagFlowsResp {
   limit: number
   offset: number
   q?: string
+  sort?: string
+  dir?: string
+  showIgnored?: boolean
+}
+
+/** M12.2 列表附加参数：服务端排序 + 是否显示被忽略数据（眼睛）。 */
+export interface ListFlowsOpts {
+  sort?: ReviewSortKey
+  dir?: ReviewSortDir
+  showIgnored?: boolean
 }
 
 export type ApiMode = 'http' | 'demo' | 'unauthorized' | 'offline'
@@ -39,7 +55,11 @@ export interface ReviewApi {
     limit: number,
     offset: number,
     q: string,
+    opts?: ListFlowsOpts,
   ): Promise<TagFlowsResp>
+  listIgnores(): Promise<ReviewIgnoreItem[]>
+  addIgnore(kind: ReviewIgnoreKind, value: string, note?: string): Promise<ReviewIgnoreAddResult>
+  removeIgnore(kind: ReviewIgnoreKind, value: string): Promise<boolean>
   histogram(
     tagID: string,
     scope: ReviewScope,
@@ -49,6 +69,12 @@ export interface ReviewApi {
   ): Promise<ReviewHistogram>
   flowDetail(flowID: string): Promise<ReviewFlowDetail>
   flowBody(flowID: string, which: 'req' | 'resp'): Promise<ReviewBodyPayload>
+  /** 调试重发：POST /api/v1/compose（独立直连目标，同步返回结果流详情；composer 流只进实时 store，不落归档库）。 */
+  compose(req: ReviewComposedRequest): Promise<ReviewFlowDetail>
+  /** 实时流详情：composer 结果流不在归档库，须走 /api/v1/flows/{id}。 */
+  liveFlowDetail(flowID: string): Promise<ReviewFlowDetail>
+  /** 实时流正文：GET /api/v1/flows/{id}/body?which=。 */
+  liveFlowBody(flowID: string, which: 'req' | 'resp'): Promise<ReviewBodyPayload>
   renameTag(tagID: string, name: string): Promise<void>
   deleteTag(tagID: string, deleteFlows: boolean): Promise<{ id: string; deletedFlows: number }>
 }
@@ -97,9 +123,34 @@ class HttpApi implements ReviewApi {
     limit: number,
     offset: number,
     q: string,
+    opts?: ListFlowsOpts,
   ): Promise<TagFlowsResp> {
-    const query = `?scope=${scope}&start=${start}&end=${end}&limit=${limit}&offset=${offset}&q=${encodeURIComponent(q)}`
+    let query = `?scope=${scope}&start=${start}&end=${end}&limit=${limit}&offset=${offset}&q=${encodeURIComponent(q)}`
+    if (opts?.sort) query += `&sort=${encodeURIComponent(opts.sort)}`
+    if (opts?.dir) query += `&dir=${encodeURIComponent(opts.dir)}`
+    if (opts?.showIgnored) query += '&showIgnored=1'
     return this.req<TagFlowsResp>(`/api/v1/tags/${encodeURIComponent(tagID)}/flows${query}`)
+  }
+
+  async listIgnores(): Promise<ReviewIgnoreItem[]> {
+    const v = await this.req<{ ignores?: ReviewIgnoreItem[] }>('/api/v1/tags/ignores')
+    return v.ignores ?? []
+  }
+
+  async addIgnore(kind: ReviewIgnoreKind, value: string, note = ''): Promise<ReviewIgnoreAddResult> {
+    return this.req<ReviewIgnoreAddResult>('/api/v1/tags/ignores', {
+      method: 'POST',
+      headers: { ...this.headers(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, value, note }),
+    })
+  }
+
+  async removeIgnore(kind: ReviewIgnoreKind, value: string): Promise<boolean> {
+    const v = await this.req<{ deleted?: boolean }>(
+      `/api/v1/tags/ignores?kind=${encodeURIComponent(kind)}&value=${encodeURIComponent(value)}`,
+      { method: 'DELETE' },
+    )
+    return v.deleted ?? false
   }
 
   async histogram(
@@ -122,6 +173,22 @@ class HttpApi implements ReviewApi {
 
   async flowBody(flowID: string, which: 'req' | 'resp'): Promise<ReviewBodyPayload> {
     return this.req<ReviewBodyPayload>(`/api/v1/tags/flows/${encodeURIComponent(flowID)}/body?which=${which}`)
+  }
+
+  async compose(req: ReviewComposedRequest): Promise<ReviewFlowDetail> {
+    return this.req<ReviewFlowDetail>('/api/v1/compose', {
+      method: 'POST',
+      headers: { ...this.headers(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    })
+  }
+
+  async liveFlowDetail(flowID: string): Promise<ReviewFlowDetail> {
+    return this.req<ReviewFlowDetail>(`/api/v1/flows/${encodeURIComponent(flowID)}`)
+  }
+
+  async liveFlowBody(flowID: string, which: 'req' | 'resp'): Promise<ReviewBodyPayload> {
+    return this.req<ReviewBodyPayload>(`/api/v1/flows/${encodeURIComponent(flowID)}/body?which=${which}`)
   }
 
   async renameTag(tagID: string, name: string): Promise<void> {
@@ -275,11 +342,94 @@ function demoData(): DemoDB {
 class DemoApi implements ReviewApi {
   mode: ApiMode = 'demo'
   private db: DemoDB = demoData()
+  // M12.2 忽略名单（内存模拟 review_ignores 表；key=kind|value，已归一化）
+  private ignores = new Map<ReviewIgnoreKind, Map<string, ReviewIgnoreItem>>([
+    ['host', new Map()],
+    ['path', new Map()],
+    ['proc', new Map()],
+  ])
+
+  // 归一化复刻 persist.NormalizeIgnore*（与服务端同口径）：
+  // host 去端口/小写/去尾点/去 *. 前缀；path 截 ?# 并补前导 /（'/' 拒绝）；proc trim。
+  private normHost(v: string): string {
+    let h = v.trim().toLowerCase()
+    const c = h.lastIndexOf(':')
+    // 仅在端口形态（:后纯数字）时剥离，IPv6 形态在本演示数据不会出现
+    if (c >= 0 && /^\d+$/.test(h.slice(c + 1))) h = h.slice(0, c)
+    h = h.replace(/\.+$/, '').replace(/^\*\./, '')
+    if (!h) throw new ApiError('http', '域名不能为空')
+    return h
+  }
+
+  private normPath(v: string): string {
+    let p = v.trim()
+    const qi = Math.min(...['?', '#'].map((c) => { const i = p.indexOf(c); return i < 0 ? Infinity : i }))
+    if (qi !== Infinity) p = p.slice(0, qi)
+    p = p.trim()
+    if (!p.startsWith('/')) p = '/' + p
+    if (p === '/') throw new ApiError('http', '不能忽略整站根路径')
+    return p
+  }
+
+  // 单条忽略是否命中一行（SQL 排除条件的 JS 复刻）
+  private rowIgnored(f: ReviewFlowMeta): boolean {
+    const hostHit = (h: string): boolean => {
+      const host = f.Host.toLowerCase()
+      const colon = host.indexOf(':')
+      const bare = colon >= 0 ? host.slice(0, colon) : host
+      return bare === h || bare.endsWith('.' + h)
+    }
+    const pathHit = (p: string): boolean => f.Path === p || f.Path.startsWith(p + '/')
+    for (const h of this.ignores.get('host')!.keys()) if (hostHit(h)) return true
+    for (const p of this.ignores.get('path')!.keys()) if (pathHit(p)) return true
+    const proc = (f.ProcessName || '').toLowerCase()
+    for (const pn of this.ignores.get('proc')!.keys()) if (proc && proc === pn.toLowerCase()) return true
+    return false
+  }
+
+  // 排序复刻 flowOrderBy：文本列按小写比较；time 默认 desc、其余列默认 asc；
+  // 同值按 StartedAt desc + ID 兜底。
+  private sortRows(rows: ReviewFlowMeta[], sort?: ReviewSortKey, dir?: ReviewSortDir): ReviewFlowMeta[] {
+    const key: ReviewSortKey = sort ?? 'time'
+    const wantDir: ReviewSortDir = dir ?? (key === 'time' ? 'desc' : 'asc')
+    const cmpText = (a: string, b: string): number => a.toLowerCase().localeCompare(b.toLowerCase())
+    const valueOf = (f: ReviewFlowMeta): number | string => {
+      switch (key) {
+        case 'method': return f.Method
+        case 'status': return f.Status
+        case 'host': return f.Host
+        case 'path': return f.Path
+        case 'size': return f.BytesDown
+        case 'proc': return f.ProcessName || ''
+        default: return f.StartedAt
+      }
+    }
+    return [...rows].sort((a, b) => {
+      if (key === 'time') {
+        const d = b.StartedAt - a.StartedAt
+        return wantDir === 'asc' ? -d : d
+      }
+      const va = valueOf(a)
+      const vb = valueOf(b)
+      let c = typeof va === 'number' && typeof vb === 'number' ? va - vb : cmpText(String(va), String(vb))
+      if (wantDir === 'desc') c = -c
+      if (c !== 0) return c
+      return b.StartedAt - a.StartedAt
+    })
+  }
 
   // selectRows 复刻服务端谓词：tagID=all 时 archived 仅打标流 / all 全量；
   // 具体标签恒为该标签流（scope 忽略）；start/end 含头尾、0=不限（支持半开）；
-  // q 在 method/host/path 三列做小写子串匹配（对应服务端 LIKE 的 ASCII 大小写不敏感）。
-  private selectRows(tagID: string, scope: ReviewScope, start: number, end: number, q = ''): ReviewFlowMeta[] {
+  // q 在 method/host/path 三列做小写子串匹配（对应服务端 LIKE 的 ASCII 大小写不敏感）；
+  // showIgnored=false 时套用忽略名单（与 buildFlowQuery 同口径）。
+  private selectRows(
+    tagID: string,
+    scope: ReviewScope,
+    start: number,
+    end: number,
+    q = '',
+    showIgnored = false,
+  ): ReviewFlowMeta[] {
     let rows: ReviewFlowMeta[]
     if (tagID === 'all') {
       rows = scope === 'all' ? [...this.db.flows] : this.db.flows.filter((f) => f.Tags.length > 0)
@@ -298,6 +448,7 @@ class DemoApi implements ReviewApi {
           f.Path.toLowerCase().includes(kw),
       )
     }
+    if (!showIgnored) rows = rows.filter((f) => !this.rowIgnored(f))
     return rows
   }
 
@@ -315,8 +466,10 @@ class DemoApi implements ReviewApi {
     limit: number,
     offset: number,
     q: string,
+    opts?: ListFlowsOpts,
   ): Promise<TagFlowsResp> {
-    const sorted = this.selectRows(tagID, scope, start, end, q).sort((a, b) => b.StartedAt - a.StartedAt)
+    const rows = this.selectRows(tagID, scope, start, end, q, opts?.showIgnored ?? false)
+    const sorted = this.sortRows(rows, opts?.sort, opts?.dir)
     const lim = limit <= 0 ? 200 : Math.min(limit, 1000)
     const off = Math.max(0, offset)
     return {
@@ -329,7 +482,36 @@ class DemoApi implements ReviewApi {
       limit: lim,
       offset: off,
       q,
+      sort: opts?.sort,
+      dir: opts?.dir,
+      showIgnored: opts?.showIgnored ?? false,
     }
+  }
+
+  async listIgnores(): Promise<ReviewIgnoreItem[]> {
+    const out: ReviewIgnoreItem[] = []
+    for (const m of this.ignores.values()) for (const it of m.values()) out.push(it)
+    return out.sort((a, b) => b.createdAt - a.createdAt)
+  }
+
+  async addIgnore(kind: ReviewIgnoreKind, value: string, note = ''): Promise<ReviewIgnoreAddResult> {
+    const m = this.ignores.get(kind)
+    if (!m) throw new ApiError('http', '非法忽略类型（仅支持 host/path/proc）')
+    const v = kind === 'host' ? this.normHost(value) : kind === 'path' ? this.normPath(value) : value.trim()
+    if (!v) throw new ApiError('http', '忽略值不能为空')
+    const existing = m.get(v)
+    if (existing) {
+      existing.note = note
+      return { ignore: { ...existing }, added: false }
+    }
+    const item: ReviewIgnoreItem = { kind, value: v, createdAt: Date.now(), note }
+    m.set(v, item)
+    return { ignore: { ...item }, added: true }
+  }
+
+  async removeIgnore(kind: ReviewIgnoreKind, value: string): Promise<boolean> {
+    const v = kind === 'host' ? this.normHost(value) : kind === 'path' ? this.normPath(value) : value.trim()
+    return this.ignores.get(kind)?.delete(v) ?? false
   }
 
   async histogram(
@@ -403,6 +585,19 @@ class DemoApi implements ReviewApi {
       Body: b64(raw),
       DecodeErr: '',
     }
+  }
+
+  // 调试重发仅真实环境可用（用户决策：DemoApi 不实现，按钮禁用；桩保接口同口径）
+  async compose(): Promise<ReviewFlowDetail> {
+    throw new ApiError('http', '演示模式不支持调试重发，仅真实环境可用')
+  }
+
+  async liveFlowDetail(): Promise<ReviewFlowDetail> {
+    throw new ApiError('http', '演示模式无实时流数据')
+  }
+
+  async liveFlowBody(): Promise<ReviewBodyPayload> {
+    throw new ApiError('http', '演示模式无实时流数据')
   }
 
   async renameTag(tagID: string, name: string): Promise<void> {

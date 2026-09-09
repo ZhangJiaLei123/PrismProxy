@@ -1,4 +1,10 @@
 <template>
+  <!--
+    复盘页调试重发弹窗（主窗 pages/Composer.vue 的 HTTP 版）：
+    - 无 pinia / 无 wails：开关自管（v-model:show），预填与发送全走 ReviewApi（ctlapi）；
+    - 结果流 Source=composer 只进实时 store 不落归档库，响应正文必须走 liveFlowBody/liveFlowDetail；
+    - 不做 store.select（复盘页无实时列表），结果仅在弹窗右侧迭代查看。
+  -->
   <n-modal
     :show="show"
     @update:show="(v: boolean) => (v ? null : close())"
@@ -65,7 +71,8 @@
             <div class="cp-resp-headers">
               <header-table :header="resp.RespHeader" />
             </div>
-            <body-viewer :flow-id="resp.ID" which="resp" class="cp-resp-body" />
+            <!-- composer 结果流不落归档库：loader 必须走实时接口 -->
+            <body-viewer :flow-id="resp.ID" which="resp" :loader="liveLoader" class="cp-resp-body" />
           </template>
           <div v-else class="cp-empty cp-resp-empty">尚未发送 —— 编辑请求后点击「发送」，响应将展示在此</div>
         </div>
@@ -75,24 +82,22 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import {
   NButton, NCheckbox, NInput, NModal, NSelect, NTag, useMessage,
 } from 'naive-ui'
 import BodyViewer from '../components/BodyViewer.vue'
 import HeaderTable from '../components/HeaderTable.vue'
-import { GetFlowBody, GetFlowDetail, SendComposed } from '../../wailsjs/go/app/App'
-import type { app } from '../../wailsjs/go/models'
-import { useFlowsStore } from '../stores/flows'
+import type { BodyLoader, ReviewFlowDetail } from '../lib/types'
+import type { ReviewApi } from './api'
 import { b64ToBytes, bytesToText } from '../lib/format'
 
-const store = useFlowsStore()
+const props = defineProps<{ show: boolean; api: ReviewApi; flowId: string }>()
+const emit = defineEmits<{
+  (e: 'update:show', v: boolean): void
+  (e: 'error', msg: string): void
+}>()
 const message = useMessage()
-
-const show = computed(() => store.composerShow)
-function close() {
-  store.closeComposer()
-}
 
 const method = ref('GET')
 const url = ref('')
@@ -100,45 +105,50 @@ const headers = ref<{ key: string; value: string }[]>([])
 const body = ref('')
 const skipVerify = ref(false)
 const sending = ref(false)
-const resp = ref<app.FlowDetail | null>(null)
+const resp = ref<ReviewFlowDetail | null>(null)
 
-const methodOptions = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((m) => ({ label: m, value: m }))
+// composer 结果流正文走实时接口（/api/v1/flows/{id}），不可用归档 tags/flows 取数
+const liveLoader: BodyLoader = {
+  loadBody: (id, which) => props.api.liveFlowBody(id, which),
+  loadDetail: (id) => props.api.liveFlowDetail(id),
+}
 
-// 预填时剥离的逐跳/自动派生首部（Go 侧也会兜底剥离，前端预填先去掉避免误导）
-const HOP_HEADERS = new Set([
-  'connection', 'proxy-connection', 'proxy-authenticate', 'proxy-authorization',
-  'keep-alive', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length',
-])
+function close() {
+  emit('update:show', false)
+}
 
-// 打开 Composer：从指定流预填 method/URL/headers/body（文本）
+// 每次打开：从归档选中流预填 method/URL/headers/body（文本），并清空上次响应
 watch(
-  () => [store.composerShow, store.composerPrefillId] as const,
-  async ([visible, prefillId]) => {
+  () => props.show,
+  async (visible) => {
     if (!visible) return
-    // 每次打开重置为预填内容（迭代结果通过列表新流继续）
     method.value = 'GET'
     url.value = ''
     headers.value = []
     body.value = ''
     resp.value = null
-    if (!prefillId) return
+    if (!props.flowId) return
     try {
-      const d = await GetFlowDetail(prefillId)
+      const d = await props.api.flowDetail(props.flowId)
       method.value = d.Method || 'GET'
       url.value = d.ReqURL || d.URL || ''
-      headers.value = expandEditableHeaders(d.ReqHeader)
+      const hs: { key: string; value: string }[] = []
+      for (const [k, vs] of Object.entries(d.ReqHeader ?? {})) {
+        if (HOP_HEADERS.has(k.toLowerCase())) continue
+        for (const v of vs ?? []) hs.push({ key: k, value: v })
+      }
+      headers.value = hs
       // 请求体：取解压后文本（二进制/截断不预填）
-      const bp = await GetFlowBody(prefillId, 'req')
+      const bp = await props.api.flowBody(props.flowId, 'req')
       const raw = bp.Body || bp.Raw || ''
       if (raw) {
-        const bytes = b64ToBytes(raw as unknown as string)
+        const bytes = b64ToBytes(raw)
         if (bytes.length && !bp.Truncated) body.value = bytesToText(bytes)
       }
     } catch (e) {
-      message.error('预填请求失败：' + e, { duration: 5000, closable: true })
+      message.error('预填请求失败：' + String((e as Error)?.message ?? e), { duration: 5000, closable: true })
     }
   },
-  { immediate: true },
 )
 
 async function send() {
@@ -148,7 +158,7 @@ async function send() {
   }
   sending.value = true
   try {
-    const d = await SendComposed({
+    const d = await props.api.compose({
       method: method.value,
       url: url.value.trim(),
       headers: headers.value.filter((h) => h.key.trim()),
@@ -156,13 +166,12 @@ async function send() {
       skipVerify: skipVerify.value,
     })
     resp.value = d
-    store.select(d.ID) // 重发流入列表并选中，可继续迭代
     if (d.State === 'error') {
-      message.error('请求失败（已记入列表）：' + d.Err, { duration: 6000, closable: true })
+      message.error('请求失败：' + d.Err, { duration: 6000, closable: true })
     }
   } catch (e) {
-    // 参数校验失败（无落库流）
-    message.error(String(e), { duration: 5000, closable: true })
+    // 参数校验失败（无结果流）；offline/unauthorized 交外层致命态，其余就地提示
+    emit('error', String((e as Error)?.message ?? e))
   } finally {
     sending.value = false
   }
