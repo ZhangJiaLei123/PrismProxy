@@ -125,7 +125,7 @@
 <script setup lang="ts">
 import { nextTick, reactive, ref } from 'vue'
 import { NButton, NDropdown, NInput, NModal } from 'naive-ui'
-import type { ReviewTagInfo } from '../lib/types'
+import type { ReviewTagInfo } from '../../lib/types'
 
 // 重命名/删除为异步动作（经回调 props 上抛父组件执行，便于 await 与统一错误提示）
 const props = defineProps<{

@@ -86,11 +86,12 @@ import { ref, watch } from 'vue'
 import {
   NButton, NCheckbox, NInput, NModal, NSelect, NTag, useMessage,
 } from 'naive-ui'
-import BodyViewer from '../components/BodyViewer.vue'
-import HeaderTable from '../components/HeaderTable.vue'
-import type { BodyLoader, ReviewFlowDetail } from '../lib/types'
-import type { ReviewApi } from './api'
-import { b64ToBytes, bytesToText } from '../lib/format'
+import BodyViewer from '../../components/BodyViewer.vue'
+import HeaderTable from '../../components/HeaderTable.vue'
+import type { BodyLoader, ReviewFlowDetail } from '../../lib/types'
+import type { ReviewApi } from '../api'
+import { b64ToBytes, bytesToText } from '../../lib/format'
+import { expandEditableHeaders } from '../../lib/composer'
 
 const props = defineProps<{ show: boolean; api: ReviewApi; flowId: string }>()
 const emit = defineEmits<{
@@ -132,12 +133,7 @@ watch(
       const d = await props.api.flowDetail(props.flowId)
       method.value = d.Method || 'GET'
       url.value = d.ReqURL || d.URL || ''
-      const hs: { key: string; value: string }[] = []
-      for (const [k, vs] of Object.entries(d.ReqHeader ?? {})) {
-        if (HOP_HEADERS.has(k.toLowerCase())) continue
-        for (const v of vs ?? []) hs.push({ key: k, value: v })
-      }
-      headers.value = hs
+      headers.value = expandEditableHeaders(d.ReqHeader)
       // 请求体：取解压后文本（二进制/截断不预填）
       const bp = await props.api.flowBody(props.flowId, 'req')
       const raw = bp.Body || bp.Raw || ''

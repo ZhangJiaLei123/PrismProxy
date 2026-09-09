@@ -92,8 +92,8 @@
 // 未超阈值松手=单击（空白处清除窗口）。拖拽中只更新本地 draft，松手才 emit select。
 // 底图不随窗口重拉（§九-12）；buckets 数按容器宽自适应（每桶≥2px），上限 500。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { ReviewHistBucket, ReviewHistogram } from '../lib/types'
-import { fmtDateTime } from '../lib/format'
+import type { ReviewHistBucket, ReviewHistogram } from '../../lib/types'
+import { fmtDateTime } from '../../lib/format'
 
 const props = defineProps<{
   histogram: ReviewHistogram

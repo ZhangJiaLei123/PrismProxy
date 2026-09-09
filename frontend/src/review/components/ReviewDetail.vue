@@ -43,11 +43,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { NButton, NSpin, NTag, NTooltip } from 'naive-ui'
-import FlowDetailTabs from '../components/FlowDetailTabs.vue'
+import FlowDetailTabs from '../../components/FlowDetailTabs.vue'
 import ReviewComposer from './ReviewComposer.vue'
-import type { BodyLoader } from '../lib/types'
-import type { ReviewApi } from './api'
-import type { ReviewFlowDetail } from '../lib/types'
+import type { BodyLoader, ReviewFlowDetail } from '../../lib/types'
+import type { ReviewApi } from '../api'
 
 const props = defineProps<{ api: ReviewApi; flowId: string }>()
 const emit = defineEmits<{ (e: 'error', msg: string): void }>()

@@ -332,14 +332,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NButton, NDatePicker, NDropdown, NInput, NPagination, NPopconfirm, NPopover, NRadioButton, NRadioGroup, NSwitch, NTag, NTooltip, useMessage } from 'naive-ui'
 import type { DropdownOption } from 'naive-ui'
-import ReviewSidebar from './ReviewSidebar.vue'
-import ReviewDetail from './ReviewDetail.vue'
-import ReviewTimeline from './ReviewTimeline.vue'
-import { ApiError, createApi, type ReviewApi } from './api'
-import type { ReviewFlowMeta, ReviewHistogram, ReviewIgnoreItem, ReviewIgnoreKind, ReviewScope, ReviewSortDir, ReviewSortKey, ReviewTagInfo } from '../lib/types'
-import { fmtBytes, fmtDateTime, fmtTime } from '../lib/format'
+import ReviewSidebar from '../components/ReviewSidebar.vue'
+import ReviewDetail from '../components/ReviewDetail.vue'
+import ReviewTimeline from '../components/ReviewTimeline.vue'
+import { ApiError, createApi } from '../api'
+import type { ReviewFlowMeta, ReviewHistogram, ReviewIgnoreItem, ReviewIgnoreKind, ReviewScope, ReviewSortDir, ReviewSortKey, ReviewTagInfo } from '../../lib/types'
+import { fmtBytes, fmtDateTime, fmtTime } from '../../lib/format'
 
-const { api } = createApi() as { api: ReviewApi; token: string }
+const { api } = createApi()
 const message = useMessage()
 
 const tags = ref<ReviewTagInfo[]>([])

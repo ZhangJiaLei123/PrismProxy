@@ -1,4 +1,4 @@
-// 调试重发（Composer）共享纯逻辑：主窗 pages/Composer.vue 与复盘 review/ReviewComposer.vue 共用。
+// 调试重发（Composer）共享纯逻辑：主窗 pages/Composer.vue 与复盘 review/components/ReviewComposer.vue 共用。
 // 两个组件运行时完全隔离（wails+pinia vs 纯 HTTP ctlapi），仅共享与 UI/传输无关的常量与纯函数。
 
 /** 方法下拉候选（n-select tag 模式下仍可自由输入其他方法）。 */
