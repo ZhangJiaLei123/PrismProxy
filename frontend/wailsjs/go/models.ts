@@ -584,6 +584,27 @@ export namespace capture {
 
 }
 
+export namespace persist {
+	
+	export class HistBucket {
+	    t0: number;
+	    t1: number;
+	    count: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HistBucket(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.t0 = source["t0"];
+	        this.t1 = source["t1"];
+	        this.count = source["count"];
+	    }
+	}
+
+}
+
 export namespace rules {
 	
 	export class DecryptRule {

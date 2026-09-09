@@ -170,8 +170,16 @@ export function ReviewFlowDetail(arg1) {
   return window['go']['app']['App']['ReviewFlowDetail'](arg1);
 }
 
-export function ReviewFlowList(arg1, arg2, arg3) {
-  return window['go']['app']['App']['ReviewFlowList'](arg1, arg2, arg3);
+export function ReviewFlowList(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['app']['App']['ReviewFlowList'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
+export function ReviewHistogram(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['app']['App']['ReviewHistogram'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ReviewTagsOverview() {
+  return window['go']['app']['App']['ReviewTagsOverview']();
 }
 
 export function SaveDomainGroupText(arg1, arg2) {

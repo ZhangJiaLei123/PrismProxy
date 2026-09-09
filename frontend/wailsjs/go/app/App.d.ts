@@ -88,7 +88,11 @@ export function ReviewFlowBody(arg1:string,arg2:string):Promise<app.BodyPayload>
 
 export function ReviewFlowDetail(arg1:string):Promise<app.FlowDetail>;
 
-export function ReviewFlowList(arg1:string,arg2:number,arg3:number):Promise<Array<app.FlowMeta>>;
+export function ReviewFlowList(arg1:string,arg2:string,arg3:number,arg4:number,arg5:number,arg6:number,arg7:string):Promise<Array<app.FlowMeta>>;
+
+export function ReviewHistogram(arg1:string,arg2:string,arg3:number,arg4:number,arg5:number):Promise<number>;
+
+export function ReviewTagsOverview():Promise<Array<app.TagInfo>>;
 
 export function SaveDomainGroupText(arg1:string,arg2:string):Promise<app.DomainGroupImportResult>;
 
