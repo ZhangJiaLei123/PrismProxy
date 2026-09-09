@@ -10,6 +10,63 @@
               <n-tag v-if="api.mode === 'demo'" size="tiny" type="warning" :bordered="false">演示数据</n-tag>
             </div>
             <div class="top-actions">
+              <!-- M12.2 小眼睛：忽略名单管理面板（移除忽略项 + 切换是否显示被忽略的流量；忽略只是查询过滤，不删除数据） -->
+              <n-popover
+                trigger="click"
+                placement="bottom-end"
+                :show="ignorePopShow"
+                :show-arrow="false"
+                raw
+                @update:show="onIgnorePop"
+              >
+                <template #trigger>
+                  <span
+                    class="eye-wrap"
+                    :class="{ on: ignorePopShow || showIgnored || ignores.length > 0 }"
+                    :title="'忽略名单管理' + (ignores.length ? `（${ignores.length} 项）` : '')"
+                  >
+                    <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" class="eye-ic">
+                      <path d="M8 3C3.8 3 1.2 8 1.2 8S3.8 13 8 13s6.8-5 6.8-5S12.2 3 8 3zm0 8.2A3.2 3.2 0 1 1 8 4.8a3.2 3.2 0 0 1 0 6.4zm0-5A1.8 1.8 0 1 0 9.8 8 1.8 1.8 0 0 0 8 6.2z" />
+                    </svg>
+                    <i v-if="ignores.length" class="eye-dot">{{ ignores.length > 99 ? '99+' : ignores.length }}</i>
+                  </span>
+                </template>
+                <div class="ignore-panel">
+                  <div class="ip-head">
+                    <span class="ip-title">忽略名单</span>
+                    <label class="ip-switch">
+                      <span class="ip-switch-label" :title="showIgnored ? '列表当前会显示被忽略的流量' : '列表当前隐藏被忽略的流量'">
+                        显示被忽略流量
+                      </span>
+                      <n-switch size="small" :value="showIgnored" @update:value="onShowIgnoredToggle" />
+                    </label>
+                  </div>
+                  <div v-if="ignoresLoading" class="ip-state">加载中…</div>
+                  <div v-else-if="!ignores.length" class="ip-state">
+                    <div class="ip-empty-ic">🚫</div>
+                    <div>忽略名单为空</div>
+                    <div class="ip-empty-sub">在列表的域名 / 路径 / 进程单元格上右键即可忽略，忽略仅隐藏数据、不会删除</div>
+                  </div>
+                  <div v-else class="ip-list">
+                    <div v-for="it in sortedIgnores" :key="it.kind + '|' + it.value" class="ip-item">
+                      <span class="ip-kind" :class="'k-' + it.kind">{{ IGNORE_LABEL[it.kind] }}</span>
+                      <span class="ip-value" :title="it.value">{{ it.value }}</span>
+                      <n-button
+                        size="tiny"
+                        quaternary
+                        class="ip-del"
+                        :loading="removingKey === it.kind + '|' + it.value"
+                        title="移除此忽略项，数据恢复显示"
+                        @click="onRemoveIgnore(it)"
+                      >
+                        <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+                          <path d="M5.5 1.5h5l.5.5V3h3.2v1.5h-1.1l-.5 9.2a1 1 0 0 1-1 .8H4.4a1 1 0 0 1-1-.8l-.5-9.2H2.3V3h5.5v-1h-2.8l.5-.5zM6 5.5v6H4.7l.3-6H6zm2.6 0v6H7.4v-6h1.2zm2.4 0l.3 6H10v-6h1zM6.5 3h3v-.5h-3V3z" />
+                        </svg>
+                      </n-button>
+                    </div>
+                  </div>
+                </div>
+              </n-popover>
               <n-button size="small" quaternary :loading="loading" title="重新加载标签与列表" @click="refreshAll">
                 <span style="display: inline-flex; align-items: center; gap: 4px">
                   <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
@@ -200,12 +257,23 @@
                 </div>
 
                 <div v-else class="flow-list">
+                  <!-- M12.2 表头：点击排序（默认时间倒序，与服务端 flowOrderBy 默认一致） -->
+                  <div class="flow-head">
+                    <span
+                      v-for="col in columns"
+                      :key="col.key"
+                      :class="['fh-' + col.cls, { active: sortKey === col.key }]"
+                      :title="sortKey === col.key ? (sortDir === 'asc' ? '升序（点击切换降序）' : '降序（点击切换升序）') : '点击按' + col.label + '排序'"
+                      @click="onSort(col.key)"
+                    >{{ col.label }}<i v-if="sortKey === col.key" class="sort-ic">{{ sortDir === 'asc' ? '▲' : '▼' }}</i></span>
+                  </div>
                   <div
                     v-for="f in flows"
                     :key="f.ID"
                     class="flow-row"
                     :class="{ active: f.ID === selectedFlow }"
                     @click="onSelectFlow(f.ID)"
+                    @contextmenu.prevent="onContextMenu($event, f)"
                   >
                     <span class="fr-method" :class="'m-' + f.Method">{{ f.Method }}</span>
                     <span class="fr-status" :class="statusCls(f.Status, f.State)">{{ f.Status || '·' }}</span>
@@ -213,8 +281,21 @@
                     <span class="fr-path" :title="f.Path">{{ f.Path }}</span>
                     <span class="fr-time">{{ fmtTime(f.StartedAt) }}</span>
                     <span class="fr-size">{{ fmtBytes(f.BytesDown) }}</span>
+                    <span class="fr-proc" :title="f.ProcessName ? f.ProcessName + (f.PID ? ' (' + f.PID + ')' : '') : ''">{{ f.ProcessName || '·' }}</span>
                   </div>
                 </div>
+
+                <!-- M12.2 右键忽略菜单：仅在域名/路径/进程列右键时出现对应项；忽略=查询隐藏，不删数据 -->
+                <n-dropdown
+                  placement="bottom-start"
+                  trigger="manual"
+                  :x="ctxX"
+                  :y="ctxY"
+                  :options="ctxOptions"
+                  :show="ctxShow"
+                  :on-clickoutside="() => (ctxShow = false)"
+                  @select="onCtxSelect"
+                />
 
                 <!-- 页码分页：上一页/下一页/页码/跳页 + 每页条数切换 -->
                 <div v-if="total > 0" class="pager-bar">
@@ -249,12 +330,13 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { NButton, NDatePicker, NInput, NPagination, NPopconfirm, NPopover, NRadioButton, NRadioGroup, NTag, NTooltip, useMessage } from 'naive-ui'
+import { NButton, NDatePicker, NDropdown, NInput, NPagination, NPopconfirm, NPopover, NRadioButton, NRadioGroup, NSwitch, NTag, NTooltip, useMessage } from 'naive-ui'
+import type { DropdownOption } from 'naive-ui'
 import ReviewSidebar from './ReviewSidebar.vue'
 import ReviewDetail from './ReviewDetail.vue'
 import ReviewTimeline from './ReviewTimeline.vue'
 import { ApiError, createApi, type ReviewApi } from './api'
-import type { ReviewFlowMeta, ReviewHistogram, ReviewScope, ReviewTagInfo } from '../lib/types'
+import type { ReviewFlowMeta, ReviewHistogram, ReviewIgnoreItem, ReviewIgnoreKind, ReviewScope, ReviewSortDir, ReviewSortKey, ReviewTagInfo } from '../lib/types'
 import { fmtBytes, fmtDateTime, fmtTime } from '../lib/format'
 
 const { api } = createApi() as { api: ReviewApi; token: string }
@@ -276,6 +358,107 @@ const pageSize = ref(100)
 const PAGE_SIZES = [50, 100, 200, 500]
 let kwTimer: ReturnType<typeof setTimeout> | null = null
 const fatal = ref<{ title: string; sub: string } | null>(null)
+
+// M12.2 表头列定义（cls 同时决定表头样式类 fh-* 与行单元格类 fr-* 的列对应关系）
+const columns: { key: ReviewSortKey; label: string; cls: string }[] = [
+  { key: 'method', label: '方法', cls: 'method' },
+  { key: 'status', label: '状态', cls: 'status' },
+  { key: 'host', label: '域名', cls: 'host' },
+  { key: 'path', label: '路径', cls: 'path' },
+  { key: 'time', label: '时间', cls: 'time' },
+  { key: 'size', label: '大小', cls: 'size' },
+  { key: 'proc', label: '进程', cls: 'proc' },
+]
+// 默认时间倒序（最新在顶部），与 FlowList 及服务端 flowOrderBy 默认一致
+const sortKey = ref<ReviewSortKey>('time')
+const sortDir = ref<ReviewSortDir>('desc')
+
+// 小眼睛：是否显示被忽略的流量（默认隐藏）；选择写 localStorage 跨会话保留
+const SHOW_IGNORED_KEY = 'prismproxy:review-show-ignored-v1'
+function loadShowIgnored(): boolean {
+  try {
+    return localStorage.getItem(SHOW_IGNORED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+const showIgnored = ref(loadShowIgnored())
+function persistShowIgnored() {
+  try {
+    localStorage.setItem(SHOW_IGNORED_KEY, showIgnored.value ? '1' : '0')
+  } catch {
+    // 存储不可用时仅本会话生效
+  }
+}
+
+// 忽略名单（小眼睛管理面板）：项目级规则，与标签/scope 无关；忽略只是查询过滤，不删数据
+const ignores = ref<ReviewIgnoreItem[]>([])
+const ignoresLoading = ref(false)
+const ignorePopShow = ref(false)
+const removingKey = ref('')
+
+// 面板列表排序：域名 → 路径 → 进程，组内按值排序（ignore createdAt 为归一化入库时刻，展示意义不大）
+const sortedIgnores = computed(() => {
+  const order: ReviewIgnoreKind[] = ['host', 'path', 'proc']
+  return [...ignores.value].sort((a, b) => {
+    const d = order.indexOf(a.kind) - order.indexOf(b.kind)
+    return d !== 0 ? d : a.value.localeCompare(b.value)
+  })
+})
+
+// 加载忽略名单：失败不致命（辅助管理能力），提示后保留旧列表
+async function loadIgnores() {
+  ignoresLoading.value = true
+  try {
+    ignores.value = await api.listIgnores()
+  } catch (e) {
+    message.error('忽略名单加载失败：' + String((e as Error)?.message ?? e), { duration: 5000, closable: true })
+  } finally {
+    ignoresLoading.value = false
+  }
+}
+
+// 面板开合：每次打开刷新名单（外部窗口可能新增过忽略）
+function onIgnorePop(show: boolean) {
+  ignorePopShow.value = show
+  if (show) void loadIgnores()
+}
+
+// 面板内开关：切换是否显示被忽略的流量；普通失败回滚开关与 localStorage
+async function onShowIgnoredToggle(v: boolean) {
+  const prev = showIgnored.value
+  showIgnored.value = v
+  persistShowIgnored()
+  const ok = await loadFlows(true, true)
+  if (!ok && !fatal.value) {
+    showIgnored.value = prev
+    persistShowIgnored()
+  }
+}
+
+// 移除单条忽略项：删除规则（不删流量），隐藏态下列表需重算恢复显示
+async function onRemoveIgnore(it: ReviewIgnoreItem) {
+  const key = it.kind + '|' + it.value
+  if (removingKey.value) return
+  removingKey.value = key
+  try {
+    await api.removeIgnore(it.kind, it.value)
+    ignores.value = ignores.value.filter((x) => !(x.kind === it.kind && x.value === it.value))
+    message.success(`已移除忽略${IGNORE_LABEL[it.kind]}，相关流量恢复显示`)
+    if (!showIgnored.value) await loadFlows(true, true)
+  } catch (e) {
+    message.error(String((e as Error)?.message ?? e), { duration: 6000, closable: true })
+  } finally {
+    removingKey.value = ''
+  }
+}
+
+// 右键菜单（manual 定位）：落点列决定忽略项
+const ctxShow = ref(false)
+const ctxX = ref(0)
+const ctxY = ref(0)
+const ctxFlow = ref<ReviewFlowMeta | null>(null)
+const ctxKind = ref<ReviewIgnoreKind | null>(null)
 
 // 敏感凭据黄条：关闭后写 localStorage（'1'），下次打开不再展示（隐私模式读取失败则照常显示）
 const WARN_DISMISS_KEY = 'prismproxy:review-warn-dismissed-v1'
@@ -446,6 +629,7 @@ async function loadFlows(reset = false, restoreOnError = false): Promise<boolean
       limit,
       offset,
       keyword.value.trim(),
+      { sort: sortKey.value, dir: sortDir.value, showIgnored: showIgnored.value },
     )
     if (my !== flowSeq) return false // 已被更新的请求取代
     flows.value = resp.flows
@@ -616,7 +800,8 @@ async function refreshAll() {
   initListW()
   loading.value = true
   try {
-    await loadTags()
+    // 忽略名单为辅助能力，加载失败不阻断主流程（loadIgnores 内部自行提示）
+    await Promise.all([loadTags(), loadIgnores()])
     await loadFlows(true)
     await loadHistogram()
   } catch (e) {
@@ -636,6 +821,91 @@ function onSelectTag(id: string) {
 
 function onSelectFlow(id: string) {
   selectedFlow.value = id
+}
+
+// M12.2 表头排序：首次点某列，时间默认降序、其余升序；再点同列切换方向
+function onSort(key: ReviewSortKey) {
+  if (sortKey.value !== key) {
+    sortKey.value = key
+    sortDir.value = key === 'time' ? 'desc' : 'asc'
+  } else {
+    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  }
+  void loadFlows(true, true)
+}
+
+// 行右键：仅域名/路径/进程三列给出对应忽略入口（与 FlowList 交互一致）
+function onContextMenu(e: MouseEvent, f: ReviewFlowMeta) {
+  const cell = (e.target as HTMLElement).closest('span')
+  ctxKind.value = cell?.classList.contains('fr-proc')
+    ? 'proc'
+    : cell?.classList.contains('fr-host')
+      ? 'host'
+      : cell?.classList.contains('fr-path')
+        ? 'path'
+        : null
+  if (!ctxKind.value) return
+  ctxFlow.value = f
+  ctxX.value = e.clientX
+  ctxY.value = e.clientY
+  ctxShow.value = true
+}
+
+const IGNORE_LABEL: Record<ReviewIgnoreKind, string> = {
+  host: '域名',
+  path: '路径',
+  proc: '进程',
+}
+
+const ctxOptions = computed<DropdownOption[]>(() => {
+  const f = ctxFlow.value
+  const kind = ctxKind.value
+  if (!f || !kind) return []
+  let text = ''
+  let disabled = false
+  if (kind === 'host') {
+    text = f.Host
+  } else if (kind === 'path') {
+    text = f.Path
+    // CONNECT 隧道流无路径
+    disabled = !f.Path || f.Method === 'CONNECT'
+  } else {
+    text = f.ProcessName
+    disabled = !f.ProcessName
+  }
+  const short = text.length > 32 ? text.slice(0, 32) + '…' : text
+  return [
+    {
+      label: `忽略此${IGNORE_LABEL[kind]}（${short || '未知'}，复盘列表中隐藏）`,
+      key: 'ignore',
+      disabled,
+    },
+  ]
+})
+
+async function onCtxSelect(key: string) {
+  const f = ctxFlow.value
+  const kind = ctxKind.value
+  ctxShow.value = false
+  if (key !== 'ignore' || !f || !kind) return
+  const value = kind === 'host' ? f.Host : kind === 'path' ? f.Path : f.ProcessName
+  if (!value) return
+  try {
+    const r = await api.addIgnore(kind, value)
+    if (r.added) {
+      // 同步本地名单（面板即使未打开，角标计数也保持最新）
+      if (!ignores.value.some((x) => x.kind === r.ignore.kind && x.value === r.ignore.value)) {
+        ignores.value = [...ignores.value, r.ignore]
+      }
+      message.success(`已忽略${IGNORE_LABEL[kind]} ${r.ignore.value}（仅隐藏数据，不删除；点顶栏小眼睛可管理或移除）`, { duration: 4000, closable: true })
+    } else {
+      message.info(`该${IGNORE_LABEL[kind]}已在忽略名单中`, { duration: 3000, closable: true })
+    }
+    // 当前处于「显示忽略」时无需重拉（新忽略项仍可见）；隐藏态下列表与总数需重算
+    if (!showIgnored.value) await loadFlows(true, true)
+  } catch (e) {
+    message.error(String((e as Error)?.message ?? e), { duration: 6000, closable: true })
+  }
 }
 
 function onDetailError(msg: string) {
@@ -699,7 +969,7 @@ onBeforeUnmount(() => {
   padding: 0 14px; border-bottom: 1px solid rgba(255,255,255,0.08);
 }
 .brand { display: flex; align-items: center; gap: 7px; font-size: 14px; }
-.top-actions { margin-left: auto; }
+.top-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
 .warn-bar {
   flex: none; display: flex; align-items: center; gap: 8px;
   padding: 6px 14px; font-size: 12px; color: #e8c864;
@@ -752,11 +1022,28 @@ onBeforeUnmount(() => {
 .win-x { font-style: normal; cursor: pointer; opacity: 0.7; padding: 0 1px; }
 .win-x:hover { opacity: 1; }
 .flow-list { flex: 1; overflow-y: auto; }
+/* M12.2 表头与行共用 7 列网格（新增进程列） */
+.flow-head,
 .flow-row {
-  display: grid; grid-template-columns: 52px 42px minmax(110px, 1.4fr) minmax(120px, 2fr) 78px 62px;
-  gap: 8px; align-items: center; padding: 5px 10px; cursor: pointer; font-size: 12px;
-  border-bottom: 1px solid rgba(255,255,255,0.04);
+  display: grid; grid-template-columns: 52px 42px minmax(110px, 1.4fr) minmax(120px, 2fr) 78px 62px minmax(80px, 1fr);
+  gap: 8px; align-items: center; padding: 5px 10px; font-size: 12px;
 }
+.flow-head {
+  position: sticky; top: 0; z-index: 2;
+  padding-top: 6px; padding-bottom: 6px;
+  background: #101014;
+  border-bottom: 1px solid rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.55);
+  font-size: 11px; user-select: none;
+}
+.flow-head span { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color 0.12s; }
+.flow-head span:hover { color: rgba(255,255,255,0.9); }
+.flow-head span.active { color: #c99bf0; }
+.flow-head .fh-status { text-align: center; }
+.flow-head .fh-time, .flow-head .fh-size { text-align: right; }
+.sort-ic { margin-left: 3px; font-style: normal; font-size: 9px; opacity: 0.4; }
+.flow-head span.active .sort-ic { opacity: 1; }
+.flow-row { cursor: pointer; border-bottom: 1px solid rgba(255,255,255,0.04); }
 .flow-row:hover { background: rgba(255,255,255,0.04); }
 .flow-row.active { background: rgba(181,126,220,0.14); }
 .fr-method { font-weight: 600; font-size: 11px; }
@@ -773,6 +1060,60 @@ onBeforeUnmount(() => {
 .fr-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255,255,255,0.82); }
 .fr-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255,255,255,0.55); font-family: Consolas, monospace; font-size: 11px; }
 .fr-time, .fr-size { font-size: 11px; color: rgba(255,255,255,0.45); text-align: right; white-space: nowrap; }
+.fr-proc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: rgba(255,255,255,0.5); }
+/* 小眼睛：忽略名单入口（有规则/面板打开/显示忽略态时高亮；角标显示规则数） */
+.eye-wrap {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 4px; cursor: pointer;
+  color: rgba(255,255,255,0.55); transition: color 0.12s, background 0.12s;
+}
+.eye-wrap:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.9); }
+.eye-wrap.on { color: #c99bf0; }
+.eye-ic { display: block; }
+.eye-dot {
+  position: absolute; top: -3px; right: -5px; min-width: 14px; height: 14px;
+  padding: 0 3px; border-radius: 7px; box-sizing: border-box;
+  background: #b57edc; color: #1a1220; font-size: 9px; font-style: normal;
+  font-weight: 700; line-height: 14px; text-align: center; white-space: nowrap;
+}
+/* 忽略名单管理面板（n-popover raw，自绘暗色卡片） */
+.ignore-panel {
+  width: 320px; max-height: 60vh; display: flex; flex-direction: column;
+  background: #1b1b20; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.5); overflow: hidden;
+}
+.ip-head {
+  flex: none; display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.ip-title { font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.88); }
+.ip-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.ip-switch-label { font-size: 11px; color: rgba(255,255,255,0.55); white-space: nowrap; }
+.ip-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+.ip-item {
+  display: flex; align-items: center; gap: 8px; padding: 5px 12px 5px 10px;
+}
+.ip-item:hover { background: rgba(255,255,255,0.05); }
+.ip-kind {
+  flex: none; width: 34px; text-align: center; font-size: 10px; line-height: 18px;
+  border-radius: 3px; color: rgba(255,255,255,0.85);
+}
+.ip-kind.k-host { background: rgba(126,198,153,0.16); color: #7ec699; }
+.ip-kind.k-path { background: rgba(130,170,255,0.16); color: #82aaff; }
+.ip-kind.k-proc { background: rgba(192,168,240,0.18); color: #c0a8f0; }
+.ip-value {
+  flex: 1; min-width: 0; font-size: 11px; font-family: Consolas, monospace;
+  color: rgba(255,255,255,0.75); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ip-del { flex: none; color: rgba(255,255,255,0.45); }
+.ip-del:hover { color: #e88080; }
+.ip-state {
+  flex: 1; overflow-y: auto; padding: 22px 18px; text-align: center;
+  font-size: 12px; color: rgba(255,255,255,0.5); display: flex; flex-direction: column;
+  align-items: center; gap: 6px;
+}
+.ip-empty-ic { font-size: 24px; opacity: 0.8; }
+.ip-empty-sub { font-size: 11px; color: rgba(255,255,255,0.35); line-height: 1.7; max-width: 240px; }
 .pager-bar {
   flex: none; display: flex; justify-content: center; align-items: center;
   padding: 6px 8px; border-top: 1px solid rgba(255,255,255,0.06);
