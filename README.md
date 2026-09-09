@@ -17,13 +17,17 @@ PrismProxy 是一款**桌面级 HTTP(S) 调试代理**（Windows 优先），对
 - **明文 HTTP 代理**：absolute-form 请求直接解析转发
 - **HTTPS MITM 解密**：本地 Root CA + 按目标主机动态签发叶子证书（ECDSA P-256，LRU 缓存），握手失败域名自动降级盲透传（bypass）
 - **进程归因**：通过 iphlpapi 端口→PID 映射，标记每条流量来自哪个进程（IPv4/IPv6 双栈）
-- **流量面板**：实时列表 + 详情（Headers / Body / TLS 信息），增量推送，支持关键字/正则/方法/状态码过滤与置顶
+- **流量面板**：实时列表 + 详情（Headers / Body / TLS 信息），增量推送，支持关键字/正则/方法/状态码过滤（方法与状态码多选）与置顶
+- **流量持久化**：SQLite（modernc.org 纯 Go 驱动，无 CGO）异步落盘，重启后自动加载历史流量，可配置保留策略
+- **数据复盘**：抓包打标签归档；顶栏「数据复盘」在系统浏览器开独立复盘页——标签侧栏 + 流列表 + 详情三栏，时间轴直方图拖拽选时间窗、页码分页、全库关键字搜索、多列排序、忽略名单（域名/路径/进程）、敏感凭据提示、调试重发
+- **多项目隔离**：规则组 / 域名组 / 归档库按项目独立存放，顶栏切换器一键热切换（代理不重启、配置不串）；无项目时显示欢迎页
+- **ADB 设备代理**：一键给 Android 设备/模拟器写入全局 http_proxy 指向本机（支持多设备按 serial 选择）
 - **过滤规则组**：多规则组黑白名单引擎（域名/进程/方法/状态码），支持导入导出
 - **系统代理一键接管**：自动检测第三方代理占用
-- **Composer 调试重发**：编辑请求参数后重发
-- **效率复制**：右键复制 URL / cURL（cmd / PowerShell / bash 三版单行输出）/ 详情复制，快捷忽略域名/进程
+- **Composer 调试重发**：编辑请求参数后重发（主窗与复盘页均可用）
+- **效率复制**：右键复制 URL / cURL（cmd / PowerShell / bash 三版单行输出）/ 详情复制，快捷忽略域名/路径/进程并自动清理命中流量
 - **证书向导**：`http://127.0.0.1:9090/ca` 证书下载与安装指引页
-- **AI CLI**：内置 `cli` 子命令控制运行实例（状态 / 流量 / 规则 / 系统代理 / 配置 / UI），输出单行 JSON，面向 AI agent 与自动化脚本
+- **AI CLI**：内置 `cli` 子命令控制运行实例（状态 / 流量 / 规则 / 系统代理 / 项目 / ADB / 配置 / UI），输出单行 JSON，面向 AI agent 与自动化脚本
 
 ## 技术栈与架构
 
@@ -32,16 +36,17 @@ PrismProxy 是一款**桌面级 HTTP(S) 调试代理**（Windows 优先），对
 | 后端 | Go 1.27（代理引擎，核心零外部依赖） |
 | 前端 | Vue 3 + TypeScript + Naive UI + Pinia + Vite |
 | 桌面框架 | Wails v2（WebView2 渲染，Go Bindings + Events） |
+| 持久化 | SQLite（modernc.org 纯 Go 驱动，无 CGO） |
 | 平台 | Windows 10/11（依赖 WebView2 运行时，缺失时启动自检引导安装） |
 | 默认端口 | 代理 9090（可配置）；控制 API 9595 |
 
 ```
 ┌──────────────────────────────────────────┐
 │            PrismProxy.exe（单文件）        │
-│  前端 Vue3（流量列表/详情/过滤/设置）        │
+│  前端 Vue3（流量列表/详情/过滤/设置/复盘）   │
 │            ▲ Wails Bindings + Events      │
 │  Go Core：proxy 代理引擎 / mitm 证书中心    │
-│           capture 会话捕获 / store 存储    │
+│      capture 会话捕获 / persist 持久化      │
 └────────────────┬─────────────────────────┘
                  ▼
   客户端(手机/PC/模拟器) ──▶ :9090 ──▶ Internet
@@ -62,7 +67,7 @@ PrismProxy.exe -headless    :: 无界面模式（后台常驻，适合自动化�
 
 1. 客户端信任本地 CA：访问 `http://127.0.0.1:9090/ca` 按指引安装证书（Windows 给出 `certutil` 免管理员命令）
 2. 将客户端代理指向本机 9090 端口：
-   - **手机/模拟器**：WiFi 代理或 `http_proxy` 指向 PC IP（注意：仅设 Windows 系统代理对雷电等 VBox NAT 模拟器无效，需在模拟器内设置）
+   - **手机/模拟器**：WiFi 代理或 `http_proxy` 指向 PC IP（注意：仅设 Windows 系统代理对雷电等 VBox NAT 模拟器无效，需在模拟器内设置）；也可用设置页「ADB」或 `cli adb set` 一键给 Android 设备写入全局代理
    - **桌面应用**：设置页开启「系统代理」一键接管，或以 `--proxy-server=127.0.0.1:9090` 启动目标应用
 
 ### AI CLI
@@ -73,6 +78,8 @@ PrismProxy.exe cli flows list --limit 5            :: 流摘要列表
 PrismProxy.exe cli flows get <id> --body req       :: 请求体
 PrismProxy.exe cli rules ignore host api.example.com  :: 快捷忽略域名
 PrismProxy.exe cli sysproxy on                     :: 接管系统代理
+PrismProxy.exe cli project list                    :: 项目清单
+PrismProxy.exe cli adb set --serial <序列号>        :: 给 Android 设备写全局代理指向本机
 PrismProxy.exe cli ui settings decrypt             :: 打开 GUI 设置面板
 ```
 
@@ -109,6 +116,7 @@ PrismProxy/
 │     ├─ App.vue            # 主布局（顶栏状态 + 流列表 + 详情）
 │     ├─ pages/             # 页面
 │     ├─ components/        # 流列表/详情/设置抽屉/Composer 等
+│     ├─ review/            # 数据复盘页（系统浏览器独立窗口，独立 Vite 入口）
 │     └─ stores/            # Pinia 状态
 ├─ internal/
 │  ├─ app/                  # App 装配、GUI/headless 启动、WebView2 自检
@@ -116,10 +124,11 @@ PrismProxy/
 │  ├─ mitm/                 # Root CA 生成持久化 + 叶子证书动态签发
 │  ├─ capture/              # Flow 捕获（tee 截断 body）
 │  ├─ store/                # 流量存储（内存环形缓冲）
+│  ├─ persist/              # SQLite 流量持久化（标签归档 / 历史加载 / 保留策略）
 │  ├─ rules/                # 过滤规则组引擎 + 端口→PID 进程归因
 │  ├─ procs/                # 进程信息
 │  ├─ domains/              # 域名规则
-│  ├─ settings/             # 配置读写
+│  ├─ settings/             # 配置读写（全局 + 多项目）
 │  ├─ sysproxy/             # 系统代理接管/恢复
 │  ├─ compose/              # Composer 重发
 │  └─ ctlapi/               # AI CLI 控制面（127.0.0.1:9595 + token）
@@ -133,9 +142,22 @@ PrismProxy/
 | [doc/方案.md](doc/方案.md) | 完整技术方案（定位 / 原理 / 模块设计） |
 | [doc/开发进度.md](doc/开发进度.md) | 里程碑与任务级进度跟踪 |
 | [doc/规则设计.md](doc/规则设计.md) | 过滤规则组设计 |
+| [doc/项目配置设计.md](doc/项目配置设计.md) | 多项目隔离与热切换设计 |
+| [doc/标签与数据复盘设计.md](doc/标签与数据复盘设计.md) | 标签归档与数据复盘页设计 |
+| [doc/复盘AI分析设计.md](doc/复盘AI分析设计.md) | 复盘 × AI 分析（接口解读/智能定位/业务逻辑整理 + AI 接口配置，设计稿） |
 | [doc/AI-CLI使用说明.md](doc/AI-CLI使用说明.md) | CLI 命令详解与输出示例 |
 | [doc/CLI实时推送设计.md](doc/CLI实时推送设计.md) | CLI 实时流量推送设计 |
 | [doc/项目记忆.md](doc/项目记忆.md) | 关键技术决策与排查记录 |
+
+## Roadmap
+
+### 下一个版本：数据复盘 × AI 分析
+
+在「数据复盘」中引入 AI 分析能力，让工具不只是记录流量，更能理解流量：
+
+- **接口功能解读**：对抓到的接口，由 AI 分析其功能、参数含义与调用时机
+- **智能定位接口**：从一堆抓包记录中，按你描述的目标自动分析出你需要的接口，无需逐条翻找
+- **业务逻辑整理**：梳理接口间的调用关系，自动产出结构化分析结果——如登录接口时序图、下单流程梳理等
 
 ## 免责声明
 
