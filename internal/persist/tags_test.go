@@ -125,23 +125,23 @@ func TestTagFlowsArchiveIdempotentAndQuery(t *testing.T) {
 	}
 
 	// FlowsByTag 分页：limit=2 offset=0 → 2 条（倒序最新在前）
-	page1, err := w.FlowsByTag(tag.ID, "archived", 0, 0, 2, 0, "")
+	page1, err := w.FlowsByTag(tag.ID, "archived", 0, 0, 2, 0, ReviewListOpts{})
 	if err != nil || len(page1) != 2 {
 		t.Fatalf("FlowsByTag page1 = %d, %v", len(page1), err)
 	}
 	if page1[0].ID != ids[4] || page1[0].Source != capture.SourceHistory || page1[0].Pinned {
 		t.Fatalf("倒序/历史标记错误: %+v", page1[0])
 	}
-	page3, err := w.FlowsByTag(tag.ID, "archived", 0, 0, 2, 4, "")
+	page3, err := w.FlowsByTag(tag.ID, "archived", 0, 0, 2, 4, ReviewListOpts{})
 	if err != nil || len(page3) != 1 {
 		t.Fatalf("FlowsByTag page3 = %d, %v", len(page3), err)
 	}
 	// all：全部已标记
-	all, err := w.FlowsByTag("all", "archived", 0, 0, 0, 0, "") // limit<=0 默认 200
+	all, err := w.FlowsByTag("all", "archived", 0, 0, 0, 0, ReviewListOpts{}) // limit<=0 默认 200
 	if err != nil || len(all) != 5 {
 		t.Fatalf("FlowsByTag all = %d, %v", len(all), err)
 	}
-	if _, err := w.FlowsByTag("bad-id", "archived", 0, 0, 10, 0, ""); err == nil {
+	if _, err := w.FlowsByTag("bad-id", "archived", 0, 0, 10, 0, ReviewListOpts{}); err == nil {
 		t.Fatal("非法标签 id 应报错")
 	}
 
@@ -529,10 +529,10 @@ func TestScopeMatrix(t *testing.T) {
 	})
 
 	// tagID=all：archived=3（仅打标流），all=5（全部）
-	if n, err := w.CountFlows("all", "archived", 0, 0, ""); err != nil || n != 3 {
+	if n, err := w.CountFlows("all", "archived", 0, 0, ReviewListOpts{}); err != nil || n != 3 {
 		t.Fatalf("CountFlows all/archived = %d, %v（期望 3）", n, err)
 	}
-	if n, err := w.CountFlows("all", "all", 0, 0, ""); err != nil || n != 5 {
+	if n, err := w.CountFlows("all", "all", 0, 0, ReviewListOpts{}); err != nil || n != 5 {
 		t.Fatalf("CountFlows all/all = %d, %v（期望 5）", n, err)
 	}
 	if n, _ := w.CountAllFlows(); n != 5 {
@@ -541,16 +541,16 @@ func TestScopeMatrix(t *testing.T) {
 	if n, _ := w.CountTaggedFlows(); n != 3 {
 		t.Fatalf("CountTaggedFlows = %d（期望 3）", n)
 	}
-	rows, err := w.FlowsByTag("all", "archived", 0, 0, 200, 0, "")
+	rows, err := w.FlowsByTag("all", "archived", 0, 0, 200, 0, ReviewListOpts{})
 	if err != nil || len(rows) != 3 {
 		t.Fatalf("FlowsByTag all/archived = %d, %v", len(rows), err)
 	}
-	rows, err = w.FlowsByTag("all", "all", 0, 0, 200, 0, "")
+	rows, err = w.FlowsByTag("all", "all", 0, 0, 200, 0, ReviewListOpts{})
 	if err != nil || len(rows) != 5 {
 		t.Fatalf("FlowsByTag all/all = %d, %v", len(rows), err)
 	}
 	// 具体标签：scope 被忽略，恒为该标签 3 条（打标流），未打标 plain 不出现
-	rows, err = w.FlowsByTag(tag.ID, "all", 0, 0, 200, 0, "")
+	rows, err = w.FlowsByTag(tag.ID, "all", 0, 0, 200, 0, ReviewListOpts{})
 	if err != nil || len(rows) != 3 {
 		t.Fatalf("具体标签 scope=all = %d, %v（期望 3）", len(rows), err)
 	}
@@ -562,7 +562,7 @@ func TestScopeMatrix(t *testing.T) {
 		}
 	}
 	// tagID=all + 非法 scope 报错
-	if _, err := w.FlowsByTag("all", "bad", 0, 0, 10, 0, ""); err == nil {
+	if _, err := w.FlowsByTag("all", "bad", 0, 0, 10, 0, ReviewListOpts{}); err == nil {
 		t.Fatal("非法 scope 应报错")
 	}
 }
@@ -585,24 +585,24 @@ func TestKeywordQuery(t *testing.T) {
 		}
 	}
 	// host 子串命中 1 条
-	if n, _ := w.CountFlows("all", "all", 0, 0, "cdn.example"); n != 1 {
+	if n, _ := w.CountFlows("all", "all", 0, 0, ReviewListOpts{Q: "cdn.example"}); n != 1 {
 		t.Fatalf("q=cdn.example 应 1 条，得 %d", n)
 	}
 	// method 命中：POST 1 条
-	if n, _ := w.CountFlows("all", "all", 0, 0, "post"); n != 1 {
+	if n, _ := w.CountFlows("all", "all", 0, 0, ReviewListOpts{Q: "post"}); n != 1 {
 		t.Fatalf("q=post（大小写不敏感）应 1 条，得 %d", n)
 	}
 	// path 子串：/v1/ 命中 1 条
-	rows, err := w.FlowsByTag("all", "all", 0, 0, 200, 0, "/v1/")
+	rows, err := w.FlowsByTag("all", "all", 0, 0, 200, 0, ReviewListOpts{Q: "/v1/"})
 	if err != nil || len(rows) != 1 || string(rows[0].ID) != ids[0] {
 		t.Fatalf("q=/v1/ 列表 = %d, %v（期望仅 ids[0]）", len(rows), err)
 	}
 	// 元字符转义：% 不应扩大匹配
-	if n, _ := w.CountFlows("all", "all", 0, 0, "%"); n != 0 {
+	if n, _ := w.CountFlows("all", "all", 0, 0, ReviewListOpts{Q: "%"}); n != 0 {
 		t.Fatalf("q=%% 应 0 条（元字符已转义），得 %d", n)
 	}
 	// 空白 q 等同不过滤
-	if n, _ := w.CountFlows("all", "all", 0, 0, "   "); n != 5 {
+	if n, _ := w.CountFlows("all", "all", 0, 0, ReviewListOpts{Q: "   "}); n != 5 {
 		t.Fatalf("空白 q 应 5 条，得 %d", n)
 	}
 }
@@ -617,10 +617,10 @@ func TestTimeWindow(t *testing.T) {
 	ids := seedTimed(t, w, "win", starts)
 
 	// 含头尾：start=第2条 end=第4条 → 3 条（两端都含）
-	if n, _ := w.CountFlows("all", "all", starts[1], starts[3], ""); n != 3 {
+	if n, _ := w.CountFlows("all", "all", starts[1], starts[3], ReviewListOpts{}); n != 3 {
 		t.Fatalf("闭窗 [1,3] 应 3 条，得 %d", n)
 	}
-	rows, err := w.FlowsByTag("all", "all", starts[1], starts[3], 200, 0, "")
+	rows, err := w.FlowsByTag("all", "all", starts[1], starts[3], 200, 0, ReviewListOpts{})
 	if err != nil || len(rows) != 3 {
 		t.Fatalf("闭窗列表 = %d, %v", len(rows), err)
 	}
@@ -629,19 +629,19 @@ func TestTimeWindow(t *testing.T) {
 		t.Fatalf("窗口内倒序错误: %s,%s", rows[0].ID, rows[2].ID)
 	}
 	// 半开：仅下限 start=第3条 → 3 条（第3/4/5）
-	if n, _ := w.CountFlows("all", "all", starts[2], 0, ""); n != 3 {
+	if n, _ := w.CountFlows("all", "all", starts[2], 0, ReviewListOpts{}); n != 3 {
 		t.Fatalf("[第3条,+∞) 应 3 条，得 %d", n)
 	}
 	// 半开：仅上限 end=第2条 → 2 条（第1/2）
-	if n, _ := w.CountFlows("all", "all", 0, starts[1], ""); n != 2 {
+	if n, _ := w.CountFlows("all", "all", 0, starts[1], ReviewListOpts{}); n != 2 {
 		t.Fatalf("(-∞,第2条] 应 2 条，得 %d", n)
 	}
 	// 窗口外：无结果
-	if n, _ := w.CountFlows("all", "all", starts[4]+min, 0, ""); n != 0 {
+	if n, _ := w.CountFlows("all", "all", starts[4]+min, 0, ReviewListOpts{}); n != 0 {
 		t.Fatalf("全在窗口之后应 0 条，得 %d", n)
 	}
 	// 含头尾等值：单毫秒窗口落在某条流上 → 1 条
-	if n, _ := w.CountFlows("all", "all", starts[0], starts[0], ""); n != 1 {
+	if n, _ := w.CountFlows("all", "all", starts[0], starts[0], ReviewListOpts{}); n != 1 {
 		t.Fatalf("等值闭窗应 1 条，得 %d", n)
 	}
 }

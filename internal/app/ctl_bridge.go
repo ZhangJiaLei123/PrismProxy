@@ -21,6 +21,7 @@ import (
 
 	"prismproxy/internal/ctlapi"
 	"prismproxy/internal/domains"
+	"prismproxy/internal/persist"
 	"prismproxy/internal/rules"
 	"prismproxy/internal/settings"
 )
@@ -1002,16 +1003,60 @@ func (s *ctlService) TagFlowsForReview(raw json.RawMessage) (any, error) {
 }
 
 // ListFlowsByTag GET /tags/{id}/flows：范围内流分页（id=all 时 scope 生效）；
-// q 非空时按 method/host/path 子串过滤（服务端全库搜索）
-func (s *ctlService) ListFlowsByTag(tagID, scope string, start, end int64, limit, offset int, q string) (any, error) {
-	flows, total, err := s.app.ReviewFlowList(tagID, scope, start, end, limit, offset, q)
+// q 非空时按 method/host/path 子串过滤（服务端全库搜索）；
+// sort/dir 服务端排序，showIgnored=true 时不拼忽略排除条件（眼睛开启）
+func (s *ctlService) ListFlowsByTag(tagID, scope string, start, end int64, limit, offset int, q, sort, dir string, showIgnored bool) (any, error) {
+	opts := persist.ReviewListOpts{
+		Q:           q,
+		SortKey:     sort,
+		SortDir:     dir,
+		ShowIgnored: showIgnored,
+	}
+	flows, total, err := s.app.ReviewFlowList(tagID, scope, start, end, limit, offset, opts)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{
 		"flows": flows, "total": total, "tag": tagID, "scope": scope,
 		"start": start, "end": end, "limit": limit, "offset": offset, "q": q,
+		"sort": sort, "dir": dir, "showIgnored": showIgnored,
 	}, nil
+}
+
+// ListReviewIgnores GET /tags/ignores：复盘忽略名单
+func (s *ctlService) ListReviewIgnores() (any, error) {
+	items, err := s.app.ReviewListIgnores()
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ignores": items}, nil
+}
+
+// AddReviewIgnore POST /tags/ignores：加入忽略名单（kind=host|path|proc）
+func (s *ctlService) AddReviewIgnore(raw json.RawMessage) (any, error) {
+	var req struct {
+		Kind  string `json:"kind"`
+		Value string `json:"value"`
+		Note  string `json:"note"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, fmt.Errorf("请求体解析失败: %w", err)
+	}
+	item, added, err := s.app.ReviewAddIgnore(req.Kind, req.Value, req.Note)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ignore": item, "added": added}, nil
+}
+
+// DeleteReviewIgnore DELETE /tags/ignores?kind=&value=：删除一条忽略项
+// value 可能含 "/"（路径），走 query 而非路径段
+func (s *ctlService) DeleteReviewIgnore(kind, value string) (any, error) {
+	deleted, err := s.app.ReviewDeleteIgnore(kind, value)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"deleted": deleted}, nil
 }
 
 // TagHistogram GET /tags/{id}/histogram：密度直方图（时间轴底图）

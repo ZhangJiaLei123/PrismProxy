@@ -3,6 +3,7 @@
 import {capture} from '../models';
 import {settings} from '../models';
 import {app} from '../models';
+import {persist} from '../models';
 
 export function AdbClearProxy(arg1:string,arg2:string):Promise<string>;
 
@@ -84,13 +85,19 @@ export function RenameProject(arg1:string,arg2:string):Promise<void>;
 
 export function RenameTagApp(arg1:string,arg2:string):Promise<void>;
 
+export function ReviewAddIgnore(arg1:string,arg2:string,arg3:string):Promise<persist.ReviewIgnore>;
+
+export function ReviewDeleteIgnore(arg1:string,arg2:string):Promise<boolean>;
+
 export function ReviewFlowBody(arg1:string,arg2:string):Promise<app.BodyPayload>;
 
 export function ReviewFlowDetail(arg1:string):Promise<app.FlowDetail>;
 
-export function ReviewFlowList(arg1:string,arg2:string,arg3:number,arg4:number,arg5:number,arg6:number,arg7:string):Promise<Array<app.FlowMeta>>;
+export function ReviewFlowList(arg1:string,arg2:string,arg3:number,arg4:number,arg5:number,arg6:number,arg7:persist.ReviewListOpts):Promise<Array<app.FlowMeta>>;
 
 export function ReviewHistogram(arg1:string,arg2:string,arg3:number,arg4:number,arg5:number):Promise<number>;
+
+export function ReviewListIgnores():Promise<Array<persist.ReviewIgnore>>;
 
 export function ReviewTagsOverview():Promise<Array<app.TagInfo>>;
 

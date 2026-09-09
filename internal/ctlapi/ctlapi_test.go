@@ -37,11 +37,17 @@ type fakeService struct {
 	curlID     string
 	curlShell  string
 
-	lastTagID string // 最近一次 ListFlowsByTag 的查询参数
-	lastScope string
-	lastStart int64
-	lastEnd   int64
-	lastQ     string
+	lastTagID     string // 最近一次 ListFlowsByTag 的查询参数
+	lastScope     string
+	lastStart     int64
+	lastEnd       int64
+	lastQ         string
+	lastSort      string
+	lastDir       string
+	lastShowIgn   bool
+	ignoreKind    string // 最近一次忽略名单写/删参数
+	ignoreValue   string
+	ignoreCalls   int
 }
 
 func (f *fakeService) Status() map[string]any {
@@ -196,14 +202,36 @@ func (f *fakeService) ListTagsForReview() (any, error) {
 func (f *fakeService) TagFlowsForReview(raw json.RawMessage) (any, error) {
 	return map[string]any{"ok": true}, nil
 }
-func (f *fakeService) ListFlowsByTag(tagID, scope string, start, end int64, limit, offset int, q string) (any, error) {
+func (f *fakeService) ListFlowsByTag(tagID, scope string, start, end int64, limit, offset int, q, sort, dir string, showIgnored bool) (any, error) {
 	f.mu.Lock()
 	f.lastTagID, f.lastScope, f.lastStart, f.lastEnd, f.lastQ = tagID, scope, start, end, q
+	f.lastSort, f.lastDir, f.lastShowIgn = sort, dir, showIgnored
 	f.mu.Unlock()
 	return map[string]any{
 		"flows": []any{}, "total": 0, "tag": tagID, "scope": scope,
 		"start": start, "end": end, "limit": limit, "offset": offset, "q": q,
+		"sort": sort, "dir": dir, "showIgnored": showIgnored,
 	}, nil
+}
+func (f *fakeService) ListReviewIgnores() (any, error) {
+	return map[string]any{"ignores": []any{}}, nil
+}
+func (f *fakeService) AddReviewIgnore(raw json.RawMessage) (any, error) {
+	var req struct {
+		Kind  string `json:"kind"`
+		Value string `json:"value"`
+	}
+	_ = json.Unmarshal(raw, &req)
+	f.mu.Lock()
+	f.ignoreKind, f.ignoreValue, f.ignoreCalls = req.Kind, req.Value, f.ignoreCalls+1
+	f.mu.Unlock()
+	return map[string]any{"added": true}, nil
+}
+func (f *fakeService) DeleteReviewIgnore(kind, value string) (any, error) {
+	f.mu.Lock()
+	f.ignoreKind, f.ignoreValue, f.ignoreCalls = kind, value, f.ignoreCalls+1
+	f.mu.Unlock()
+	return map[string]any{"deleted": true}, nil
 }
 func (f *fakeService) TagHistogram(tagID, scope string, start, end int64, buckets int) (any, error) {
 	return map[string]any{"start": 0, "end": 0, "buckets": []any{}}, nil

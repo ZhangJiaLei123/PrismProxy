@@ -162,6 +162,14 @@ export function RenameTagApp(arg1, arg2) {
   return window['go']['app']['App']['RenameTagApp'](arg1, arg2);
 }
 
+export function ReviewAddIgnore(arg1, arg2, arg3) {
+  return window['go']['app']['App']['ReviewAddIgnore'](arg1, arg2, arg3);
+}
+
+export function ReviewDeleteIgnore(arg1, arg2) {
+  return window['go']['app']['App']['ReviewDeleteIgnore'](arg1, arg2);
+}
+
 export function ReviewFlowBody(arg1, arg2) {
   return window['go']['app']['App']['ReviewFlowBody'](arg1, arg2);
 }
@@ -176,6 +184,10 @@ export function ReviewFlowList(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
 
 export function ReviewHistogram(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['app']['App']['ReviewHistogram'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ReviewListIgnores() {
+  return window['go']['app']['App']['ReviewListIgnores']();
 }
 
 export function ReviewTagsOverview() {

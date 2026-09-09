@@ -198,6 +198,15 @@ CREATE TABLE IF NOT EXISTS flow_tags (
 );
 CREATE INDEX IF NOT EXISTS idx_flow_tags_tag ON flow_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_flow_tags_flow ON flow_tags(flow_id);
+
+-- M12.2 数据复盘隐藏名单（「忽略」只在复盘查询时排除，不删除 flows 数据）
+CREATE TABLE IF NOT EXISTS review_ignores (
+    kind       TEXT NOT NULL,          -- 'host' | 'path' | 'proc'
+    value      TEXT NOT NULL,          -- 归一化值（host 去端口小写/去尾点；path 无 query 且 / 开头；proc 原样 trim）
+    created_at INTEGER NOT NULL,       -- unix 毫秒
+    note       TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (kind, value)
+);
 `)
 	return err
 }

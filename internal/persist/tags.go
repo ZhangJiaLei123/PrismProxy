@@ -276,8 +276,10 @@ func likePattern(q string) string {
 //   - 具体标签：JOIN flow_tags + ft.tag_id=?（每流每标签至多一行，JOIN 不产生重复）；
 //   - start/end 为 unix 毫秒时间窗，含头尾（started_at>=start AND <=end），0=不限，
 //     支持半开窗口（start>0,end=0 仅下限；start=0,end>0 仅上限），走 idx_flows_started；
-//   - q 非空时在 method/host/path 三列做子串匹配（OR，复盘页关键字搜索，全库可搜）。
-func buildFlowQuery(tagID, scope string, start, end int64, q string) (from, where string, args []any, err error) {
+//   - opts.q 非空时在 method/host/path 三列做子串匹配（OR，复盘页关键字搜索，全库可搜）；
+//   - opts.showIgnored=false 且 opts.ignores 非空时，追加忽略名单的 SQL 排除条件
+//     （M12.2：忽略只是查询隐藏，不删除 flows 数据；直方图传空名单保持底图不联动）。
+func buildFlowQuery(tagID, scope string, start, end int64, opts reviewQueryOpts) (from, where string, args []any, err error) {
 	from = "flows f"
 	conds := make([]string, 0, 4)
 	switch {
@@ -304,10 +306,15 @@ func buildFlowQuery(tagID, scope string, start, end int64, q string) (from, wher
 		conds = append(conds, "f.started_at<=?")
 		args = append(args, end)
 	}
-	if q = strings.TrimSpace(q); q != "" {
+	if q := strings.TrimSpace(opts.q); q != "" {
 		p := likePattern(q)
 		conds = append(conds, "(f.method LIKE ? ESCAPE '\\' OR f.host LIKE ? ESCAPE '\\' OR f.path LIKE ? ESCAPE '\\')")
 		args = append(args, p, p, p)
+	}
+	if !opts.showIgnored && len(opts.ignores) > 0 {
+		ic, iargs := ignoreConds(opts.ignores)
+		conds = append(conds, ic...)
+		args = append(args, iargs...)
 	}
 	if len(conds) > 0 {
 		where = strings.Join(conds, " AND ")
@@ -315,10 +322,26 @@ func buildFlowQuery(tagID, scope string, start, end int64, q string) (from, wher
 	return from, where, args, nil
 }
 
-// FlowsByTag 分页返回范围内的流（时间倒序；tagID="all" 时按 scope 取数）。
-// limit<=0 用默认 200，上限 1000；offset 为跳过条数；q 非空时在 method/host/path
-// 子串过滤。仅元数据（body 惰性回查），复盘流以 capture.SourceHistory 标记（与启动补载口径一致）。
-func (w *Writer) FlowsByTag(tagID, scope string, start, end int64, limit, offset int, q string) ([]*capture.Flow, error) {
+// reviewQueryOptsFor 组装列表查询内部参数：眼睛关闭（隐藏忽略项）时从库内加载忽略名单
+// （只读旧库可能无 review_ignores 表，读侧容错为空名单）；眼睛开启时不加载、不排除。
+func (w *Writer) reviewQueryOptsFor(o ReviewListOpts) (reviewQueryOpts, error) {
+	ro := reviewQueryOpts{q: o.Q, sortKey: o.SortKey, sortDir: o.SortDir, showIgnored: o.ShowIgnored}
+	if !o.ShowIgnored {
+		igs, err := w.ListReviewIgnores()
+		if err != nil {
+			return ro, err
+		}
+		ro.ignores = igs
+	}
+	return ro, nil
+}
+
+// FlowsByTag 分页返回范围内的流（默认时间倒序，可按 opts.SortKey/SortDir 排序；
+// tagID="all" 时按 scope 取数）。limit<=0 用默认 200，上限 1000；offset 为跳过条数；
+// opts.Q 非空时在 method/host/path 子串过滤；opts.ShowIgnored=false 时以 SQL 条件排除
+// review_ignores 名单内的 host/path/proc（仅隐藏）。仅元数据（body 惰性回查），
+// 复盘流以 capture.SourceHistory 标记（与启动补载口径一致）。
+func (w *Writer) FlowsByTag(tagID, scope string, start, end int64, limit, offset int, opts ReviewListOpts) ([]*capture.Flow, error) {
 	if limit <= 0 {
 		limit = 200
 	}
@@ -328,7 +351,11 @@ func (w *Writer) FlowsByTag(tagID, scope string, start, end int64, limit, offset
 	if offset < 0 {
 		offset = 0
 	}
-	from, where, args, err := buildFlowQuery(tagID, scope, start, end, q)
+	ro, err := w.reviewQueryOptsFor(opts)
+	if err != nil {
+		return nil, err
+	}
+	from, where, args, err := buildFlowQuery(tagID, scope, start, end, ro)
 	if err != nil {
 		return nil, err
 	}
@@ -336,7 +363,7 @@ func (w *Writer) FlowsByTag(tagID, scope string, start, end int64, limit, offset
 	if where != "" {
 		query += " WHERE " + where
 	}
-	query += " ORDER BY f.started_at DESC, f.id DESC LIMIT ? OFFSET ?"
+	query += flowOrderBy(ro.sortKey, ro.sortDir) + " LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 	rows, err := w.db.Query(query, args...)
 	if err != nil {
@@ -367,10 +394,14 @@ func (w *Writer) CountTaggedFlows() (int, error) {
 	return n, err
 }
 
-// CountFlows 返回与列表同谓词（tagID+scope+窗口+q）的流总数（设计 §4.4：
-// total 与列表同谓词，避免分页 total 与数据不一致）。
-func (w *Writer) CountFlows(tagID, scope string, start, end int64, q string) (int, error) {
-	from, where, args, err := buildFlowQuery(tagID, scope, start, end, q)
+// CountFlows 返回与列表同谓词（tagID+scope+窗口+q+忽略排除）的流总数（设计 §4.4：
+// total 与列表同谓词，避免分页 total 与数据不一致；眼睛开启时不排除忽略项）。
+func (w *Writer) CountFlows(tagID, scope string, start, end int64, opts ReviewListOpts) (int, error) {
+	ro, err := w.reviewQueryOptsFor(opts)
+	if err != nil {
+		return 0, err
+	}
+	from, where, args, err := buildFlowQuery(tagID, scope, start, end, ro)
 	if err != nil {
 		return 0, err
 	}
@@ -417,8 +448,8 @@ func (w *Writer) Histogram(tagID, scope string, winStart, winEnd int64, buckets 
 	if buckets > 500 {
 		buckets = 500
 	}
-	// 直方图底图只跟 tagID+scope+窗口，不随列表关键字 q 过滤。
-	from, where, wargs, err := buildFlowQuery(tagID, scope, winStart, winEnd, "")
+	// 直方图底图只跟 tagID+scope+窗口，不随列表关键字 q / 忽略名单 / 排序变动。
+	from, where, wargs, err := buildFlowQuery(tagID, scope, winStart, winEnd, reviewQueryOpts{})
 	if err != nil {
 		return 0, 0, nil, err
 	}

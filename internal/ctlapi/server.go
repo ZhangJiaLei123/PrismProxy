@@ -79,7 +79,10 @@ type Service interface {
 	// 标签与数据复盘（M12，设计 §4.4）：HTTP 入口的打标 autoClear 恒 false
 	ListTagsForReview() (any, error)
 	TagFlowsForReview(raw json.RawMessage) (any, error)
-	ListFlowsByTag(tagID, scope string, start, end int64, limit, offset int, q string) (any, error)
+	ListFlowsByTag(tagID, scope string, start, end int64, limit, offset int, q, sort, dir string, showIgnored bool) (any, error)
+	ListReviewIgnores() (any, error)
+	AddReviewIgnore(raw json.RawMessage) (any, error)
+	DeleteReviewIgnore(kind, value string) (any, error)
 	TagHistogram(tagID, scope string, start, end int64, buckets int) (any, error)
 	GetTaggedFlow(id string) (any, error)
 	GetTaggedFlowBody(id, which string) (any, error)
@@ -225,6 +228,7 @@ func (s *Server) routes() http.Handler {
 	// M12 标签/复盘（设计 §4.4）：/tags 列表/打标 与 /tags/ 子树（手动分段解析）
 	mux.HandleFunc("/api/v1/tags", s.auth(s.handleTags))
 	mux.HandleFunc("/api/v1/tags/flows", s.auth(s.handleTags)) // POST 打标（显式注册，防落到子树被当 flowId）
+	mux.HandleFunc("/api/v1/tags/ignores", s.auth(s.handleTagIgnores)) // M12.2 忽略名单：GET 列表/POST 添加（显式注册）
 	mux.HandleFunc("/api/v1/tags/", s.auth(s.handleTagSub))
 	// SSE 推送（query token 仅此端点接受：EventSource 无法自定义请求头）
 	mux.HandleFunc("/api/v1/events", s.auth(s.handleEvents, true))
@@ -516,6 +520,56 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleTagIgnores 处理 /api/v1/tags/ignores（M12.2 复盘忽略名单）：
+//
+//	GET  /tags/ignores                    忽略名单
+//	POST /tags/ignores {kind,value,note}  添加（幂等：已存在只刷新 note，回 added=false）
+//
+// 删除走 DELETE /tags/ignores?kind=&value=（value 可能含 "/"，见 handleTagSub 拦截）。
+func (s *Server) handleTagIgnores(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/v1/tags/ignores" {
+		s.handleTagSub(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		v, err := s.svc.ListReviewIgnores()
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	case http.MethodPost:
+		raw, err := readBody(r, 1<<20)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		v, err := s.svc.AddReviewIgnore(raw)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	case http.MethodDelete:
+		// value 可能含 "/"（path），故走 query 而非路径段
+		q := r.URL.Query()
+		kind, value := q.Get("kind"), q.Get("value")
+		if kind == "" || value == "" {
+			writeErr(w, http.StatusBadRequest, "kind 与 value 均必填")
+			return
+		}
+		v, err := s.svc.DeleteReviewIgnore(kind, value)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "可用：GET/POST /tags/ignores、DELETE /tags/ignores?kind=&value=")
+	}
+}
+
 // handleTagSub 处理 /api/v1/tags/ 子树（手动分段解析，范式同 handleFlowSub）：
 //
 //	GET    /tags/{id}/flows?scope=&start=&end=&limit=&offset=   范围内流（id=all 全部）
@@ -529,6 +583,12 @@ func (s *Server) handleTagSub(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(rest, "/")
 	if parts[0] == "" {
 		writeErr(w, http.StatusNotFound, "未知路径")
+		return
+	}
+
+	// /tags/ignores 已显式注册到 handleTagIgnores；落到子树（如带多余路径段）仅提示
+	if parts[0] == "ignores" {
+		writeErr(w, http.StatusNotFound, "可用：GET/POST /tags/ignores、DELETE /tags/ignores?kind=&value=")
 		return
 	}
 
@@ -634,7 +694,16 @@ func (s *Server) handleTagSub(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		keyword := params.Get("q")
-		v, err := s.svc.ListFlowsByTag(tagID, scope, start, end, limit, offset, keyword)
+		// M12.2：sort=time|method|status|host|path|size|proc（空=time），dir=asc|desc（空走默认方向）；
+		// showIgnored=1/true=显示已忽略（眼睛开启，不拼排除条件），其余值=隐藏已忽略
+		sort := params.Get("sort")
+		dir := params.Get("dir")
+		showIgnored := false
+		switch params.Get("showIgnored") {
+		case "1", "true":
+			showIgnored = true
+		}
+		v, err := s.svc.ListFlowsByTag(tagID, scope, start, end, limit, offset, keyword, sort, dir, showIgnored)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return

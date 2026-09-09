@@ -428,12 +428,14 @@ func (a *App) GetReviewURL() (string, error) {
 
 // ReviewFlowList 复盘流列表：tagID="all" 时按 scope 取数（archived=打标流，
 // all=库内全量含自动录制未打标流）；start/end 为 unix 毫秒时间窗（含头尾，
-// 0=不限，支持半开）；limit/offset 分页；q 非空时在 method/host/path 子串过滤。
+// 0=不限，支持半开）；limit/offset 分页；opts.Q 非空时在 method/host/path 子串过滤，
+// opts.SortKey/SortDir 控制排序，opts.ShowIgnored=false 时以 SQL 条件排除忽略名单
+// （M12.2：忽略仅查询隐藏，不删数据）。
 // 返回的 FlowMeta 带 Tags（从归档库批量查，不依赖内存 tagIndex——流可能已淘汰）。
 //
 // v3.1：归档库从未打开（w==nil，全新项目从未录制/打标）时返回空列表 + total=0，
 // 不报错——复盘页首开应是空态引导而非 fatal（设计 §6.4、AC18）。
-func (a *App) ReviewFlowList(tagID, scope string, start, end int64, limit, offset int, q string) ([]FlowMeta, int, error) {
+func (a *App) ReviewFlowList(tagID, scope string, start, end int64, limit, offset int, opts persist.ReviewListOpts) ([]FlowMeta, int, error) {
 	if tagID != "all" && !persist.ValidTagID(tagID) {
 		return nil, 0, fmt.Errorf("非法标签 id")
 	}
@@ -449,7 +451,7 @@ func (a *App) ReviewFlowList(tagID, scope string, start, end int64, limit, offse
 		// 库文件不存在（从未录制/打标）：业务空态，非错误（v3.1 AC18）
 		return []FlowMeta{}, 0, nil
 	}
-	flows, err := w.FlowsByTag(tagID, scope, start, end, limit, offset, q)
+	flows, err := w.FlowsByTag(tagID, scope, start, end, limit, offset, opts)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -469,12 +471,65 @@ func (a *App) ReviewFlowList(tagID, scope string, start, end int64, limit, offse
 		}
 		out = append(out, m)
 	}
-	// 总数：与列表同谓词（tagID+scope+窗口+q），避免分页 total 与数据不一致
-	total, err := w.CountFlows(tagID, scope, start, end, q)
+	// 总数：与列表同谓词（tagID+scope+窗口+q+忽略排除），避免分页 total 与数据不一致
+	total, err := w.CountFlows(tagID, scope, start, end, opts)
 	if err != nil {
 		return nil, 0, err
 	}
 	return out, total, nil
+}
+
+// ReviewListIgnores 返回复盘忽略名单（只读连接，旧库无表容错为空）。
+func (a *App) ReviewListIgnores() ([]persist.ReviewIgnore, error) {
+	w, done, err := a.reviewReader()
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	if w == nil {
+		return []persist.ReviewIgnore{}, nil
+	}
+	return w.ListReviewIgnores()
+}
+
+// ReviewAddIgnore 加入复盘忽略名单（写常驻归档库，项目代际校验同 TagFlows）。
+// value 在 persist 层按 kind 归一化；added=false 表示已存在（幂等，仅刷新 note）。
+func (a *App) ReviewAddIgnore(kind, value, note string) (persist.ReviewIgnore, bool, error) {
+	gen := a.projGen.Load()
+	if a.currentID() == "" {
+		return persist.ReviewIgnore{}, false, fmt.Errorf("请先打开或创建项目")
+	}
+	w, archGen, done, err := a.acquireArchive()
+	if err != nil {
+		return persist.ReviewIgnore{}, false, err
+	}
+	defer done()
+	if archGen != gen {
+		return persist.ReviewIgnore{}, false, fmt.Errorf("项目已切换，请重试")
+	}
+	return w.AddReviewIgnore(kind, value, note)
+}
+
+// ReviewDeleteIgnore 删除一条复盘忽略项（kind + 已归一化 value）。
+func (a *App) ReviewDeleteIgnore(kind, value string) (bool, error) {
+	gen := a.projGen.Load()
+	if a.currentID() == "" {
+		return false, fmt.Errorf("请先打开或创建项目")
+	}
+	w, archGen, done, err := a.acquireArchive()
+	if err != nil {
+		return false, err
+	}
+	defer done()
+	if archGen != gen {
+		return false, fmt.Errorf("项目已切换，请重试")
+	}
+	// 接口值统一归一化后按存储口径删除（名单回传值为存储口径，host/proc 归一化幂等）
+	v, verr := persist.NormalizeIgnoreValue(kind, value)
+	if verr != nil {
+		return false, verr
+	}
+	return w.DeleteReviewIgnore(kind, v)
 }
 
 // ReviewTagsOverview 标签侧栏概览（设计 §4.4 v3.1）：标签列表 + total（去重打标流数，

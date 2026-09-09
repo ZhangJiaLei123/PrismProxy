@@ -602,6 +602,42 @@ export namespace persist {
 	        this.count = source["count"];
 	    }
 	}
+	export class ReviewIgnore {
+	    kind: string;
+	    value: string;
+	    createdAt: number;
+	    note: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ReviewIgnore(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.value = source["value"];
+	        this.createdAt = source["createdAt"];
+	        this.note = source["note"];
+	    }
+	}
+	export class ReviewListOpts {
+	    Q: string;
+	    SortKey: string;
+	    SortDir: string;
+	    ShowIgnored: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ReviewListOpts(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Q = source["Q"];
+	        this.SortKey = source["SortKey"];
+	        this.SortDir = source["SortDir"];
+	        this.ShowIgnored = source["ShowIgnored"];
+	    }
+	}
 
 }
 
