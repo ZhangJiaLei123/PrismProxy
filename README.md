@@ -88,6 +88,9 @@ PrismProxy.exe -headless    :: 无界面模式（后台常驻，适合自动化�
    - **手机/模拟器**：WiFi 代理或 `http_proxy` 指向 PC IP（注意：仅设 Windows 系统代理对雷电等 VBox NAT 模拟器无效，需在模拟器内设置）；也可用设置页「ADB」或 `cli adb set` 一键给 Android 设备写入全局代理
    - **桌面应用**：设置页开启「系统代理」一键接管，或以 `--proxy-server=127.0.0.1:9090` 启动目标应用
 
+> **安卓抓包推荐使用模拟器**（如雷电等可 Root 的模拟器）：CA 可装入系统证书存储，所有 App 流量均可解密，抓包无死角。
+> **Android 7+ 真机存在系统限制**：安装到「用户证书」的 CA 默认不被 App 信任——仅浏览器及少数主动声明信任用户证书的 App 可解密，绝大多数 App 的流量仍为 CONNECT 隧道盲透传。要在真机上全量解密，需 Root 后将 CA 装入系统证书，或重打包目标 App 修改 networkSecurityConfig。
+
 ### AI CLI
 
 ```bat

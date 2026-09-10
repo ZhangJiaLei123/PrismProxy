@@ -1,10 +1,12 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"prismproxy/internal/capture"
 	"prismproxy/internal/ctlapi"
@@ -413,6 +415,58 @@ func TestCtlWriteNonCurrentProject(t *testing.T) {
 	}
 	if string(after) != string(badBytes) {
 		t.Fatal("被拒绝的写入不应落盘")
+	}
+}
+
+// ---------- M10 审计回归：SaveSettings 热重启不得重取 projMu 自死锁 ----------
+
+// 前情：真机抓包实测 `cli settings set listenAddr` 触发热重启时实例挂死——SaveSettings
+// 整程持 projMu，热重启链上的 startProxy（取快照）与 publishStatus→ctlStatusSnapshot
+// （取项目 meta）都会重取 projMu，非重入锁即自死锁：旧代理已停、新代理不起、控制 API
+// 全线超时。回归要求：代理运行中改监听地址，SaveSettings 必须限时返回且新地址生效。
+func TestSaveSettingsHotRestartNoProjMuDeadlock(t *testing.T) {
+	a := newTestApp(t)
+	a.gcfg.Projects = []settings.ProjectMeta{{ID: "default", Name: "A"}}
+	a.gcfg.CurrentProject = "default"
+
+	p1, err := a.FindFreePort("127.0.0.1", 19091)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := a.FindFreePort("127.0.0.1", p1+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.gcfg.ListenAddr = fmt.Sprintf("127.0.0.1:%d", p1)
+	if err := a.startProxy(""); err != nil {
+		t.Fatalf("启动旧代理: %v", err)
+	}
+
+	nu := a.GetSettings()
+	nu.ListenAddr = fmt.Sprintf("127.0.0.1:%d", p2)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.SaveSettings(nu)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("热重启保存失败: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("SaveSettings 热重启 10s 未返回（projMu 自死锁回归）")
+	}
+
+	if ps := a.GetProxyStatus(); !ps.Running || ps.Addr != nu.ListenAddr {
+		t.Fatalf("热重启后代理应运行在新地址: %+v 期望 %s", ps, nu.ListenAddr)
+	}
+	if a.gcfg.ListenAddr != nu.ListenAddr {
+		t.Fatalf("监听地址应已更新: gcfg=%s", a.gcfg.ListenAddr)
+	}
+	if a.eng.Get() == nil {
+		t.Fatal("规则引擎应已重建")
 	}
 }
 

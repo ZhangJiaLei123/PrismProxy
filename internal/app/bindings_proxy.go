@@ -37,7 +37,13 @@ func (a *App) startProxy(addr string) error {
 	}
 	upstreamMode, upstreamProxy := a.gcfg.UpstreamMode, a.gcfg.UpstreamProxy
 	a.projMu.Unlock()
+	return a.startProxySnap(addr, upstreamMode, upstreamProxy)
+}
 
+// startProxySnap 用调用方给定的环境快照启动代理（不发布 status）。拆出独立变体是因
+// 为 SaveSettings 热重启在已持 projMu 的调用栈内启动代理——projMu 非重入锁，重取即自
+// 死锁（旧代理已停、新代理永不启动、控制 API 全线超时）；持锁方必须经本方法传入快照。
+func (a *App) startProxySnap(addr, upstreamMode, upstreamProxy string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.srv != nil {

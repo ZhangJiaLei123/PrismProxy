@@ -398,6 +398,18 @@ func (a *App) publishStatus() {
 	}
 }
 
+// publishStatusHoldingProj 调用方已持 projMu 时的免锁推送变体（SaveSettings 热应用等
+// 持锁路径专用）：projMu 非重入锁，snapshot 构造若重取 projMu 会自死锁，须走
+// ctlStatusSnapshotWithProject；普通路径一律用 publishStatus。
+func (a *App) publishStatusHoldingProj() {
+	a.mu.Lock()
+	hub := a.ctlHub()
+	a.mu.Unlock()
+	if hub != nil {
+		hub.Publish("status", a.ctlStatusSnapshotWithProject(a.currentMeta()))
+	}
+}
+
 // ctlHub 返回当前控制 API 的 SSE Hub；控制 API 未启动（端口占用降级）时为 nil。
 func (a *App) ctlHub() *ctlapi.Hub {
 	if a.ctl == nil {

@@ -169,15 +169,17 @@ func (a *App) SaveSettings(nu *SettingsView) (*SaveSettingsResult, error) {
 		}
 	}
 	if needRestart {
-		// settings 热应用重启代理：内部方法连调（避免重复推 status），重启完成后推一次
+		// settings 热应用重启代理：内部方法连调（避免重复推 status），重启完成后推一次。
+		// 本方法整程持 projMu：启动走免 projMu 的 startProxySnap 并传入新配置快照、
+		// 推送走 publishStatusHoldingProj——否则两处重取 projMu 均自死锁（M10 真机抓包实测踩中）。
 		if err := a.stopProxy(); err != nil {
-			a.publishStatus()
+			a.publishStatusHoldingProj()
 			warns = append(warns, fmt.Sprintf("监听/上游已保存，但停止旧代理失败: %v", err))
-		} else if err := a.startProxy(""); err != nil {
-			a.publishStatus()
+		} else if err := a.startProxySnap(g.ListenAddr, g.UpstreamMode, g.UpstreamProxy); err != nil {
+			a.publishStatusHoldingProj()
 			warns = append(warns, fmt.Sprintf("监听/上游已保存，但代理重启失败（可在顶栏手动启动）: %v", err))
 		} else {
-			a.publishStatus()
+			a.publishStatusHoldingProj()
 		}
 	}
 	// bypassList 变化且系统代理接管中：以备份为基线重建 Override 热下发（§5.2/§5.5；

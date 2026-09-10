@@ -41,14 +41,20 @@ func (s *ctlService) Status() map[string]any { return s.app.ctlStatusSnapshot() 
 // ctlStatusSnapshot 构造控制面状态快照：ctlService.Status()（GET /status）与
 // SSE status 频道（seed 帧 + 各发布点）共用，避免双份构造漂移。
 func (a *App) ctlStatusSnapshot() map[string]any {
+	a.projMu.Lock()
+	cur := a.currentMeta()
+	a.projMu.Unlock()
+	return a.ctlStatusSnapshotWithProject(cur)
+}
+
+// ctlStatusSnapshotWithProject 免 projMu 变体：调用方已持 projMu（SaveSettings 热应用
+// 等持锁路径）时传入当前项目 meta，避免重取 projMu 自死锁；普通路径走 ctlStatusSnapshot。
+func (a *App) ctlStatusSnapshotWithProject(cur settings.ProjectMeta) map[string]any {
 	ps := a.GetProxyStatus()
 	sys := a.GetSystemProxyStatus()
 	a.mu.Lock()
 	ui := a.ctx != nil
 	a.mu.Unlock()
-	a.projMu.Lock()
-	cur := a.currentMeta()
-	a.projMu.Unlock()
 	return map[string]any{
 		"proxy": map[string]any{
 			"running":    ps.Running,
