@@ -4,6 +4,11 @@ import {capture} from '../models';
 import {settings} from '../models';
 import {app} from '../models';
 import {persist} from '../models';
+import {ctlapi} from '../models';
+
+export function AIChatStart(arg1:ctlapi.AIChatRequest):Promise<app.AIChatHandle>;
+
+export function AIChatStop(arg1:app.AIChatHandle):Promise<void>;
 
 export function AdbClearProxy(arg1:string,arg2:string):Promise<string>;
 
@@ -38,6 +43,8 @@ export function FindFreePort(arg1:string,arg2:number):Promise<number>;
 export function GetCurrentProject():Promise<settings.ProjectMeta>;
 
 export function GetDomainGroupText(arg1:string):Promise<string>;
+
+export function GetAIConfigApp():Promise<app.AIConfigView>;
 
 export function GetFlowBody(arg1:string,arg2:string):Promise<app.BodyPayload>;
 
@@ -101,6 +108,8 @@ export function ReviewListIgnores():Promise<Array<persist.ReviewIgnore>>;
 
 export function ReviewTagsOverview():Promise<Array<app.TagInfo>>;
 
+export function SaveAIConfigApp(arg1:string):Promise<app.AIConfigView>;
+
 export function SaveDomainGroupText(arg1:string,arg2:string):Promise<app.DomainGroupImportResult>;
 
 export function SaveSettings(arg1:app.SettingsView):Promise<app.SaveSettingsResult>;
@@ -118,6 +127,8 @@ export function StopProxy():Promise<void>;
 export function SwitchProject(arg1:string):Promise<void>;
 
 export function TagFlows(arg1:Array<string>,arg2:string,arg3:boolean):Promise<app.TagResult>;
+
+export function TestAIConnection(arg1:settings.AIConfig):Promise<app.AITestResult>;
 
 export function WailsAddIgnore(arg1:string,arg2:string,arg3:string):Promise<app.WailsAddIgnoreResult>;
 

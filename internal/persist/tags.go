@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -576,6 +577,59 @@ func (w *Writer) LoadFlowByID(flowID string) (*capture.Flow, error) {
 	f.Source = capture.SourceHistory
 	f.Pinned = false
 	return f, nil
+}
+
+// LoadFlowsByIDs 按 id 批量取流（元数据，不含 body），AI 分析取数用（M13 计划 P2-6）。
+// 返回按 started_at 降序（与入参顺序无关，编排层以返回序为准）；库中不存在的 id
+// 直接缺席（已被删除/淘汰即失效），调用方据返回集合报告截断。入参允许重复 id（IN 天然去重）。
+func (w *Writer) LoadFlowsByIDs(ids []string) ([]*capture.Flow, error) {
+	out := make([]*capture.Flow, 0, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	// 分块查询，避免 IN 参数过多（同 TagsForFlows，保守 500/批）
+	const chunk = 500
+	for start := 0; start < len(ids); start += chunk {
+		end := start + chunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[start:end]
+		placeholders := strings.Repeat("?,", len(batch))
+		placeholders = placeholders[:len(placeholders)-1]
+		q := `SELECT data FROM flows WHERE id IN (` + placeholders + `) ORDER BY started_at DESC`
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			args[i] = id
+		}
+		rows, err := w.db.Query(q, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var data string
+			if err := rows.Scan(&data); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			f, err := unmarshalFlow([]byte(data))
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			f.Source = capture.SourceHistory
+			f.Pinned = false
+			out = append(out, f)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	// 多 chunk 拼接时跨块乱序，统一再排一次降序（单 chunk 内 ORDER BY 已有序，稳定无害）
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Timing.Start.After(out[j].Timing.Start) })
+	return out, nil
 }
 
 // FlowExists 判断流是否已在库（flows 行存在）。打标时内存未命中用于决定 skipped 口径。

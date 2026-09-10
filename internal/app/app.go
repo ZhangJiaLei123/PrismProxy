@@ -49,13 +49,13 @@ type App struct {
 	ca       *mitm.CA
 	addr     string
 	noMITM   bool
-	startErr string // 启动自动抓包失败原因（GetProxyStatus 暴露给前端，事件竞态兜底）
+	startErr string         // 启动自动抓包失败原因（GetProxyStatus 暴露给前端，事件竞态兜底）
 	ctl      *ctlapi.Server // M8 本地控制 API（cli 子命令连接目标；GUI/headless 均启动）
 
 	// M7 SQLite 持久化（方案 §4.11）：pmu 保护 writer 生命周期；落盘为旁路异步队列。
 	// M9 起 writer 带所属项目 id/gen 打标（persistOwner，见 persist_wiring.go）。
-	pmu          sync.Mutex
-	persist      *persistOwner
+	pmu           sync.Mutex
+	persist       *persistOwner
 	persistSubbed bool // store 持久化订阅是否已挂（订阅一次，靠 writer 启停控制写入）
 
 	// M12 标签归档（标签 = 归档，设计 §4.2）：与自动录制解耦的独立 Writer
@@ -88,6 +88,15 @@ type App struct {
 	// worker 只执行最新代际的任务，收敛热重启/快速启停时 clear 与 set 的乱序竞态。
 	adbGen atomic.Uint64
 	adbCh  chan adbOp
+
+	// M13 AI 分析并发闸门（P2-7）：同一时刻仅允许一个 AI 分析任务。
+	// ctlapi（runAIChat）与 Wails 主窗（bindings_ai.go AIChatStart）共用，
+	// CAS 失败即返回 ctlapi.ErrAIConflict。
+	aiBusy atomic.Bool
+	// aiChats Wails 事件桥会话表（P2-13）：handle → cancel（AIChatStop 语义同
+	// HTTP 断连）；懒初始化，会话结束自动注销，Stop 迟到幂等。
+	aiChatMu sync.Mutex
+	aiChats  map[string]context.CancelFunc
 
 	// 事件合帧缓冲（~50ms 窗口，方案 §4.4）
 	pendMu   sync.Mutex
@@ -205,7 +214,7 @@ func NewApp(addr string, noMITM bool, staticFS fs.FS) *App {
 	a.rec.GenFunc = func() uint64 { return a.projGen.Load() }
 	proxy.ApplyRulesFilter(a.rec, a.eng) // 捕获/进程规则 exclude → 不记录
 	a.st.Subscribe(a.onStoreEvent)
-	a.initPersist() // M7：按配置开启 SQLite 持久化（默认关）并加载历史
+	a.initPersist()    // M7：按配置开启 SQLite 持久化（默认关）并加载历史
 	a.startAdbWorker() // ADB 自动代理任务 worker（串行 + 代际收敛）
 	return a
 }

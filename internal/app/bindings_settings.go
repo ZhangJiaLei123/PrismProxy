@@ -46,6 +46,7 @@ func (a *App) settingsViewLocked(fg []rules.FilterGroup, dr []rules.DecryptRule,
 		BypassList:         append([]string(nil), g.BypassList...),
 		Persist:            g.Persist,
 		ADB:                g.ADB,
+		AI:                 g.AI.WithDefaults().AISettings(), // P2-10：无 key 投影，读取侧兜底默认值
 		FilterGroups:       append([]rules.FilterGroup(nil), fg...),
 		DecryptRules:       append([]rules.DecryptRule(nil), dr...),
 		CurrentProject:     a.currentMeta(),
@@ -92,6 +93,23 @@ func (a *App) SaveSettings(nu *SettingsView) (*SaveSettingsResult, error) {
 	g.BypassList = append([]string(nil), nu.BypassList...)
 	g.Persist = nu.Persist
 	g.ADB = nu.ADB
+	// AI 半边（P2-10，设计稿 §六）：SettingsView.ai 为无 key 投影——非 key 字段覆盖，
+	// key 保留已存值（key 永不经全量表单链路）。整体零值=前端未携带 ai 字段
+	//（旧面板整结构回传），跳过合并防误清（判定式与 WithDefaults 未初始化哨兵一致）。
+	if !(nu.AI.Provider == "" && nu.AI.MaxKB == 0) {
+		g.AI = settings.AIConfig{
+			Enabled:     nu.AI.Enabled,
+			Provider:    nu.AI.Provider,
+			BaseURL:     nu.AI.BaseURL,
+			APIKey:      g.AI.APIKey,
+			Model:       nu.AI.Model,
+			Temperature: nu.AI.Temperature,
+			TimeoutSec:  nu.AI.TimeoutSec,
+			MaxFlows:    nu.AI.MaxFlows,
+			MaxKB:       nu.AI.MaxKB,
+			Redact:      nu.AI.Redact,
+		}
+	}
 	if err := g.ValidateEnv(); err != nil {
 		return nil, err
 	}
@@ -121,6 +139,12 @@ func (a *App) SaveSettings(nu *SettingsView) (*SaveSettingsResult, error) {
 		}
 	}
 
+	// P2-14：AI 已启用但未配 key（非本地 Ollama）——非阻塞提示，随 warnings 下发。
+	// 置于规则半边之后：warns 在 ValidateRules 处被整体重赋值，此追加必须在其后
+	if w := g.WarnNoKey(); w != "" {
+		warns = append(warns, w)
+	}
+
 	// 拆分落盘：环境 → 全局 settings.json
 	if err := g.SaveGlobal(a.cfgDir); err != nil {
 		return nil, fmt.Errorf("保存全局配置: %w", err)
@@ -144,9 +168,9 @@ func (a *App) SaveSettings(nu *SettingsView) (*SaveSettingsResult, error) {
 	needRestart := a.srv != nil && (g.ListenAddr != a.gcfg.ListenAddr ||
 		g.UpstreamMode != a.gcfg.UpstreamMode || g.UpstreamProxy != a.gcfg.UpstreamProxy)
 	a.mu.Unlock()
-	oldADB := a.gcfg.ADB         // 保存旧 ADB 配置用于自动挂钩收敛
+	oldADB := a.gcfg.ADB           // 保存旧 ADB 配置用于自动挂钩收敛
 	oldBypass := a.gcfg.BypassList // 保存旧 bypass 用于变化检测
-	*a.gcfg = g                  // Projects/CurrentProject 随浅拷贝保留
+	*a.gcfg = g                    // Projects/CurrentProject 随浅拷贝保留
 	if pc != nil {
 		a.proj.FilterGroups = pc.FilterGroups
 		a.proj.DecryptRules = pc.DecryptRules

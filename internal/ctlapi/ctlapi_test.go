@@ -1,7 +1,9 @@
 package ctlapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -31,23 +33,32 @@ type fakeService struct {
 	projSeen      string // 最近一次规则/设置调用的 project 参数
 	switchTo      string
 
-	pinID      string // 最近一次 SetFlowPinned 调用
-	pinPinned  bool
-	pinCalls   int
-	curlID     string
-	curlShell  string
+	pinID     string // 最近一次 SetFlowPinned 调用
+	pinPinned bool
+	pinCalls  int
+	curlID    string
+	curlShell string
 
-	lastTagID     string // 最近一次 ListFlowsByTag 的查询参数
-	lastScope     string
-	lastStart     int64
-	lastEnd       int64
-	lastQ         string
-	lastSort      string
-	lastDir       string
-	lastShowIgn   bool
-	ignoreKind    string // 最近一次忽略名单写/删参数
-	ignoreValue   string
-	ignoreCalls   int
+	lastTagID   string // 最近一次 ListFlowsByTag 的查询参数
+	lastScope   string
+	lastStart   int64
+	lastEnd     int64
+	lastQ       string
+	lastSort    string
+	lastDir     string
+	lastShowIgn bool
+	ignoreKind  string // 最近一次忽略名单写/删参数
+	ignoreValue string
+	ignoreCalls int
+
+	// AI 桩状态（M13）
+	aiCfg      map[string]any         // GetAIConfig 返回值（nil=默认）
+	aiCfgErr   error                  // GetAIConfig 同步错误
+	aiSaveErr  error                  // SaveAIConfig 同步错误
+	aiSavedRaw []byte                 // 最近一次 SaveAIConfig 请求体
+	aiTestErr  error                  // AITestConnection 同步错误
+	chatReq    AIChatRequest          // 最近一次 StreamAIChat 请求
+	chatScript func(AIChatEmit) error // 自定义帧脚本；nil=默认 meta→delta→done
 }
 
 func (f *fakeService) Status() map[string]any {
@@ -147,10 +158,10 @@ func (f *fakeService) UISettings(tab string) bool {
 
 // ---------- M10 补面方法桩 ----------
 
-func (f *fakeService) StartProxy() error                          { return nil }
-func (f *fakeService) StopProxy() error                            { return nil }
-func (f *fakeService) InstallCA() error                            { return nil }
-func (f *fakeService) AdbTest(adbPath string) (string, error)      { return "ok", nil }
+func (f *fakeService) StartProxy() error                      { return nil }
+func (f *fakeService) StopProxy() error                       { return nil }
+func (f *fakeService) InstallCA() error                       { return nil }
+func (f *fakeService) AdbTest(adbPath string) (string, error) { return "ok", nil }
 func (f *fakeService) AdbSetProxy(adbPath, serial string) (string, error) {
 	return "已设置设备代理", nil
 }
@@ -245,6 +256,55 @@ func (f *fakeService) GetTaggedFlowBody(id, which string) (any, error) {
 func (f *fakeService) RenameTag(raw json.RawMessage) error { return nil }
 func (f *fakeService) DeleteTag(tagID string, deleteFlows bool) (int, error) {
 	return 0, nil
+}
+
+// ---------- AI 桩（M13 P2-11 路由测试用） ----------
+
+func (f *fakeService) GetAIConfig() (any, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.aiCfgErr != nil {
+		return nil, f.aiCfgErr
+	}
+	if f.aiCfg != nil {
+		return f.aiCfg, nil
+	}
+	return map[string]any{"enabled": false, "model": "", "hasApiKey": false, "apiKeyMasked": ""}, nil
+}
+func (f *fakeService) SaveAIConfig(raw json.RawMessage) (any, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.aiSavedRaw = []byte(raw)
+	if f.aiSaveErr != nil {
+		return nil, f.aiSaveErr
+	}
+	return map[string]any{"enabled": true, "model": "m", "hasApiKey": true, "apiKeyMasked": "sk-***"}, nil
+}
+func (f *fakeService) AITestConnection() (any, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.aiTestErr != nil {
+		return nil, f.aiTestErr
+	}
+	return map[string]any{"ok": true, "model": "m", "latencyMs": 120, "message": "ok"}, nil
+}
+func (f *fakeService) StreamAIChat(ctx context.Context, req AIChatRequest, emit AIChatEmit) error {
+	f.mu.Lock()
+	f.chatReq = req
+	script := f.chatScript
+	f.mu.Unlock()
+	if script != nil {
+		return script(emit)
+	}
+	// 默认脚本：meta → delta → done
+	if err := emit(AIEventMeta, map[string]any{"mode": req.Mode, "total": 1, "sent": 1,
+		"budget": map[string]int{"flows": 50, "kb": 64}, "truncated": false}); err != nil {
+		return err
+	}
+	if err := emit(AIEventDelta, map[string]string{"text": "你好"}); err != nil {
+		return err
+	}
+	return emit(AIEventDone, map[string]any{"finishReason": "stop", "truncated": false})
 }
 
 func startTestServer(t *testing.T, svc Service) (*Server, string, string) {
@@ -530,5 +590,201 @@ func TestNewToken(t *testing.T) {
 	a, b := newToken(), newToken()
 	if len(a) != 64 || a == b {
 		t.Fatalf("token 应为 64 字符且唯一: len(a)=%d equal=%v", len(a), a == b)
+	}
+}
+
+// ---------- P2-11：AI 路由（设计 §5.3/§5.5，M13） ----------
+
+// sseFrame 单帧（SSE 文本解析用）
+type sseFrame struct {
+	event string
+	data  string
+}
+
+// parseSSEFrames 解析 SSE 文本为帧序列（event/data 对，跳过注释行与空块）
+func parseSSEFrames(t *testing.T, body string) []sseFrame {
+	t.Helper()
+	var frames []sseFrame
+	for _, block := range strings.Split(body, "\n\n") {
+		block = strings.TrimSpace(block)
+		if block == "" || strings.HasPrefix(block, ":") {
+			continue
+		}
+		var f sseFrame
+		for _, line := range strings.Split(block, "\n") {
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				f.event = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				f.data = strings.TrimPrefix(line, "data: ")
+			}
+		}
+		frames = append(frames, f)
+	}
+	return frames
+}
+
+// GET /ai/config 掩码视图；POST 透传部分更新原文；错误映射（ErrAIBadReq→400）；PUT→405
+func TestAIConfigEndpoints(t *testing.T) {
+	svc := &fakeService{}
+	_, addr, token := startTestServer(t, svc)
+
+	code, m := doRequest(t, "GET", addr, token, "/ai/config", nil)
+	if code != 200 || m["hasApiKey"] != false {
+		t.Fatalf("GET ai/config 应 200 且掩码视图: %d %v", code, m)
+	}
+
+	// POST 只发 {apiKey}：路由层透传原文（部分更新语义由实现层保证）
+	code, m = doRequest(t, "POST", addr, token, "/ai/config", strings.NewReader(`{"apiKey":"sk-test-1"}`))
+	if code != 200 || m["hasApiKey"] != true || m["apiKeyMasked"] != "sk-***" {
+		t.Fatalf("POST ai/config 响应异常: %d %v", code, m)
+	}
+	svc.mu.Lock()
+	raw := string(svc.aiSavedRaw)
+	svc.mu.Unlock()
+	if raw != `{"apiKey":"sk-test-1"}` {
+		t.Fatalf("SaveAIConfig 应透传原文，得 %s", raw)
+	}
+
+	// GET 错误 → 400（ErrAIBadReq 映射）
+	svc.mu.Lock()
+	svc.aiCfgErr = fmt.Errorf("%w: 配置损坏", ErrAIBadReq)
+	svc.mu.Unlock()
+	if code, _ := doRequest(t, "GET", addr, token, "/ai/config", nil); code != http.StatusBadRequest {
+		t.Fatalf("GET ai/config ErrAIBadReq 应 400，得 %d", code)
+	}
+
+	if code, _ := doRequest(t, "PUT", addr, token, "/ai/config", strings.NewReader(`{}`)); code != http.StatusMethodNotAllowed {
+		t.Fatalf("PUT ai/config 应 405，得 %d", code)
+	}
+}
+
+// POST /ai/test → {ok,model,latencyMs,message}；ErrAIBadReq→400；GET→405
+func TestAITestEndpoint(t *testing.T) {
+	svc := &fakeService{}
+	_, addr, token := startTestServer(t, svc)
+
+	code, m := doRequest(t, "POST", addr, token, "/ai/test", nil)
+	if code != 200 || m["ok"] != true || m["latencyMs"] != float64(120) {
+		t.Fatalf("POST ai/test 应 200: %d %v", code, m)
+	}
+
+	svc.mu.Lock()
+	svc.aiTestErr = fmt.Errorf("%w: 未配置", ErrAIBadReq)
+	svc.mu.Unlock()
+	if code, _ := doRequest(t, "POST", addr, token, "/ai/test", nil); code != http.StatusBadRequest {
+		t.Fatalf("ai/test 未配置应 400，得 %d", code)
+	}
+
+	if code, _ := doRequest(t, "GET", addr, token, "/ai/test", nil); code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET ai/test 应 405，得 %d", code)
+	}
+}
+
+// POST /ai/chat SSE 帧序：meta → delta → done（默认脚本）；请求参数透传
+func TestAIChatSSEFrames(t *testing.T) {
+	svc := &fakeService{}
+	_, addr, token := startTestServer(t, svc)
+
+	req, _ := http.NewRequest("POST", "http://"+addr+"/api/v1/ai/chat",
+		strings.NewReader(`{"mode":"explain","flowId":"f1"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("chat 请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("chat 应 200，得 %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("Content-Type 应为 text/event-stream，得 %q", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	frames := parseSSEFrames(t, string(body))
+	if len(frames) != 3 {
+		t.Fatalf("应 3 帧（meta/delta/done），得 %d: %q", len(frames), body)
+	}
+	if frames[0].event != AIEventMeta || frames[1].event != AIEventDelta || frames[2].event != AIEventDone {
+		t.Fatalf("帧序应 meta→delta→done: %s %s %s", frames[0].event, frames[1].event, frames[2].event)
+	}
+	svc.mu.Lock()
+	got := svc.chatReq
+	svc.mu.Unlock()
+	if got.FlowID != "f1" || got.Mode != "explain" {
+		t.Fatalf("StreamAIChat 请求参数错误: %+v", got)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(frames[0].data), &meta); err != nil {
+		t.Fatalf("meta 帧解析失败: %v", err)
+	}
+	if meta["mode"] != "explain" || meta["total"] != float64(1) {
+		t.Fatalf("meta 帧内容异常: %v", meta)
+	}
+}
+
+// chat 同步错误映射：ErrAIBadReq→400 / ErrAIConflict→409 / 其他→500（JSON，无 SSE 头）；
+// meta 后出错流已开始（200 + 已发帧不转 JSON）；GET→405
+func TestAIChatSyncErrors(t *testing.T) {
+	svc := &fakeService{}
+	_, addr, token := startTestServer(t, svc)
+
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"未配置", fmt.Errorf("%w: AI 分析未启用", ErrAIBadReq), 400},
+		{"并发", fmt.Errorf("%w", ErrAIConflict), 409},
+		{"内部", fmt.Errorf("boom"), 500},
+	}
+	for _, c := range cases {
+		svc.mu.Lock()
+		svc.chatScript = func(emit AIChatEmit) error { return c.err }
+		svc.mu.Unlock()
+		code, m := doRequest(t, "POST", addr, token, "/ai/chat", strings.NewReader(`{"mode":"explain","flowId":"f1"}`))
+		if code != c.want {
+			t.Fatalf("%s: 应 %d，得 %d (%v)", c.name, c.want, code, m)
+		}
+	}
+	svc.mu.Lock()
+	svc.chatScript = nil
+	svc.mu.Unlock()
+
+	// 已开流（meta 后）错误：200 + 帧已发，不转 JSON
+	svc.mu.Lock()
+	svc.chatScript = func(emit AIChatEmit) error {
+		_ = emit(AIEventMeta, map[string]any{"total": 1})
+		return fmt.Errorf("流中异常")
+	}
+	svc.mu.Unlock()
+	req, _ := http.NewRequest("POST", "http://"+addr+"/api/v1/ai/chat", strings.NewReader(`{"mode":"explain","flowId":"f1"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("chat 请求失败: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "event: meta") {
+		t.Fatalf("meta 后错误应 200+已发帧: %d %q", resp.StatusCode, body)
+	}
+
+	if code, _ := doRequest(t, "GET", addr, token, "/ai/chat", nil); code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET ai/chat 应 405，得 %d", code)
+	}
+}
+
+// UISettingsTabs 含 ai（P2-11）：ui/settings tab=ai 合法
+func TestUISettingsTabsAI(t *testing.T) {
+	if !contains(UISettingsTabs, "ai") {
+		t.Fatalf("UISettingsTabs 应含 ai: %v", UISettingsTabs)
+	}
+	svc := &fakeService{uiOn: true}
+	_, addr, token := startTestServer(t, svc)
+	code, _ := doRequest(t, "POST", addr, token, "/ui/settings", strings.NewReader(`{"tab":"ai"}`))
+	if code != 200 {
+		t.Fatalf("tab=ai 应 200，得 %d", code)
 	}
 }

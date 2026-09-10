@@ -28,9 +28,9 @@ type FlowMeta struct {
 	ClientAddr  string
 	StartedAt   int64 // unix 毫秒
 	Err         string
-	Pinned      bool   // M5 置顶：固定顶部、不参与淘汰、Clear 保留（会话内不持久化）
-	Source      string // capture | composer（M6 调试重发标记）| history（M7 历史库加载）
-	Historical  bool   // M7：是否为从 SQLite 历史库加载的历史流（正文惰性回查 DB）
+	Pinned      bool     // M5 置顶：固定顶部、不参与淘汰、Clear 保留（会话内不持久化）
+	Source      string   // capture | composer（M6 调试重发标记）| history（M7 历史库加载）
+	Historical  bool     // M7：是否为从 SQLite 历史库加载的历史流（正文惰性回查 DB）
 	Tags        []string // M12：该流所属标签名列表（会话态，由 App tagIndex COW 快照注入，不来自 flows.data）
 }
 
@@ -89,6 +89,9 @@ type SettingsView struct {
 	BypassList []string               `json:"bypassList"`
 	Persist    settings.PersistConfig `json:"persist"`
 	ADB        settings.ADBConfig     `json:"adb"`
+	// AI AI 分析配置（无 key 投影，P2-10，设计稿 §六）：密钥走独立 /ai/config 与
+	// GetAIConfigApp/SaveAIConfigApp，全量表单链路不见 key（SaveSettings 合并不动已存 key）
+	AI settings.AISettings `json:"ai"`
 	// 规则（当前项目 project.json）
 	FilterGroups []rules.FilterGroup `json:"filterGroups"`
 	DecryptRules []rules.DecryptRule `json:"decryptRules"`

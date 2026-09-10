@@ -794,3 +794,40 @@ func TestHistogramScopeAndWindow(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadFlowsByIDs AI 取数口径（M13 计划 P2-6）：started_at 降序与入参顺序无关、
+// 缺失 id 缺席（失效即不返回）、重复 id 去重、空 ids 空结果、历史标记（Source/Pinned）。
+func TestLoadFlowsByIDs(t *testing.T) {
+	w := archiveWriter(t)
+	base := time.Date(2026, 9, 10, 10, 0, 0, 0, time.UTC).UnixMilli()
+	ids := seedTimed(t, w, "aid", []int64{base, base + 1000, base + 2000}) // ids[2] 最新
+
+	// 乱序 + 含不存在 id + 重复 id：返回降序、缺失缺席、去重
+	got, err := w.LoadFlowsByIDs([]string{ids[1], "gone-1", ids[2], ids[0], "gone-2", ids[1]})
+	if err != nil {
+		t.Fatalf("LoadFlowsByIDs: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("返回流数 = %d，期望 3（缺失缺席+去重）", len(got))
+	}
+	for i, want := range []string{ids[2], ids[1], ids[0]} {
+		if string(got[i].ID) != want {
+			t.Fatalf("第 %d 条 = %s，期望 %s（降序）", i, got[i].ID, want)
+		}
+		if got[i].Source != capture.SourceHistory || got[i].Pinned {
+			t.Fatalf("流 %s 标记错误: source=%v pinned=%v", got[i].ID, got[i].Source, got[i].Pinned)
+		}
+	}
+
+	// 全失效（仅不存在 id）：空结果不报错
+	miss, err := w.LoadFlowsByIDs([]string{"nope-a", "nope-b"})
+	if err != nil || len(miss) != 0 {
+		t.Fatalf("全失效应空结果不报错，得 %d, %v", len(miss), err)
+	}
+
+	// 空 ids：空结果
+	empty, err := w.LoadFlowsByIDs(nil)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("空 ids 应空结果，得 %d, %v", len(empty), err)
+	}
+}

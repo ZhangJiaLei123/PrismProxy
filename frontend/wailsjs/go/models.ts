@@ -1,5 +1,51 @@
 export namespace app {
 	
+	export class AIChatHandle {
+	    handle: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AIChatHandle(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.handle = source["handle"];
+	    }
+	}
+	export class AIConfigView {
+	    hasApiKey: boolean;
+	    apiKeyMasked: string;
+	    keyMissingWarn: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AIConfigView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hasApiKey = source["hasApiKey"];
+	        this.apiKeyMasked = source["apiKeyMasked"];
+	        this.keyMissingWarn = source["keyMissingWarn"];
+	    }
+	}
+	export class AITestResult {
+	    model: string;
+	    latencyMs: number;
+	    ok: boolean;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AITestResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.model = source["model"];
+	        this.latencyMs = source["latencyMs"];
+	        this.ok = source["ok"];
+	        this.message = source["message"];
+	    }
+	}
 	export class BodyPayload {
 	    Encoding: string;
 	    ContentType: string;
@@ -337,6 +383,7 @@ export namespace app {
 	    bypassList: string[];
 	    persist: settings.PersistConfig;
 	    adb: settings.ADBConfig;
+	    ai: settings.AISettings;
 	    filterGroups: rules.FilterGroup[];
 	    decryptRules: rules.DecryptRule[];
 	    currentProject: settings.ProjectMeta;
@@ -358,6 +405,7 @@ export namespace app {
 	        this.bypassList = source["bypassList"];
 	        this.persist = this.convertValues(source["persist"], settings.PersistConfig);
 	        this.adb = this.convertValues(source["adb"], settings.ADBConfig);
+	        this.ai = this.convertValues(source["ai"], settings.AISettings);
 	        this.filterGroups = this.convertValues(source["filterGroups"], rules.FilterGroup);
 	        this.decryptRules = this.convertValues(source["decryptRules"], rules.DecryptRule);
 	        this.currentProject = this.convertValues(source["currentProject"], settings.ProjectMeta);
@@ -716,6 +764,65 @@ export namespace capture {
 
 }
 
+export namespace ctlapi {
+
+	export class AIChatOptions {
+	    includeReqBody: boolean;
+	    includeRespBody: boolean;
+	    language: string;
+
+	    static createFrom(source: any = {}) {
+	        return new AIChatOptions(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.includeReqBody = source["includeReqBody"];
+	        this.includeRespBody = source["includeRespBody"];
+	        this.language = source["language"];
+	    }
+	}
+	export class AIChatRequest {
+	    mode: string;
+	    flowId: string;
+	    ids: string[];
+	    question: string;
+	    options: AIChatOptions;
+
+	    static createFrom(source: any = {}) {
+	        return new AIChatRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.flowId = source["flowId"];
+	        this.ids = source["ids"];
+	        this.question = source["question"];
+	        this.options = this.convertValues(source["options"], AIChatOptions);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace persist {
 	
 	export class HistBucket {
@@ -869,6 +976,64 @@ export namespace settings {
 		}
 	}
 	
+	export class AIConfig {
+	    enabled: boolean;
+	    provider: string;
+	    baseUrl: string;
+	    apiKey: string;
+	    model: string;
+	    temperature: number;
+	    timeoutSec: number;
+	    maxFlows: number;
+	    maxKb: number;
+	    redact: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new AIConfig(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.provider = source["provider"];
+	        this.baseUrl = source["baseUrl"];
+	        this.apiKey = source["apiKey"];
+	        this.model = source["model"];
+	        this.temperature = source["temperature"];
+	        this.timeoutSec = source["timeoutSec"];
+	        this.maxFlows = source["maxFlows"];
+	        this.maxKb = source["maxKb"];
+	        this.redact = source["redact"];
+	    }
+	}
+	export class AISettings {
+	    enabled: boolean;
+	    provider: string;
+	    baseUrl: string;
+	    model: string;
+	    temperature: number;
+	    timeoutSec: number;
+	    maxFlows: number;
+	    maxKb: number;
+	    redact: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new AISettings(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.provider = source["provider"];
+	        this.baseUrl = source["baseUrl"];
+	        this.model = source["model"];
+	        this.temperature = source["temperature"];
+	        this.timeoutSec = source["timeoutSec"];
+	        this.maxFlows = source["maxFlows"];
+	        this.maxKb = source["maxKb"];
+	        this.redact = source["redact"];
+	    }
+	}
 	export class PersistConfig {
 	    enabled: boolean;
 	    dbPath?: string;

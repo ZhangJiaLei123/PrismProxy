@@ -23,7 +23,7 @@ import (
 const DefaultAddr = "127.0.0.1:9595"
 
 // UISettingsTabs 合法的设置面板 tab（cli ui settings 校验用）
-var UISettingsTabs = []string{"general", "network", "adb", "decrypt", "capture", "domains"}
+var UISettingsTabs = []string{"general", "network", "adb", "decrypt", "capture", "domains", "ai"}
 
 // Service 控制面服务层：接线层（main 包）实现，ctlapi 不依赖 Wails/具体业务包。
 // 返回值以可 JSON 序列化类型为主；error 非空时 HTTP 响应 4xx/5xx。
@@ -88,6 +88,12 @@ type Service interface {
 	GetTaggedFlowBody(id, which string) (any, error)
 	RenameTag(raw json.RawMessage) error
 	DeleteTag(tagID string, deleteFlows bool) (int, error)
+	// AI 分析（M13，设计 §5.3）：Wails 主窗另有直连绑定（bindings_ai.go）不经此处；
+	// StreamAIChat 在首次 emit 前返回 error 视为同步错误（sentinel 映射 400/409/500）
+	GetAIConfig() (any, error)                                          // 掩码视图，key 永不回原值
+	SaveAIConfig(raw json.RawMessage) (any, error)                      // 部分更新，返回更新后掩码视图
+	AITestConnection() (any, error)                                     // 连通探测 {ok,model,latencyMs,message}
+	StreamAIChat(ctx context.Context, req AIChatRequest, emit AIChatEmit) error // SSE 编排（实现层含并发闸门）
 }
 
 // Server 控制 API HTTP 服务（仅回环）
@@ -230,6 +236,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/v1/tags/flows", s.auth(s.handleTags)) // POST 打标（显式注册，防落到子树被当 flowId）
 	mux.HandleFunc("/api/v1/tags/ignores", s.auth(s.handleTagIgnores)) // M12.2 忽略名单：GET 列表/POST 添加（显式注册）
 	mux.HandleFunc("/api/v1/tags/", s.auth(s.handleTagSub))
+	// M13 AI 分析（设计 §5.3）：config GET/POST 部分更新、test 连通探测、chat SSE
+	mux.HandleFunc("/api/v1/ai/config", s.auth(s.handleAIConfig))
+	mux.HandleFunc("/api/v1/ai/test", s.auth(s.handleAITest))
+	mux.HandleFunc("/api/v1/ai/chat", s.auth(s.handleAIChat))
 	// SSE 推送（query token 仅此端点接受：EventSource 无法自定义请求头）
 	mux.HandleFunc("/api/v1/events", s.auth(s.handleEvents, true))
 	// M12 复盘页静态托管（设计 §6.3）：不套 auth（静态页无敏感数据，数据 API 仍鉴权，
