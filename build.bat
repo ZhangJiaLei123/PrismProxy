@@ -18,7 +18,7 @@ set "MODE=release"
 set "DO_NSIS=0"
 set "DO_UPX=0"
 set "DO_CLEAN=0"
-set "VERSION=1.2.0"
+set "VERSION=1.2.1"
 
 rem ---------- parse arguments ----------
 if "%~1"=="" goto :args_done
