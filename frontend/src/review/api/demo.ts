@@ -151,6 +151,8 @@ export class DemoApi implements ReviewApi {
     ['host', new Map()],
     ['path', new Map()],
     ['proc', new Map()],
+    ['method', new Map()],
+    ['status', new Map()],
   ])
 
   // 归一化复刻 persist.NormalizeIgnore*（与服务端同口径）：
@@ -175,6 +177,29 @@ export class DemoApi implements ReviewApi {
     return p
   }
 
+  private normMethod(v: string): string {
+    const m = v.trim().toUpperCase()
+    if (!m) throw new ApiError('http', '方法不能为空')
+    return m
+  }
+
+  private normStatus(v: string): string {
+    const s = v.trim()
+    if (!/^\d{3}$/.test(s) || Number(s) < 100 || Number(s) > 599) {
+      throw new ApiError('http', '状态码无效（须为 100–599 的三位整数）')
+    }
+    return s
+  }
+
+  // 按 kind 归一化（与 addIgnore/removeIgnore 共用，保证删除口径与存储一致）
+  private normIgnore(kind: ReviewIgnoreKind, value: string): string {
+    if (kind === 'host') return this.normHost(value)
+    if (kind === 'path') return this.normPath(value)
+    if (kind === 'method') return this.normMethod(value)
+    if (kind === 'status') return this.normStatus(value)
+    return value.trim()
+  }
+
   // 单条忽略是否命中一行（SQL 排除条件的 JS 复刻）
   private rowIgnored(f: ReviewFlowMeta): boolean {
     const hostHit = (h: string): boolean => {
@@ -188,6 +213,10 @@ export class DemoApi implements ReviewApi {
     for (const p of this.ignores.get('path')!.keys()) if (pathHit(p)) return true
     const proc = (f.ProcessName || '').toLowerCase()
     for (const pn of this.ignores.get('proc')!.keys()) if (proc && proc === pn.toLowerCase()) return true
+    const method = (f.Method || '').toLowerCase()
+    for (const mth of this.ignores.get('method')!.keys()) if (method && method === mth.toLowerCase()) return true
+    // 状态 0=无响应/错误流，与任何 100–599 名单不等，不会被误伤
+    for (const code of this.ignores.get('status')!.keys()) if (f.Status && String(f.Status) === code) return true
     return false
   }
 
@@ -300,8 +329,8 @@ export class DemoApi implements ReviewApi {
 
   async addIgnore(kind: ReviewIgnoreKind, value: string, note = ''): Promise<ReviewIgnoreAddResult> {
     const m = this.ignores.get(kind)
-    if (!m) throw new ApiError('http', '非法忽略类型（仅支持 host/path/proc）')
-    const v = kind === 'host' ? this.normHost(value) : kind === 'path' ? this.normPath(value) : value.trim()
+    if (!m) throw new ApiError('http', '非法忽略类型（仅支持 host/path/proc/method/status）')
+    const v = this.normIgnore(kind, value)
     if (!v) throw new ApiError('http', '忽略值不能为空')
     const existing = m.get(v)
     if (existing) {
@@ -314,7 +343,7 @@ export class DemoApi implements ReviewApi {
   }
 
   async removeIgnore(kind: ReviewIgnoreKind, value: string): Promise<boolean> {
-    const v = kind === 'host' ? this.normHost(value) : kind === 'path' ? this.normPath(value) : value.trim()
+    const v = this.normIgnore(kind, value)
     return this.ignores.get(kind)?.delete(v) ?? false
   }
 

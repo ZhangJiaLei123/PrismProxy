@@ -229,3 +229,19 @@ export function SwitchProject(arg1) {
 export function TagFlows(arg1, arg2, arg3) {
   return window['go']['app']['App']['TagFlows'](arg1, arg2, arg3);
 }
+
+export function WailsAddIgnore(arg1, arg2, arg3) {
+  return window['go']['app']['App']['WailsAddIgnore'](arg1, arg2, arg3);
+}
+
+export function WailsFlowList(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['app']['App']['WailsFlowList'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
+export function WailsHistogram(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['app']['App']['WailsHistogram'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function WailsTagsOverview() {
+  return window['go']['app']['App']['WailsTagsOverview']();
+}

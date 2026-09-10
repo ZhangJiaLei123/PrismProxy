@@ -339,7 +339,7 @@ func (w *Writer) reviewQueryOptsFor(o ReviewListOpts) (reviewQueryOpts, error) {
 // FlowsByTag 分页返回范围内的流（默认时间倒序，可按 opts.SortKey/SortDir 排序；
 // tagID="all" 时按 scope 取数）。limit<=0 用默认 200，上限 1000；offset 为跳过条数；
 // opts.Q 非空时在 method/host/path 子串过滤；opts.ShowIgnored=false 时以 SQL 条件排除
-// review_ignores 名单内的 host/path/proc（仅隐藏）。仅元数据（body 惰性回查），
+// review_ignores 名单内的 host/path/proc/method/status（仅隐藏）。仅元数据（body 惰性回查），
 // 复盘流以 capture.SourceHistory 标记（与启动补载口径一致）。
 func (w *Writer) FlowsByTag(tagID, scope string, start, end int64, limit, offset int, opts ReviewListOpts) ([]*capture.Flow, error) {
 	if limit <= 0 {

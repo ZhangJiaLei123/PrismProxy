@@ -393,9 +393,9 @@ func TestFlowPinCurlEndpoints(t *testing.T) {
 		t.Fatalf("GET pin 应 405，得 %d", code)
 	}
 
-	// curl（GET，默认 powershell）
+	// curl（GET，默认 cmd）
 	code, m = doRequest(t, "GET", addr, token, "/flows/f1/curl", nil)
-	if code != 200 || m["shell"] != "powershell" || svc.curlID != "f1" || svc.curlShell != "powershell" {
+	if code != 200 || m["shell"] != "cmd" || svc.curlID != "f1" || svc.curlShell != "cmd" {
 		t.Fatalf("curl 响应/调用异常: code=%d m=%v id=%s shell=%s", code, m, svc.curlID, svc.curlShell)
 	}
 	// curl 指定 shell

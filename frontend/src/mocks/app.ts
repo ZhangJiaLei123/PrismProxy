@@ -521,10 +521,11 @@ const handlers: Record<string, (...args: any[]) => any> = {
   BuildCurl: async (id: string, shell: string) => {
     const f = findFlow(id)
     if (!f) throw new Error('流不存在')
-    const q = shell === 'cmd' ? '"' : shell === 'powershell' ? "'" : "'"
-    const sep = shell === 'cmd' ? ' ^\n  ' : shell === 'powershell' ? ' `\n  ' : ' \\\n  '
-    let cmd = `curl -X ${f.meta.Method} ${q}${f.meta.URL}${q}`
-    if (f.reqBody) cmd += sep + `--data ${q}${f.reqBody}${q}`
+    // 仅浏览器 mock 预览用的简化形态：DevTools 风多行，cmd ^" / bash 单引号
+    const q = shell === 'cmd' ? '^"' : "'"
+    const sep = shell === 'cmd' ? ' ^\n  ' : ' \\\n  '
+    let cmd = `curl --url ${q}${f.meta.URL}${q}`
+    if (f.reqBody) cmd += sep + `--data-raw ${q}${f.reqBody}${q}`
     return { command: cmd, bodyOmitted: false }
   },
   AddQuickIgnore: async (kind: string, value: string) => {

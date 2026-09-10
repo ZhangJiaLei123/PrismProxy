@@ -470,14 +470,14 @@ func (s *Server) handleFlowSub(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "pinned": req.Pinned})
 		return
 	case "curl":
-		// GET /flows/{id}/curl?shell=cmd|powershell|bash
+		// GET /flows/{id}/curl?shell=cmd|bash（默认 cmd）
 		if r.Method != http.MethodGet {
 			writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
 			return
 		}
 		shell := r.URL.Query().Get("shell")
 		if shell == "" {
-			shell = "powershell"
+			shell = "cmd"
 		}
 		v, err := s.svc.BuildCurl(id, shell)
 		if err != nil {

@@ -38,7 +38,8 @@ export interface ListFlowsOpts {
   showIgnored?: boolean
 }
 
-export type ApiMode = 'http' | 'demo' | 'unauthorized' | 'offline'
+// wails=主窗内嵌复盘（直接调 Wails 绑定，不经 ctlapi HTTP）
+export type ApiMode = 'http' | 'demo' | 'unauthorized' | 'offline' | 'wails'
 
 export interface ReviewApi {
   mode: ApiMode

@@ -45,7 +45,7 @@
                   <div v-else-if="!ignores.length" class="ip-state">
                     <div class="ip-empty-ic">🚫</div>
                     <div>忽略名单为空</div>
-                    <div class="ip-empty-sub">在列表的域名 / 路径 / 进程单元格上右键即可忽略，忽略仅隐藏数据、不会删除</div>
+                    <div class="ip-empty-sub">在列表的域名 / 路径 / 进程 / 方法 / 状态单元格上右键即可忽略，忽略仅隐藏数据、不会删除</div>
                   </div>
                   <div v-else class="ip-list">
                     <div v-for="it in sortedIgnores" :key="it.kind + '|' + it.value" class="ip-item">
@@ -256,45 +256,24 @@
                   </template>
                 </div>
 
-                <div v-else class="flow-list">
-                  <!-- M12.2 表头：点击排序（默认时间倒序，与服务端 flowOrderBy 默认一致） -->
-                  <div class="flow-head">
-                    <span
-                      v-for="col in columns"
-                      :key="col.key"
-                      :class="['fh-' + col.cls, { active: sortKey === col.key }]"
-                      :title="sortKey === col.key ? (sortDir === 'asc' ? '升序（点击切换降序）' : '降序（点击切换升序）') : '点击按' + col.label + '排序'"
-                      @click="onSort(col.key)"
-                    >{{ col.label }}<i v-if="sortKey === col.key" class="sort-ic">{{ sortDir === 'asc' ? '▲' : '▼' }}</i></span>
-                  </div>
-                  <div
-                    v-for="f in flows"
-                    :key="f.ID"
-                    class="flow-row"
-                    :class="{ active: f.ID === selectedFlow }"
-                    @click="onSelectFlow(f.ID)"
-                    @contextmenu.prevent="onContextMenu($event, f)"
-                  >
-                    <span class="fr-method" :class="'m-' + f.Method">{{ f.Method }}</span>
-                    <span class="fr-status" :class="statusCls(f.Status, f.State)">{{ f.Status || '·' }}</span>
-                    <span class="fr-host" :title="f.Host">{{ f.Host }}</span>
-                    <span class="fr-path" :title="f.Path">{{ f.Path }}</span>
-                    <span class="fr-time">{{ fmtTime(f.StartedAt) }}</span>
-                    <span class="fr-size">{{ fmtBytes(f.BytesDown) }}</span>
-                    <span class="fr-proc" :title="f.ProcessName ? f.ProcessName + (f.PID ? ' (' + f.PID + ')' : '') : ''">{{ f.ProcessName || '·' }}</span>
-                  </div>
-                </div>
-
-                <!-- M12.2 右键忽略菜单：仅在域名/路径/进程列右键时出现对应项；忽略=查询隐藏，不删数据 -->
-                <n-dropdown
-                  placement="bottom-start"
-                  trigger="manual"
-                  :x="ctxX"
-                  :y="ctxY"
-                  :options="ctxOptions"
-                  :show="ctxShow"
-                  :on-clickoutside="() => (ctxShow = false)"
-                  @select="onCtxSelect"
+                <!-- M12.3：与主窗共用 FlowTable（虚拟滚动/列布局/双击复制/右键复制 URL、三 shell cURL、
+                     调试重发、忽略域名/路径/进程）；排序为服务端排序，翻页后回到顶部 -->
+                <flow-table
+                  v-else
+                  ref="tableRef"
+                  :rows="flows"
+                  :columns="columns"
+                  :sort-key="sortKey"
+                  :sort-dir="sortDir"
+                  layout-key="prismproxy:review-col-layout-v1"
+                  :default-widths="TABLE_DEFAULT_WIDTHS"
+                  :col-mins="TABLE_COL_MINS"
+                  :selected-id="selectedFlow"
+                  :actions="tableActions"
+                  @select="onSelectFlow"
+                  @sort="onSort"
+                  @action-error="(m) => message.error(m, { duration: 6000, closable: true })"
+                  @curl-omitted="onCurlOmitted"
                 />
 
                 <!-- 页码分页：上一页/下一页/页码/跳页 + 每页条数切换 -->
@@ -325,21 +304,37 @@
               </div>
             </div>
           </div>
+
+      <!-- M12.3：列表右键「调试重发」的弹窗（与详情页内按钮各自独立挂载，互不影响） -->
+      <review-composer
+        v-model:show="listComposerShow"
+        :api="api"
+        :flow-id="listComposerFlow"
+        @error="(m) => message.error(m, { duration: 6000, closable: true })"
+      />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { NButton, NDatePicker, NDropdown, NInput, NPagination, NPopconfirm, NPopover, NRadioButton, NRadioGroup, NSwitch, NTag, NTooltip, useMessage } from 'naive-ui'
-import type { DropdownOption } from 'naive-ui'
+import { NButton, NDatePicker, NInput, NPagination, NPopconfirm, NPopover, NRadioButton, NRadioGroup, NSwitch, NTag, NTooltip, useMessage } from 'naive-ui'
 import ReviewSidebar from '../components/ReviewSidebar.vue'
 import ReviewDetail from '../components/ReviewDetail.vue'
 import ReviewTimeline from '../components/ReviewTimeline.vue'
+import ReviewComposer from '../components/ReviewComposer.vue'
+import FlowTable from '../../components/FlowTable.vue'
+import type { FlowColumn, FlowTableActions } from '../../components/FlowTable.vue'
 import { ApiError, createApi } from '../api'
+import type { ReviewApi } from '../api'
 import type { ReviewFlowMeta, ReviewHistogram, ReviewIgnoreItem, ReviewIgnoreKind, ReviewScope, ReviewSortDir, ReviewSortKey, ReviewTagInfo } from '../../lib/types'
-import { fmtBytes, fmtDateTime, fmtTime } from '../../lib/format'
+import { fmtDateTime } from '../../lib/format'
+import { b64ToBytes } from '../../lib/format'
+import { buildCurl } from '../../lib/curl'
+import type { CurlShell } from '../../lib/curl'
 
-const { api } = createApi()
+// 独立浏览器入口（review.html）走 createApi（Http/Demo）；主窗内嵌时由 App.vue 注入 WailsReviewApi
+const props = defineProps<{ api?: ReviewApi }>()
+const { api } = props.api ? { api: props.api } : createApi()
 const message = useMessage()
 
 const tags = ref<ReviewTagInfo[]>([])
@@ -359,19 +354,42 @@ const PAGE_SIZES = [50, 100, 200, 500]
 let kwTimer: ReturnType<typeof setTimeout> | null = null
 const fatal = ref<{ title: string; sub: string } | null>(null)
 
-// M12.2 表头列定义（cls 同时决定表头样式类 fh-* 与行单元格类 fr-* 的列对应关系）
-const columns: { key: ReviewSortKey; label: string; cls: string }[] = [
-  { key: 'method', label: '方法', cls: 'method' },
-  { key: 'status', label: '状态', cls: 'status' },
-  { key: 'host', label: '域名', cls: 'host' },
-  { key: 'path', label: '路径', cls: 'path' },
-  { key: 'time', label: '时间', cls: 'time' },
-  { key: 'size', label: '大小', cls: 'size' },
-  { key: 'proc', label: '进程', cls: 'proc' },
+// M12.3 共享表格列定义（cls 必须是 c-host/c-path/c-proc/c-method/c-status，FlowTable 据此识别右键忽略列）；
+// 复盘列序与原自绘 7 列一致：方法/状态/域名/路径/时间/大小/进程
+function statusCls(f: ReviewFlowMeta): string {
+  if (f.State === 'error' || f.Status === 0) return 's-err'
+  if (f.Status >= 500) return 's-5xx'
+  if (f.Status >= 400) return 's-4xx'
+  if (f.Status >= 300) return 's-3xx'
+  return 's-2xx'
+}
+
+const columns: FlowColumn[] = [
+  { key: 'method', label: '方法', cls: 'c-method', wi: 1, cellCls: (f) => 'm-' + f.Method },
+  { key: 'status', label: '状态', cls: 'c-status', wi: 2, cellCls: statusCls, text: (f) => (f.Status ? String(f.Status) : '·') },
+  { key: 'host', label: '域名', cls: 'c-host', wi: 3, title: (f) => f.Host },
+  { key: 'path', label: '路径', cls: 'c-path', wi: 4, title: (f) => f.Path || f.URL },
+  { key: 'time', label: '时间', cls: 'c-time', wi: 5 },
+  { key: 'size', label: '大小', cls: 'c-size', wi: 6 },
+  {
+    key: 'proc',
+    label: '进程',
+    cls: 'c-proc',
+    wi: 7,
+    text: (f) => f.ProcessName || '·',
+    title: (f) => (f.ProcessName ? f.ProcessName + (f.PID ? ' (' + f.PID + ')' : '') : ''),
+  },
 ]
+// 状态点列（22px 固定）+ 7 数据列；路径列 1fr 弹性
+const TABLE_DEFAULT_WIDTHS: (number | null)[] = [22, 56, 50, null, null, 86, 70, null]
+const TABLE_COL_MINS = [22, 44, 40, 80, 100, 60, 48, 70]
+
 // 默认时间倒序（最新在顶部），与 FlowList 及服务端 flowOrderBy 默认一致
 const sortKey = ref<ReviewSortKey>('time')
 const sortDir = ref<ReviewSortDir>('desc')
+
+// 共享表格实例（翻页/重拉后回到顶部）
+const tableRef = ref<InstanceType<typeof FlowTable> | null>(null)
 
 // 小眼睛：是否显示被忽略的流量（默认隐藏）；选择写 localStorage 跨会话保留
 const SHOW_IGNORED_KEY = 'prismproxy:review-show-ignored-v1'
@@ -397,9 +415,9 @@ const ignoresLoading = ref(false)
 const ignorePopShow = ref(false)
 const removingKey = ref('')
 
-// 面板列表排序：域名 → 路径 → 进程，组内按值排序（ignore createdAt 为归一化入库时刻，展示意义不大）
+// 面板列表排序：域名 → 路径 → 进程 → 方法 → 状态，组内按值排序（ignore createdAt 为归一化入库时刻，展示意义不大）
 const sortedIgnores = computed(() => {
-  const order: ReviewIgnoreKind[] = ['host', 'path', 'proc']
+  const order: ReviewIgnoreKind[] = ['host', 'path', 'proc', 'method', 'status']
   return [...ignores.value].sort((a, b) => {
     const d = order.indexOf(a.kind) - order.indexOf(b.kind)
     return d !== 0 ? d : a.value.localeCompare(b.value)
@@ -452,13 +470,6 @@ async function onRemoveIgnore(it: ReviewIgnoreItem) {
     removingKey.value = ''
   }
 }
-
-// 右键菜单（manual 定位）：落点列决定忽略项
-const ctxShow = ref(false)
-const ctxX = ref(0)
-const ctxY = ref(0)
-const ctxFlow = ref<ReviewFlowMeta | null>(null)
-const ctxKind = ref<ReviewIgnoreKind | null>(null)
 
 // 敏感凭据黄条：关闭后写 localStorage（'1'），下次打开不再展示（隐私模式读取失败则照常显示）
 const WARN_DISMISS_KEY = 'prismproxy:review-warn-dismissed-v1'
@@ -580,14 +591,6 @@ const emptyText = computed(() =>
     : '该标签下暂无流',
 )
 
-function statusCls(status: number, state: string): string {
-  if (state === 'error' || status === 0) return 's-err'
-  if (status >= 500) return 's-5xx'
-  if (status >= 400) return 's-4xx'
-  if (status >= 300) return 's-3xx'
-  return 's-2xx'
-}
-
 async function loadTags() {
   const ov = await api.listTags()
   tags.value = ov.tags
@@ -657,7 +660,11 @@ async function onPageChange(p: number) {
   page.value = p
   selectedFlow.value = ''
   const ok = await loadFlows()
-  if (!ok && !fatal.value) page.value = prev
+  if (!ok && !fatal.value) {
+    page.value = prev
+  } else {
+    tableRef.value?.scrollToTop()
+  }
 }
 
 // 每页条数变化：回到第 1 页；普通失败恢复原页大小（loadFlows 已恢复旧列表/总数）
@@ -823,74 +830,67 @@ function onSelectFlow(id: string) {
   selectedFlow.value = id
 }
 
-// M12.2 表头排序：首次点某列，时间默认降序、其余升序；再点同列切换方向
-function onSort(key: ReviewSortKey) {
-  if (sortKey.value !== key) {
-    sortKey.value = key
-    sortDir.value = key === 'time' ? 'desc' : 'asc'
+// M12.2 表头排序（FlowTable 上抛列 key）：首次点某列，时间默认降序、其余升序；再点同列切换方向
+function onSort(key: string) {
+  const k = key as ReviewSortKey
+  if (sortKey.value !== k) {
+    sortKey.value = k
+    sortDir.value = k === 'time' ? 'desc' : 'asc'
   } else {
     sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
   }
   void loadFlows(true, true)
 }
 
-// 行右键：仅域名/路径/进程三列给出对应忽略入口（与 FlowList 交互一致）
-function onContextMenu(e: MouseEvent, f: ReviewFlowMeta) {
-  const cell = (e.target as HTMLElement).closest('span')
-  ctxKind.value = cell?.classList.contains('fr-proc')
-    ? 'proc'
-    : cell?.classList.contains('fr-host')
-      ? 'host'
-      : cell?.classList.contains('fr-path')
-        ? 'path'
-        : null
-  if (!ctxKind.value) return
-  ctxFlow.value = f
-  ctxX.value = e.clientX
-  ctxY.value = e.clientY
-  ctxShow.value = true
-}
-
 const IGNORE_LABEL: Record<ReviewIgnoreKind, string> = {
   host: '域名',
   path: '路径',
   proc: '进程',
+  method: '方法',
+  status: '状态',
 }
 
-const ctxOptions = computed<DropdownOption[]>(() => {
-  const f = ctxFlow.value
-  const kind = ctxKind.value
-  if (!f || !kind) return []
-  let text = ''
-  let disabled = false
-  if (kind === 'host') {
-    text = f.Host
-  } else if (kind === 'path') {
-    text = f.Path
-    // CONNECT 隧道流无路径
-    disabled = !f.Path || f.Method === 'CONNECT'
-  } else {
-    text = f.ProcessName
-    disabled = !f.ProcessName
-  }
-  const short = text.length > 32 ? text.slice(0, 32) + '…' : text
-  return [
-    {
-      label: `忽略此${IGNORE_LABEL[kind]}（${short || '未知'}，复盘列表中隐藏）`,
-      key: 'ignore',
-      disabled,
-    },
-  ]
-})
+function onCurlOmitted() {
+  message.info('请求体为二进制或超过 64KB，未内联到 cURL（请手动补充）', { duration: 5000, closable: true })
+}
 
-async function onCtxSelect(key: string) {
-  const f = ctxFlow.value
-  const kind = ctxKind.value
-  ctxShow.value = false
-  if (key !== 'ignore' || !f || !kind) return
-  const value = kind === 'host' ? f.Host : kind === 'path' ? f.Path : f.ProcessName
-  if (!value) return
-  try {
+// 列表右键「调试重发」：选中流并打开页面级 ReviewComposer（预填走归档 detail/body）
+const listComposerShow = ref(false)
+const listComposerFlow = ref('')
+function openListComposer(f: ReviewFlowMeta) {
+  onSelectFlow(f.ID)
+  listComposerFlow.value = f.ID
+  listComposerShow.value = true
+}
+
+// 注入共享表格的右键动作（无 pin：复盘列表不置顶）
+const tableActions: FlowTableActions = {
+  // 归档流不在实时内存，前端用归档详情 + 请求体重拼 cURL（lib/curl.ts 与 Go curl.go 转义逐字对齐）
+  buildCurl: async (f, shell: CurlShell) => {
+    const d = await api.flowDetail(f.ID)
+    const bp = await api.flowBody(f.ID, 'req')
+    // bp.Body 为已解压 base64 字符串（无 Body 时回落 Raw 原文）；为空给零字节
+    const b64 = bp.Body || bp.Raw || ''
+    const body = b64 ? b64ToBytes(b64) : new Uint8Array(0)
+    return buildCurl(
+      {
+        method: d.Method,
+        url: d.ReqURL || d.URL,
+        headers: d.ReqHeader || {},
+        body,
+        bodyTruncated: !!bp.Truncated,
+      },
+      shell,
+    )
+  },
+  ignore: async (f, kind) => {
+    const value =
+      kind === 'host' ? f.Host
+      : kind === 'path' ? f.Path
+      : kind === 'proc' ? f.ProcessName
+      : kind === 'method' ? f.Method
+      : f.Status ? String(f.Status) : ''
+    if (!value) return
     const r = await api.addIgnore(kind, value)
     if (r.added) {
       // 同步本地名单（面板即使未打开，角标计数也保持最新）
@@ -903,9 +903,10 @@ async function onCtxSelect(key: string) {
     }
     // 当前处于「显示忽略」时无需重拉（新忽略项仍可见）；隐藏态下列表与总数需重算
     if (!showIgnored.value) await loadFlows(true, true)
-  } catch (e) {
-    message.error(String((e as Error)?.message ?? e), { duration: 6000, closable: true })
-  }
+  },
+  compose: openListComposer,
+  // 复盘忽略名单支持全部五个维度（方法/状态为复盘专属，实时引擎快捷忽略无此两类）
+  ignoreKinds: ['host', 'path', 'proc', 'method', 'status'] as FlowIgnoreKind[],
 }
 
 function onDetailError(msg: string) {
@@ -1021,46 +1022,8 @@ onBeforeUnmount(() => {
 }
 .win-x { font-style: normal; cursor: pointer; opacity: 0.7; padding: 0 1px; }
 .win-x:hover { opacity: 1; }
-.flow-list { flex: 1; overflow-y: auto; }
-/* M12.2 表头与行共用 7 列网格（新增进程列） */
-.flow-head,
-.flow-row {
-  display: grid; grid-template-columns: 52px 42px minmax(110px, 1.4fr) minmax(120px, 2fr) 78px 62px minmax(80px, 1fr);
-  gap: 8px; align-items: center; padding: 5px 10px; font-size: 12px;
-}
-.flow-head {
-  position: sticky; top: 0; z-index: 2;
-  padding-top: 6px; padding-bottom: 6px;
-  background: #101014;
-  border-bottom: 1px solid rgba(255,255,255,0.12);
-  color: rgba(255,255,255,0.55);
-  font-size: 11px; user-select: none;
-}
-.flow-head span { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color 0.12s; }
-.flow-head span:hover { color: rgba(255,255,255,0.9); }
-.flow-head span.active { color: #c99bf0; }
-.flow-head .fh-status { text-align: center; }
-.flow-head .fh-time, .flow-head .fh-size { text-align: right; }
-.sort-ic { margin-left: 3px; font-style: normal; font-size: 9px; opacity: 0.4; }
-.flow-head span.active .sort-ic { opacity: 1; }
-.flow-row { cursor: pointer; border-bottom: 1px solid rgba(255,255,255,0.04); }
-.flow-row:hover { background: rgba(255,255,255,0.04); }
-.flow-row.active { background: rgba(181,126,220,0.14); }
-.fr-method { font-weight: 600; font-size: 11px; }
-.m-GET { color: #7ec699; }
-.m-POST { color: #e8c864; }
-.m-PUT { color: #82aaff; }
-.m-DELETE { color: #e88080; }
-.m-PATCH { color: #c0a8f0; }
-.fr-status { font-size: 11px; text-align: center; border-radius: 3px; padding: 1px 0; }
-.s-2xx { color: #7ec699; }
-.s-3xx { color: #82aaff; }
-.s-4xx { color: #e8c864; }
-.s-5xx, .s-err { color: #e88080; }
-.fr-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255,255,255,0.82); }
-.fr-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255,255,255,0.55); font-family: Consolas, monospace; font-size: 11px; }
-.fr-time, .fr-size { font-size: 11px; color: rgba(255,255,255,0.45); text-align: right; white-space: nowrap; }
-.fr-proc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: rgba(255,255,255,0.5); }
+/* M12.3：共享 FlowTable 填充 list-pane 剩余高度（其内部虚拟列表 flex:1 滚动） */
+.flow-table { flex: 1; min-height: 0; }
 /* 小眼睛：忽略名单入口（有规则/面板打开/显示忽略态时高亮；角标显示规则数） */
 .eye-wrap {
   position: relative; display: inline-flex; align-items: center; justify-content: center;
@@ -1101,6 +1064,8 @@ onBeforeUnmount(() => {
 .ip-kind.k-host { background: rgba(126,198,153,0.16); color: #7ec699; }
 .ip-kind.k-path { background: rgba(130,170,255,0.16); color: #82aaff; }
 .ip-kind.k-proc { background: rgba(192,168,240,0.18); color: #c0a8f0; }
+.ip-kind.k-method { background: rgba(112,192,232,0.16); color: #70c0e8; }
+.ip-kind.k-status { background: rgba(229,192,123,0.16); color: #e5c07b; }
 .ip-value {
   flex: 1; min-width: 0; font-size: 11px; font-family: Consolas, monospace;
   color: rgba(255,255,255,0.75); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

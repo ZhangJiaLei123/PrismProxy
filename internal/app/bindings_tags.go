@@ -799,3 +799,69 @@ func toTagInfoDTOs(ts []persist.TagInfo) []TagInfo {
 	}
 	return out
 }
+
+// ---------- Wails 专用单结构返回绑定（M12.3 修复） ----------
+//
+// Wails v2 方法绑定（internal/binding/boundMethod.go Call）只支持 1~2 个返回值：
+// 输出数为 2 时取 (value, error)；**3 个及以上没有任何 case 命中，result 静默为
+// null、error 也为 nil**——前端拿到 null（被兜底成空态），表现为标签/列表/时间轴
+// 全空且无报错。HTTP（ctl_bridge）直接 Go 调用不受影响。
+// 故主窗内嵌复盘改走下面的单结构返回包装；原多返回值方法保留给 HTTP 桥接与测试复用。
+
+// WailsTagsOverview 标签概览单结构返回（包装 ReviewTagsOverview）。
+type WailsTagsOverview struct {
+	Tags       []TagInfo `json:"tags"`
+	Total      int       `json:"total"`
+	TotalFlows int       `json:"totalFlows"`
+}
+
+func (a *App) WailsTagsOverview() (*WailsTagsOverview, error) {
+	tags, tagged, all, err := a.ReviewTagsOverview()
+	if err != nil {
+		return nil, err
+	}
+	return &WailsTagsOverview{Tags: tags, Total: tagged, TotalFlows: all}, nil
+}
+
+// WailsFlowListResult 复盘流列表单结构返回（包装 ReviewFlowList）。
+type WailsFlowListResult struct {
+	Flows []FlowMeta `json:"flows"`
+	Total int        `json:"total"`
+}
+
+func (a *App) WailsFlowList(tagID, scope string, start, end int64, limit, offset int, opts persist.ReviewListOpts) (*WailsFlowListResult, error) {
+	flows, total, err := a.ReviewFlowList(tagID, scope, start, end, limit, offset, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &WailsFlowListResult{Flows: flows, Total: total}, nil
+}
+
+// WailsAddIgnoreResult 加入忽略名单单结构返回（包装 ReviewAddIgnore）。
+type WailsAddIgnoreResult struct {
+	Ignore persist.ReviewIgnore `json:"ignore"`
+	Added  bool                 `json:"added"`
+}
+
+func (a *App) WailsAddIgnore(kind, value, note string) (*WailsAddIgnoreResult, error) {
+	item, added, err := a.ReviewAddIgnore(kind, value, note)
+	if err != nil {
+		return nil, err
+	}
+	return &WailsAddIgnoreResult{Ignore: item, Added: added}, nil
+}
+
+// WailsHistogramResult 密度直方图单结构返回（包装 ReviewHistogram）。
+type WailsHistogramResult struct {
+	Start   int64                `json:"start"`
+	End     int64                `json:"end"`
+	Buckets []persist.HistBucket `json:"buckets"`
+}
+
+func (a *App) WailsHistogram(tagID, scope string, winStart, winEnd int64, buckets int) (*WailsHistogramResult, error) {
+	t0, t1, hist, err := a.ReviewHistogram(tagID, scope, winStart, winEnd, buckets)
+	if err != nil {
+		return nil, err
+	}
+	return &WailsHistogramResult{Start: t0, End: t1, Buckets: hist}, nil
+}

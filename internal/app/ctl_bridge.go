@@ -1038,7 +1038,7 @@ func (s *ctlService) ListReviewIgnores() (any, error) {
 	return map[string]any{"ignores": items}, nil
 }
 
-// AddReviewIgnore POST /tags/ignores：加入忽略名单（kind=host|path|proc）
+// AddReviewIgnore POST /tags/ignores：加入忽略名单（kind=host|path|proc|method|status）
 func (s *ctlService) AddReviewIgnore(raw json.RawMessage) (any, error) {
 	var req struct {
 		Kind  string `json:"kind"`

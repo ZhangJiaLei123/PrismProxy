@@ -120,7 +120,7 @@ func printCLIUsage(w io.Writer) {
   flows get <id> --body req|resp         单流消息体（JSON：raw/body/base64）
   flows clear                            清空记录列表（保留置顶）
   flows pin <id> [--pin false]           置顶/取消置顶流（置顶流不淘汰、清空保留）
-  flows curl <id> [--shell cmd|powershell|bash]
+  flows curl <id> [--shell cmd|bash]
                                          生成该流的可执行 cURL 命令
   flows watch [--filter 子串] [--status] [--format ndjson|sse]
                                          实时监控：先输出全量 snapshot，再持续输出增量
@@ -194,7 +194,7 @@ func cliFlows(c *client, pos []string) (any, error) {
 	filter := fs.String("filter", "", "按 host/URL 子串过滤")
 	limit := fs.Int("limit", 0, "只返回最近 N 条")
 	body := fs.String("body", "", "消息体：req|resp（配合 get）")
-	shell := fs.String("shell", "powershell", "cURL 目标 shell：cmd|powershell|bash（配合 curl）")
+	shell := fs.String("shell", "cmd", "cURL 目标 shell：cmd|bash（配合 curl）")
 	pinned := fs.String("pin", "", "置顶/取消置顶：true|false（配合 <id>）")
 	if err := fs.Parse(reorderFlags(args)); err != nil {
 		return nil, err
@@ -239,8 +239,8 @@ func cliFlows(c *client, pos []string) (any, error) {
 		if len(rem) == 0 {
 			return nil, fmt.Errorf("flows curl 需要 <id>")
 		}
-		if *shell != "cmd" && *shell != "powershell" && *shell != "bash" {
-			return nil, fmt.Errorf("--shell 须为 cmd|powershell|bash")
+		if *shell != "cmd" && *shell != "bash" {
+			return nil, fmt.Errorf("--shell 须为 cmd|bash")
 		}
 		return c.get(fmt.Sprintf("/flows/%s/curl?shell=%s", urlEncode(rem[0]), *shell))
 	default:

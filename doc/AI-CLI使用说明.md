@@ -173,7 +173,7 @@ PrismProxy.exe cli flows clear
   | `DecodeErr` | 解压/转码失败原因（空=成功） |
 - **clear**：清空记录列表，**置顶流保留**。返回 `{"cleared": N, "pinnedKept": true}`。
 - **pin `<id> [--pin false]`**：置顶/取消置顶流。置顶流不受容量淘汰、`clear` 保留、项目切换才清空。默认置顶，`--pin false`（或 `0`）取消；返回 `{"ok": true, "id": ..., "pinned": true|false}`。
-- **curl `<id> [--shell cmd|powershell|bash]`**：基于该流的请求要素生成一条**可直接执行的 cURL 命令**（默认 powershell 转义），返回 `{"command": "...", "shell": "powershell"}` 等；可复制到终端重放，或交 AI 改写参数后重放。
+- **curl `<id> [--shell cmd|bash]`**：基于该流的请求要素生成一条**可直接执行的 cURL 命令**（默认 cmd，格式对齐 Chrome DevTools「Copy as cURL」：多行 `^`/`\` 续行、`curl --url` 首参），返回 `{"command": "...", "bodyOmitted": false}`；可复制到终端重放，或交 AI 改写参数后重放。
 
 ### 3.3 rules — 规则管理
 

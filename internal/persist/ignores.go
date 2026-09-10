@@ -1,8 +1,10 @@
 // ignores.go M12.2 数据复盘「忽略」名单：忽略仅在复盘查询时以 SQL 条件排除（隐藏），
-// 不删除 flows 中的任何数据。三类：
+// 不删除 flows 中的任何数据。五类：
 //   - host：归一化去端口/小写/去尾点，匹配主机自身及其子域（f.host 可能带 :port）；
 //   - path：去 query/fragment、确保 / 开头，匹配精确路径及其下级路径（f.path 本身无 query）；
-//   - proc：进程名 trim 原样存储，忽略大小写等值匹配（进程名在 data JSON 的 $.Process.Name）。
+//   - proc：进程名 trim 原样存储，忽略大小写等值匹配（进程名在 data JSON 的 $.Process.Name）；
+//   - method：HTTP 方法大写 trim，忽略大小写等值匹配（隧道流 method=CONNECT）；
+//   - status：HTTP 状态码三位整数字符串，等值匹配（f.status=0 的无响应/错误流不被误伤）。
 //
 // 名单存于归档库 review_ignores 表（由共享 migrate 建表）。只读连接（OpenReadOnly）
 // 不跑 migrate，旧库可能无此表——读侧一律容错为空名单，不报错。
@@ -12,6 +14,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,15 +23,17 @@ import (
 type ReviewIgnoreKind string
 
 const (
-	ReviewIgnoreHost ReviewIgnoreKind = "host"
-	ReviewIgnorePath ReviewIgnoreKind = "path"
-	ReviewIgnoreProc ReviewIgnoreKind = "proc"
+	ReviewIgnoreHost   ReviewIgnoreKind = "host"
+	ReviewIgnorePath   ReviewIgnoreKind = "path"
+	ReviewIgnoreProc   ReviewIgnoreKind = "proc"
+	ReviewIgnoreMethod ReviewIgnoreKind = "method"
+	ReviewIgnoreStatus ReviewIgnoreKind = "status"
 )
 
 // ValidIgnoreKind 校验忽略类型。
 func ValidIgnoreKind(k string) bool {
 	switch ReviewIgnoreKind(k) {
-	case ReviewIgnoreHost, ReviewIgnorePath, ReviewIgnoreProc:
+	case ReviewIgnoreHost, ReviewIgnorePath, ReviewIgnoreProc, ReviewIgnoreMethod, ReviewIgnoreStatus:
 		return true
 	}
 	return false
@@ -102,6 +107,31 @@ func NormalizeIgnoreProc(p string) string {
 	return strings.TrimSpace(p)
 }
 
+// NormalizeIgnoreMethod 方法归一化：trim + 大写（保留显示；匹配忽略大小写）。
+func NormalizeIgnoreMethod(m string) string {
+	return strings.ToUpper(strings.TrimSpace(m))
+}
+
+// NormalizeIgnoreStatus 状态码归一化：trim 后须为 100–599 的三位整数；ok=false 表示非法。
+// 存储仍为字符串（与 review_ignores.value 同列），SQL 比较时与 f.status 数字列比较。
+func NormalizeIgnoreStatus(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) != 3 {
+		return 0, false
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	if n < 100 || n > 599 {
+		return 0, false
+	}
+	return n, true
+}
+
 // NormalizeIgnoreValue 按类型归一化待加入名单的值；非法/空返回错误。
 func NormalizeIgnoreValue(kind, value string) (string, error) {
 	switch ReviewIgnoreKind(kind) {
@@ -123,8 +153,20 @@ func NormalizeIgnoreValue(kind, value string) (string, error) {
 			return "", fmt.Errorf("进程名不能为空")
 		}
 		return v, nil
+	case ReviewIgnoreMethod:
+		v := NormalizeIgnoreMethod(value)
+		if v == "" {
+			return "", fmt.Errorf("方法不能为空")
+		}
+		return v, nil
+	case ReviewIgnoreStatus:
+		v, ok := NormalizeIgnoreStatus(value)
+		if !ok {
+			return "", fmt.Errorf("状态码无效（须为 100–599 的三位整数）")
+		}
+		return strconv.Itoa(v), nil
 	default:
-		return "", fmt.Errorf("非法忽略类型（仅支持 host|path|proc）")
+		return "", fmt.Errorf("非法忽略类型（仅支持 host|path|proc|method|status）")
 	}
 }
 
@@ -160,7 +202,7 @@ func (w *Writer) ListReviewIgnores() ([]ReviewIgnore, error) {
 // 须在可写归档 Writer 上调用（App 层经 acquireArchive 保证）。
 func (w *Writer) AddReviewIgnore(kind, value, note string) (ReviewIgnore, bool, error) {
 	if !ValidIgnoreKind(kind) {
-		return ReviewIgnore{}, false, fmt.Errorf("非法忽略类型（仅支持 host|path|proc）")
+		return ReviewIgnore{}, false, fmt.Errorf("非法忽略类型（仅支持 host|path|proc|method|status）")
 	}
 	v, err := NormalizeIgnoreValue(kind, value)
 	if err != nil {
@@ -195,7 +237,7 @@ func (w *Writer) AddReviewIgnore(kind, value, note string) (ReviewIgnore, bool, 
 // DeleteReviewIgnore 删除一条忽略项，返回是否实际删除（不存在返回 false）。
 func (w *Writer) DeleteReviewIgnore(kind, value string) (bool, error) {
 	if !ValidIgnoreKind(kind) {
-		return false, fmt.Errorf("非法忽略类型（仅支持 host|path|proc）")
+		return false, fmt.Errorf("非法忽略类型（仅支持 host|path|proc|method|status）")
 	}
 	// 值按存储口径比较：host/proc 大小写不敏感需先归一化，path 直接比较；
 	// 为稳妥统一要求删除时传已归一化值（接口层做归一化），这里仅校验非空。
@@ -255,6 +297,24 @@ func ignoreConds(ignores []ReviewIgnore) (conds []string, args []any) {
 			conds = append(conds,
 				`(LOWER(COALESCE(json_extract(f.data,'$.Process.Name'),''))<>LOWER(?))`)
 			args = append(args, p)
+		case ReviewIgnoreMethod:
+			m := NormalizeIgnoreMethod(ig.Value)
+			if m == "" {
+				continue
+			}
+			// 方法大小写不敏感等值匹配（f.method 落库即原始方法，CONNECT 隧道流一并隐藏）；
+			// method 列允许 NULL，COALESCE 兜空串避免 NULL 比较三值逻辑误伤未知方法行。
+			conds = append(conds, `(LOWER(COALESCE(f.method,''))<>LOWER(?))`)
+			args = append(args, m)
+		case ReviewIgnoreStatus:
+			code, ok := NormalizeIgnoreStatus(ig.Value)
+			if !ok {
+				continue
+			}
+			// f.status 为 NOT NULL 数字列，0=无响应/错误流；等值排除该状态码，0 与任何
+			// 100–599 不等故无响应流不被误伤。
+			conds = append(conds, `(f.status<>?)`)
+			args = append(args, code)
 		}
 	}
 	return conds, args

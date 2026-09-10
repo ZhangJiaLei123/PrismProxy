@@ -155,7 +155,7 @@ func (a *App) GetFlowBody(id, which string) (*BodyPayload, error) {
 
 func (a *App) ClearFlows() { a.st.Clear() }
 
-// BuildCurl 生成可直接执行的 cURL 命令：shell = cmd | powershell | bash（转义规则见 capture.BuildCurl）
+// BuildCurl 生成可直接执行的 cURL 命令：shell = cmd | bash（转义规则见 capture.BuildCurl）
 func (a *App) BuildCurl(id, shell string) (*capture.CurlResult, error) {
 	f, ok := a.st.Get(id)
 	if !ok {

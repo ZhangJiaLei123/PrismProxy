@@ -457,14 +457,14 @@ func TestBuildCurlBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(res.Command, "curl.exe") || !strings.Contains(res.Command, "--data-raw") {
+	if !strings.Contains(res.Command, "curl --url") || !strings.Contains(res.Command, "--data-raw") {
 		t.Fatalf("cmd cURL 异常: %q", res.Command)
 	}
 	bash, err := a.BuildCurl("c1", capture.ShellBash)
 	if err != nil {
 		t.Fatalf("bash cURL 错误: %v", err)
 	}
-	if !strings.Contains(bash.Command, "'curl'") {
+	if !strings.Contains(bash.Command, "curl --url") {
 		t.Fatalf("bash cURL 异常: %q", bash.Command)
 	}
 	if _, err := a.BuildCurl("nope", "cmd"); err == nil {

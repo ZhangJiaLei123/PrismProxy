@@ -128,8 +128,8 @@ export interface ReviewFlowQuery {
 export type ReviewSortKey = 'time' | 'method' | 'status' | 'host' | 'path' | 'size' | 'proc'
 export type ReviewSortDir = 'asc' | 'desc'
 
-/** M12.2 忽略名单类型：host=域名（含子域/端口口径）；path=路径前缀；proc=进程名。 */
-export type ReviewIgnoreKind = 'host' | 'path' | 'proc'
+/** M12.2 忽略名单类型：host=域名（含子域/端口口径）；path=路径前缀；proc=进程名；method=HTTP 方法等值；status=状态码等值。 */
+export type ReviewIgnoreKind = 'host' | 'path' | 'proc' | 'method' | 'status'
 
 /** review_ignores 表一行（小写 json）。 */
 export interface ReviewIgnoreItem {

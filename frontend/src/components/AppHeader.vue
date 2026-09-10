@@ -2,16 +2,20 @@
   <n-layout-header bordered style="height: 40px; display: flex; align-items: center; padding: 0 12px; gap: 12px">
     <!-- M9：项目切换器（规则/历史随项目隔离，运行中热切换） -->
     <project-switcher />
-    <!-- M12：数据复盘入口（系统浏览器独立窗口；mock 预览降级 window.open） -->
-    <n-button size="small" quaternary aria-label="数据复盘" title="在新窗口打开数据复盘页（已归档/已标记流量）" @click="openReview">
+    <!-- M12.3：抓包/复盘视图切换（复盘内嵌主窗，走 Wails 绑定；不再以系统浏览器为主要入口） -->
+    <n-button
+      size="small"
+      :type="view === 'review' ? 'primary' : 'default'"
+      :secondary="view === 'review'"
+      aria-label="数据复盘"
+      :title="view === 'review' ? '返回实时抓包列表' : '在主窗口内打开数据复盘（已归档/已标记流量）'"
+      @click="setView(view === 'review' ? 'capture' : 'review')"
+    >
       <span style="display: inline-flex; align-items: center; gap: 4px">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
           <path d="M3 1h6l4 4v10H3V1zm6 1.5V5h2.5L9 2.5zM4.5 8h7v1.2h-7V8zm0 2.5h7v1.2h-7v-1.2zm0 2.5h5v1.2h-5V13z"/>
         </svg>
-        数据复盘
-        <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true">
-          <path d="M6 2v1.5h5.2L1.5 13.2l1 1L12.3 4.5V9.8H14V2H6z"/>
-        </svg>
+        {{ view === 'review' ? '返回抓包' : '数据复盘' }}
       </span>
     </n-button>
     <span style="flex: 1"></span>
@@ -70,14 +74,14 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { NLayoutHeader, NButton, useMessage } from 'naive-ui'
+import { NLayoutHeader, NButton } from 'naive-ui'
 import ProjectSwitcher from './ProjectSwitcher.vue'
 import TagMarkDialog from './TagMarkDialog.vue'
 import { useFlowsStore } from '../stores/flows'
-import { GetReviewURL } from '../../wailsjs/go/app/App'
+import { useAppView } from '../composables/useAppView'
 
 const store = useFlowsStore()
-const message = useMessage()
+const { view, setView } = useAppView()
 
 const markShow = ref(false)
 
@@ -92,19 +96,4 @@ function openGithub() {
   }
 }
 
-// M12：数据复盘——后端返回 ctlapi 托管地址（含一次性 token），用系统浏览器开独立窗口
-async function openReview() {
-  try {
-    const url = await GetReviewURL()
-    const wailsRuntime = (window as unknown as { runtime?: { BrowserOpenURL?: (u: string) => void } }).runtime
-    if (wailsRuntime?.BrowserOpenURL) {
-      wailsRuntime.BrowserOpenURL(url)
-    } else {
-      // mock/浏览器预览：GetReviewURL 返回同源相对地址，直接新标签打开
-      window.open(url, '_blank', 'noopener,noreferrer')
-    }
-  } catch (e) {
-    message.error(String(e), { duration: 6000, closable: true })
-  }
-}
 </script>

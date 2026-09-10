@@ -118,3 +118,11 @@ export function StopProxy():Promise<void>;
 export function SwitchProject(arg1:string):Promise<void>;
 
 export function TagFlows(arg1:Array<string>,arg2:string,arg3:boolean):Promise<app.TagResult>;
+
+export function WailsAddIgnore(arg1:string,arg2:string,arg3:string):Promise<app.WailsAddIgnoreResult>;
+
+export function WailsFlowList(arg1:string,arg2:string,arg3:number,arg4:number,arg5:number,arg6:number,arg7:persist.ReviewListOpts):Promise<app.WailsFlowListResult>;
+
+export function WailsHistogram(arg1:string,arg2:string,arg3:number,arg4:number,arg5:number):Promise<app.WailsHistogramResult>;
+
+export function WailsTagsOverview():Promise<app.WailsTagsOverview>;

@@ -37,14 +37,27 @@ func TestReviewIgnoreCRUD(t *testing.T) {
 	if ig, _, err := w.AddReviewIgnore("proc", "  WeChat.exe ", ""); err != nil || ig.Value != "WeChat.exe" {
 		t.Fatalf("AddReviewIgnore proc = %+v err=%v", ig, err)
 	}
+	// method trim + 大写
+	if ig, _, err := w.AddReviewIgnore("method", "  post ", ""); err != nil || ig.Value != "POST" {
+		t.Fatalf("AddReviewIgnore method = %+v err=%v", ig, err)
+	}
+	// status 须为 100–599 三位整数
+	if ig, _, err := w.AddReviewIgnore("status", " 404 ", ""); err != nil || ig.Value != "404" {
+		t.Fatalf("AddReviewIgnore status = %+v err=%v", ig, err)
+	}
+	for _, bad := range []string{"", "99", "600", "2xx", "4040"} {
+		if _, _, err := w.AddReviewIgnore("status", bad, ""); err == nil {
+			t.Fatalf("非法 status %q 应被拒绝", bad)
+		}
+	}
 	// 非法 kind
 	if _, _, err := w.AddReviewIgnore("bad", "x", ""); err == nil {
 		t.Fatal("非法 kind 应报错")
 	}
 
 	igs, err := w.ListReviewIgnores()
-	if err != nil || len(igs) != 3 {
-		t.Fatalf("名单应有 3 条，得 %d, %v", len(igs), err)
+	if err != nil || len(igs) != 5 {
+		t.Fatalf("名单应有 5 条，得 %d, %v", len(igs), err)
 	}
 
 	// 删除：归一化值删不到（未归一化的带端口形式）
@@ -54,24 +67,29 @@ func TestReviewIgnoreCRUD(t *testing.T) {
 	if ok, err := w.DeleteReviewIgnore("host", "api.example.com"); err != nil || !ok {
 		t.Fatalf("删除 host 应 true，得 %v, %v", ok, err)
 	}
-	if igs, _ := w.ListReviewIgnores(); len(igs) != 2 {
-		t.Fatalf("删除后应剩 2 条，得 %d", len(igs))
+	if ok, err := w.DeleteReviewIgnore("status", "404"); err != nil || !ok {
+		t.Fatalf("删除 status 应 true，得 %v, %v", ok, err)
+	}
+	if igs, _ := w.ListReviewIgnores(); len(igs) != 3 {
+		t.Fatalf("删除后应剩 3 条，得 %d", len(igs))
 	}
 }
 
-// seedIgnoreRows 归档一组差异化（host/path/进程）的流，并直接改独立列；
+// seedIgnoreRows 归档一组差异化（host/path/进程/方法/状态）的流，并直接改独立列；
 // 进程名在 data JSON 内，逐条构造（同毫秒用不同 id，顺序断言走显式排序）。
 func seedIgnoreRows(t *testing.T, w *Writer) []string {
 	t.Helper()
-	specs := []struct {
-		id, host, path, proc string
-	}{
-		{"ig-01", "api.example.com", "/v1/login", "chrome.exe"},
-		{"ig-02", "api.example.com:8443", "/v1/login", "chrome.exe"},
-		{"ig-03", "a.api.example.com", "/v1/users", "WeChat.exe"},
-		{"ig-04", "a.api.example.com:443", "/v1/users/123", "WeChat.exe"},
-		{"ig-05", "other.com", "/v2/ping", "healthcheck.exe"},
-		{"ig-06", "example.com.cn", "/v1/login", "curl.exe"}, // 不得被 example.com 误伤
+	type spec struct {
+		id, host, path, proc, method string
+		status                       int
+	}
+	specs := []spec{
+		{"ig-01", "api.example.com", "/v1/login", "chrome.exe", "GET", 200},
+		{"ig-02", "api.example.com:8443", "/v1/login", "chrome.exe", "POST", 200},
+		{"ig-03", "a.api.example.com", "/v1/users", "WeChat.exe", "GET", 404},
+		{"ig-04", "a.api.example.com:443", "/v1/users/123", "WeChat.exe", "POST", 200},
+		{"ig-05", "other.com", "/v2/ping", "healthcheck.exe", "GET", 500},
+		{"ig-06", "example.com.cn", "/v1/login", "curl.exe", "CONNECT", 0}, // 不得被 example.com 误伤；隧道流无状态
 	}
 	flows := make([]*capture.Flow, 0, len(specs))
 	ids := make([]string, 0, len(specs))
@@ -80,17 +98,25 @@ func seedIgnoreRows(t *testing.T, w *Writer) []string {
 		f := testFlow(s.id, s.host, capture.StateDone, "x")
 		f.Timing.Start = time.UnixMilli(base + int64(i)*60000)
 		f.Process = &capture.ProcessInfo{PID: uint32(100 + i), Name: s.proc}
-		f.Request.Method = "GET"
+		f.Request.Method = s.method
 		f.Request.URL = "https://" + s.host + s.path
+		if s.status > 0 {
+			f.Response.StatusCode = s.status
+		} else {
+			f.Response = nil
+		}
 		flows = append(flows, f)
 		ids = append(ids, s.id)
 	}
 	if err := w.ArchiveFlows(flows); err != nil {
 		t.Fatalf("ArchiveFlows: %v", err)
 	}
-	// testFlow 的 host 即写入 f.host；path 由落库时从 URL 解析。保险起见显式校正独立列。
+	// testFlow 的 host 即写入 f.host；path/method/status 由落库时从 Flow 解析。
+	// 保险起见显式校正独立列（method/status 用于方法/状态忽略测试）。
 	for _, s := range specs {
-		if _, err := w.db.Exec(`UPDATE flows SET host=?, path=? WHERE id=?`, s.host, s.path, s.id); err != nil {
+		if _, err := w.db.Exec(
+			`UPDATE flows SET host=?, path=?, method=?, status=? WHERE id=?`,
+			s.host, s.path, s.method, s.status, s.id); err != nil {
 			t.Fatalf("校正列失败: %v", err)
 		}
 	}
@@ -162,6 +188,51 @@ func TestReviewIgnoreQueryProc(t *testing.T) {
 	// 隐藏 ig-03/04（WeChat.exe），其余 4 条保留
 	if n := countRows(t, w, ReviewListOpts{}); n != 4 {
 		t.Fatalf("proc 忽略后应 4 条，得 %d", n)
+	}
+}
+
+// TestReviewIgnoreQueryMethod 方法忽略：大小写不敏感等值匹配，CONNECT 隧道流一并隐藏。
+func TestReviewIgnoreQueryMethod(t *testing.T) {
+	w := archiveWriter(t)
+	seedIgnoreRows(t, w)
+
+	if _, _, err := w.AddReviewIgnore("method", "post", ""); err != nil {
+		t.Fatalf("AddReviewIgnore: %v", err)
+	}
+	// 隐藏 ig-02/04（POST），其余 4 条保留
+	if n := countRows(t, w, ReviewListOpts{}); n != 4 {
+		t.Fatalf("method=POST 忽略后应 4 条，得 %d", n)
+	}
+	// 忽略 CONNECT：仅 ig-06 命中
+	if _, _, err := w.AddReviewIgnore("method", "CONNECT", ""); err != nil {
+		t.Fatalf("AddReviewIgnore: %v", err)
+	}
+	if n := countRows(t, w, ReviewListOpts{}); n != 3 {
+		t.Fatalf("再忽略 CONNECT 后应 3 条，得 %d", n)
+	}
+	// 眼睛开启：6 条全回
+	if n := countRows(t, w, ReviewListOpts{ShowIgnored: true}); n != 6 {
+		t.Fatalf("ShowIgnored=true 应 6 条，得 %d", n)
+	}
+}
+
+// TestReviewIgnoreQueryStatus 状态码忽略：等值隐藏该状态码；0（无响应/错误流）不被误伤。
+func TestReviewIgnoreQueryStatus(t *testing.T) {
+	w := archiveWriter(t)
+	seedIgnoreRows(t, w)
+
+	if _, _, err := w.AddReviewIgnore("status", "200", ""); err != nil {
+		t.Fatalf("AddReviewIgnore: %v", err)
+	}
+	// 隐藏 200 的 ig-01/02/04；404(ig-03)、500(ig-05)、状态 0(ig-06) 保留
+	if n := countRows(t, w, ReviewListOpts{}); n != 3 {
+		t.Fatalf("status=200 忽略后应 3 条，得 %d", n)
+	}
+	if _, _, err := w.AddReviewIgnore("status", "404", ""); err != nil {
+		t.Fatalf("AddReviewIgnore: %v", err)
+	}
+	if n := countRows(t, w, ReviewListOpts{}); n != 2 {
+		t.Fatalf("再忽略 404 后应 2 条（500 与状态 0），得 %d", n)
 	}
 }
 
