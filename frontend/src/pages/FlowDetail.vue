@@ -1,6 +1,9 @@
 <template>
   <div class="flow-detail">
-    <div v-if="!store.selected" class="empty">在左侧选择一条流查看详情</div>
+    <div v-if="!store.selected" class="empty">
+      <div class="empty-text">在左侧选择一条流查看详情</div>
+      <free-notice />
+    </div>
     <template v-else>
       <div class="title">
         <n-tag size="small" :type="stateTagType">{{ store.selected.State }}</n-tag>
@@ -27,6 +30,7 @@ import { computed, ref, watch } from 'vue'
 import { NButton, NTag } from 'naive-ui'
 import FlowDetailTabs from '../components/FlowDetailTabs.vue'
 import CopyBar from '../components/CopyBar.vue'
+import FreeNotice from '../components/FreeNotice.vue'
 import { GetFlowDetail } from '../../wailsjs/go/app/App'
 import type { app } from '../../wailsjs/go/models'
 import { useFlowsStore } from '../stores/flows'
@@ -81,7 +85,17 @@ watch(
 
 <style scoped>
 .flow-detail { height: 100%; display: flex; flex-direction: column; }
-.empty { padding: 40px 16px; text-align: center; color: rgba(255, 255, 255, 0.4); }
+.empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  padding: 40px 16px;
+  text-align: center;
+}
+.empty-text { color: rgba(255, 255, 255, 0.4); }
 .title { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.1); flex: none; }
 .url { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .resend-btn { margin-left: auto; flex: none; }

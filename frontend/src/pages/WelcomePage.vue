@@ -34,6 +34,7 @@
         <div class="empty-title">还没有项目</div>
         <div class="empty-sub">新建第一个项目开始抓包；规则、域名组与流量历史都保存在项目内。</div>
         <n-button type="primary" :loading="busy" @click="openCreate">新建第一个项目</n-button>
+        <free-notice class="empty-free" />
       </div>
 
       <ul v-else class="proj-list">
@@ -55,6 +56,8 @@
           </span>
         </li>
       </ul>
+
+      <free-notice v-if="projects.length" class="main-free" />
     </main>
 
     <!-- 新建项目弹窗 -->
@@ -96,6 +99,7 @@
 import { computed, ref } from 'vue'
 import { NButton, NInput, NModal, NSelect, useDialog, useMessage } from 'naive-ui'
 import { useProjects } from '../composables/useProjects'
+import FreeNotice from '../components/FreeNotice.vue'
 import type { settings } from '../../wailsjs/go/models'
 
 const emit = defineEmits<{ (e: 'open-settings'): void }>()
@@ -247,7 +251,7 @@ function askDelete(p: settings.ProjectMeta) {
 .side-foot { margin-top: auto; font-size: 11px; opacity: 0.4; line-height: 1.6; }
 
 /* 右侧列表 */
-.welcome-main { flex: 1; padding: 28px 32px; overflow: auto; }
+.welcome-main { flex: 1; padding: 28px 32px; overflow: auto; display: flex; flex-direction: column; }
 .list-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
 .list-title { font-size: 15px; font-weight: 600; }
 .list-tip { font-size: 11px; opacity: 0.4; }
@@ -262,6 +266,8 @@ function askDelete(p: settings.ProjectMeta) {
 }
 .empty-title { font-size: 17px; font-weight: 600; }
 .empty-sub { font-size: 12px; opacity: 0.55; margin-bottom: 10px; max-width: 360px; line-height: 1.7; }
+.empty-free { margin-top: 36px; }
+.main-free { margin-top: auto; padding-top: 48px; }
 
 .proj-list { list-style: none; margin: 0; padding: 0; max-width: 640px; }
 .proj-item {

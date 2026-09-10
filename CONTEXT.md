@@ -127,7 +127,8 @@
   - **StartError 去重**：lastStartError 记已上报原文，同一错误只 emit 一次；错误文本变化或后端清空后才允许再报。emits：`open-settings(tab)`（network/general 统一 onUIOpenSettings 含 WindowUnminimise）、`error(message,replace?)`（replace=true 覆盖显示最新，否则仅错误条空时恢复）、`clear-error`。
 - **flows store**：flows/filter/paused + init()/clear()/filtered。暂停=纯前端冻结显示（回调丢弃，后端不中断不补发）；clear 保留 Pinned。置顶 Pinned：固定顶部/不参与环形淘汰/Clear 保留/上限 200/会话内不持久化。
 - 设置面板 SettingsPanel.vue：左侧 n-tabs（常规/网络/ADB代理/解密规则/过滤规则/域名组；无项目只显全局三个），宽 560-640，内容区独立滚动；watch [show,initialTab]（面板开着外部切 tab 只切 activeTab 不 loadSettings 覆盖编辑）。系统代理实时控制不随表单保存；保存错误用全局 message，warnings 留固定 footer。autoSysProxy 默认 false（startup StartProxy 成功后才接管，端口占用跳过，失败仅 log）。
-- pages/ = App.vue 直接挂载的页面级；components/ = BodyViewer/HeaderTable/CopyBar/JsonTree 共享件；无 vue-router。
+- pages/ = App.vue 直接挂载的页面级；components/ = BodyViewer/HeaderTable/CopyBar/JsonTree/FreeNotice 共享件；无 vue-router。
+- **FreeNotice.vue**：「本工具完全免费，为爱发电 ❤ + 开源地址 GitHub 链接」空态说明组件，点击走 window.runtime.BrowserOpenURL（浏览器预览降级 window.open）；用于 WelcomePage（无项目空态居中；有项目时列表下方 `.main-free`，`.welcome-main` flex column + margin-top:auto 贴右侧底区）与 pages/FlowDetail.vue 未选中流空态，文案/链接改动只改此件。标题 `.fn-title` 为粉→紫→蓝渐变流光文字（background-clip:text + fn-shine 3.5s），爱心 `.fn-heart` 双跳心跳动画（fn-heartbeat 1.4s，含 drop-shadow 脉冲）。**不做 prefers-reduced-motion 降级**：品牌装饰动画用户要求恒播放，且本机 MinAnimate=0（Windows 关闭动画）时降级会致动画全失（2026-09-10 踩坑）。
 - **构建红线：vite build 绿 ≠ 前端可用**——vite 无 auto-import 时 Rollup 对未解析标识符静默当全局外部名，退出码 0 但运行时 ReferenceError 白屏；前端改动后必须核对 IDE 诊断零错误或 grep dist 特征文案。模板内 JS 模板字符串以 `}}` 结尾会与 Vue 插值冲突，改用拼接/计算属性。
 
 ## 数据复盘页（M12/M12.1/M12.2）
