@@ -1,6 +1,7 @@
 # 数据复盘 × AI 分析设计（M13）
 
-> 版本：v2（2026-09-10，增补「接口意图批量标注 intent」需求，设计稿，待评审，未实施）
+> 版本：v2.1（2026-09-10，计划审计后定稿修订：主窗内嵌 AI 通道=Wails 事件桥、/ai/config 部分更新语义、温度 0 哨兵、取数方法名与截断方向修正、AIConfig 零值兜底）
+> v2：2026-09-10，增补「接口意图批量标注 intent」需求。
 > v1：2026-09-09 初稿。
 > 适用里程碑：M13（下一个版本：数据复盘 × AI 分析，见 README Roadmap）
 > 关联文档：[标签与数据复盘设计.md](./标签与数据复盘设计.md)、[项目配置设计.md](./项目配置设计.md)、[AI-CLI使用说明.md](./AI-CLI使用说明.md)、[开发进度.md](./开发进度.md)、[方案.md](./方案.md)
@@ -121,8 +122,8 @@ type AIConfig struct {
     BaseURL  string `json:"baseUrl"`  // 形如 https://api.deepseek.com（不带 /v1；后端拼 /chat/completions）；允许填到 /v1 前缀，拼接时归一化
     APIKey   string `json:"apiKey"`   // 密钥；独立读写接口，不进 SettingsView 全量 DTO
     Model    string `json:"model"`    // 模型名，如 deepseek-chat / gpt-4o-mini
-    // 调参（0 值时由后端用默认值兜底，避免 JSON 缺字段导致 temperature=0）
-    Temperature float64 `json:"temperature"` // 默认 0.3（分析任务偏低温度）；允许 0–2
+    // 调参（旧配置 JSON 缺 AI 字段反序列化得零值，读取侧统一经 withDefaults() 兜底，见下）
+    Temperature float64 `json:"temperature"` // 默认 0.3（分析任务偏低温度）；允许 0.1–2（0 视为未设置=哨兵，UI slider min 0.1）
     TimeoutSec  int     `json:"timeoutSec"`  // 整请求超时，默认 120；流式下为首块+整体上限
     MaxFlows    int     `json:"maxFlows"`    // locate/flowmap 单次分析最大流数，默认 50、上限 100
     MaxKB       int     `json:"maxKb"`       // 单次送审正文总预算 KB，默认 64、上限 256
@@ -131,7 +132,8 @@ type AIConfig struct {
 ```
 
 - `DefaultGlobal()` 给默认子值：`AI{Enabled:false, Provider:"custom", Temperature:0.3, TimeoutSec:120, MaxFlows:50, MaxKB:64, Redact:true}`。
-- `ValidateEnv()` 增补：`Enabled=true` 时 BaseURL 必须是 http(s) URL、Model 非空；Temperature 区间 [0,2]；TimeoutSec ∈ [10,600]；MaxFlows ∈ [1,100]；MaxKB ∈ [8,256]。**APIKey 不强制（自托管 Ollama 可无 key）**，但 Enabled 且 Provider≠ollama 且 key 空时给 warning（不阻塞保存）。
+- **零值兜底（v2.1 定稿）**：`func (c AIConfig) WithDefaults() AIConfig`——Temperature==0→0.3、TimeoutSec<10→120、MaxFlows<1→50、MaxKB<8→64、零值（未初始化）Redact→true；**仅读取侧兜底不回写落盘**。调用点三处：SettingsView 投影（GetSettings/GetAIConfig）、ai.Client 构造、裁剪入口。动机：老用户 settings.json 无 `ai` 字段，反序列化后 `AI` 为零值——若不兜底，Redact=false 等于脱敏默认关闭（隐私倒退）、Timeout/预算 0 导致裁剪与首块超时行为未定义。ValidateEnv 仍按界面显式保存的值校验（Enabled=true 时值已在 UI 约束内）。
+- `ValidateEnv()` 增补：`Enabled=true` 时 BaseURL 必须是 http(s) URL、Model 非空；Temperature ∈ [0.1,2]（0 为哨兵不显式保存）；TimeoutSec ∈ [10,600]；MaxFlows ∈ [1,100]；MaxKB ∈ [8,256]。**APIKey 不强制（自托管 Ollama 可无 key）**；key 空仅 warning。**warning 通道归属（v2.1 定稿）**：`ValidateEnv()` 现签名只返 `error`，不改签名——key 空检查放在 `app.SaveSettings` 环境半边校验后追加到既有 `SaveSettingsResult.warnings`（与 M9 规则 warning 同通道），零签名变更零调用方波及。
 - BaseURL 归一化：`strings.TrimRight` 去尾 `/`；若已以 `/v1`（或 `/v1/`）结尾则直接用，否则追加 `/v1`；最终请求 URL = base + `/chat/completions`。
 
 ### 5.2 AI 客户端（新包 internal/ai，零外部依赖）
@@ -151,6 +153,7 @@ type Config struct {
     BaseURL, APIKey, Model string
     Temperature            float64
     Timeout                time.Duration
+    ProxyURL               string // 出站代理（接线层算好传入；空=直连），ai 包不反查全局配置（避免 import app 循环依赖）
 }
 
 type Delta struct {
@@ -167,7 +170,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(De
 - 响应：`Content-Type: text/event-stream`，逐行扫 `data: {...JSON...}`，取 `choices[0].delta.content` 拼接回调；遇 `data: [DONE]` 正常结束。
 - 非 200：读响应体（截断 2KB）解析 `error.message`，包装为可读错误（如「服务商返回 401：Incorrect API key」）。
 - 传输：`http.Client{Timeout}` 不适合流式（整体超时会掐断长回答）——用 `http.NewRequestWithContext(ctx)` + 「首块超时」控制：启动一个 30s（或 Timeout 的 1/4，取小）定时器，收到首个 data 帧后取消，整体由 SSE handler 的客户端断连/`TimeoutSec` 外层 ctx 兜底。
-- 出站代理：复用应用上游代理设置（`UpstreamMode`：system 时 `httpproxy.FromEnvironment` 并排除自身回环；manual 时用配置代理），保证内网/科学上网环境可用。**默认实现：构造的 http.Client.Transport.Proxy 按全局 UpstreamMode 装配**（与 compose 同一 helper，若无现成 helper 则在 ai 包内按三模式实现）。
+- 出站代理（v2.1 修订）：**ai 包不做代理装配**——`Config.ProxyURL` 由接线层按全局 `UpstreamMode` 算好传入（空=直连）：manual 取配置代理；system 取系统代理并经既有防环逻辑排除自身（接管后防环返回空=直连，语义自动继承）；direct 直连。compose 现状是调用方算好 `Upstream` 字符串传入（compose.go `Sender.Upstream`），ai 包同构——**无可复用的独立 helper，不引入 compose 依赖**。
 
 ### 5.3 ctlapi 接口
 
@@ -176,7 +179,7 @@ Service 接口新增（`server.go`）：
 ```go
 // AI 分析（M13）
 GetAIConfig() (any, error)                 // 脱敏配置（apiKey 回 ****1234 形态 + hasApiKey 布尔）
-SaveAIConfig(raw json.RawMessage) error    // 全量保存（含 key；独立于 SettingsView 表单）
+SaveAIConfig(raw json.RawMessage) error    // 部分更新（见下路由表：出现的字段才覆盖；key 哨兵语义）
 AITestConnection(raw json.RawMessage) (any, error) // 测试连接（可带未落盘的临时配置），返回 {ok, model, latencyMs, message}
 AIChat(raw json.RawMessage, w http.ResponseWriter, r *http.Request) error // SSE 流式（特殊：直接写响应流）
 ```
@@ -195,8 +198,8 @@ AIChat(raw json.RawMessage, w http.ResponseWriter, r *http.Request) error // SSE
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/v1/ai/config` | 返回脱敏配置：`{...AIConfig, hasApiKey:true, apiKeyMasked:"••••••••1234"}`（apiKey 原值**永不**经此口返回；key 为空时 hasApiKey:false） |
-| POST | `/api/v1/ai/config` | 全量保存配置（body=AIConfig 全字段）。规则：`apiKey` 传空串/缺省 = **保持原 key 不变**；传 `"__clear__"` 哨兵 = 清空 key；其余为新值。即时落盘（不经 SettingsView） |
-| POST | `/api/v1/ai/test` | 测试连接。body 同配置（允许用界面上未落盘的值试连；apiKey 空串时读已存 key）。发一次极简请求（`max_tokens:8` 或非流式 1 token 探测），10s 超时；返回 `{ok, latencyMs, message}` |
+| POST | `/api/v1/ai/config` | **部分更新（v2.1 定稿，M3）**：body 为 AIConfig 子集 JSON，**出现的字段才覆盖、未出现保持原值**（逐字段解析 `map[string]json.RawMessage` / 自定义 Unmarshal）。`apiKey` 特例：传空串=保持原 key、传 `"__clear__"` 哨兵=清空、传值=换 key。即时落盘（不经 SettingsView）。响应返回脱敏投影（同 GET）。理由：主窗 AiTab「保存密钥/清除密钥」只发 `{apiKey}` 单字段，若按全量语义其余字段会被清零；带全量表单又会误存脏表单——两个保存通道从此不打架 |
+| POST | `/api/v1/ai/test` | 测试连接。body 同配置（允许用界面上未落盘的值试连；apiKey 空串时读已存 key）。发一次极简请求（`max_tokens:8` 或非流式 1 token 探测），10s 超时；返回 `{ok, model, latencyMs, message}`（v2.1：补 `model`，前端成功提示需要） |
 | POST | `/api/v1/ai/chat` | 流式分析。body 见下；响应 SSE |
 
 `POST /api/v1/ai/chat` 请求：
@@ -205,7 +208,7 @@ AIChat(raw json.RawMessage, w http.ResponseWriter, r *http.Request) error // SSE
 {
   "mode": "explain|intent|locate|flowmap",
   "flowId": "f_xxx",          // explain 必填（单流）
-  "ids": ["f_1", "f_2"],      // intent/locate/flowmap 必填：当前视图候选流 id（有序，按 StartedAt）
+  "ids": ["f_1", "f_2"],      // intent/locate/flowmap 必填：当前视图候选流 id。截断方向（v2.1 定稿）：前端按 StartedAt 降序传（与列表默认排序一致）；后端取数后仍按 StartedAt 降序复查再截前 MaxFlows（保证 AC11「仅发送最近 50 流」不依赖前端传参顺序，前端传参顺序不作契约）
   "question": "帮我找下单提交接口", // locate/flowmap 必填（explain/intent 可空）
   "options": {
     "includeReqBody": true,   // 是否带请求正文片段（explain 默认 true；intent/locate 默认 false 仅头+元数据）
@@ -246,14 +249,18 @@ data: {"finishReason":"stop","truncated":false}
   - 路线 B（二期）：tool-calling/function-calling（各兼容厂商支持参差，DeepSeek 支持、部分小厂/Ollama 模型不支持）。
 - `intent` 仅 intent 模式：Prompt 要求模型对每个 `[#n]` 输出一条严格 JSON 数组（```json {"intents":[{"seq":1,"flowId":"f_1","intent":"…","confidence":"high|medium|low","needsBody":false}]}```，与 locate 同套文末 JSON 块解析路线 A）；后端解析后**逐条**发 `intent` 事件（前端边收边回填，不必等整批），前端覆盖式写入会话 Map（重析同流以最新结果为准）。正文 Markdown 可有可无（一期允许模型只输出 JSON 块，后端剥块后若无剩余文本则不产生 delta）。confidence=low 或 needsBody=true 时前端在摘要条给弱样式/「带正文重析」提示。
 - 客户端断连（用户点停止/关页）→ `r.Context()` 取消 → Client 关闭上游连接，goroutine 退出，不写库不留任务。
-- **并发限制**：同实例同时只允许 1 个进行中的 AI Chat（新请求返回 409「已有分析进行中」）——防止浏览器重复提交叠加费用；停止后释放。内存 `atomic.Bool`/带缓冲 chan 做闸门即可。
+- **并发限制**：同实例同时只允许 1 个进行中的 AI Chat（新请求返回 409「已有分析进行中」）——防止浏览器重复提交叠加费用；停止后释放。内存 `atomic.Bool`/带缓冲 chan 做闸门即可（闸门在 service 实现层，HTTP 409 与 Wails 桥 error 共用同一闸门）。
+- **主窗内嵌复盘通道（v2.1 定稿，方案 A：Wails 事件桥）**：M12.3 拍板复盘并入主窗为主要形态，而主窗内嵌 `WailsReviewApi` **不经 ctlapi HTTP、无 token**（wails.localhost 源 fetch `127.0.0.1:9595` 属跨源，服务端刻意无 CORS 头；SSE 也无法走 Wails 请求-响应绑定）。定稿：
+  - 新增 Wails 绑定（`bindings_ai.go`，单结构 DTO + error 铁律）：`AIChatStart(req) (AIChatHandle, error)`（内部复用 StreamAIChat 同一编排：取数→裁剪脱敏→ai.Client→逐帧 `EventsEmit("ai:chat", {handle, event, data})` 转发；handle 关联取消函数）与 `AIChatStop(handle string) error`（ctx cancel，语义同 HTTP 断连）。
+  - 前端 `review/api/wails.ts` 的 `analyze` 用 `EventsOn("ai:chat", ...)` 订阅 + `signal` 触发 `AIChatStop`；`getAIConfig` 走 `AIChatStart` 同文件新增的 `GetAIConfigApp`/`SaveAIConfigApp` 绑定（或复用 ctl_bridge 暴露——定稿：**Wails 绑定直连 app 层实现**，不经 ctlapi，与主窗 GetSettings 同模式）。
+  - 与 `ui:open-settings` 事件推送先例同构；token 不出后端、不扩大 CORS 面；HTTP SSE 通道（独立浏览器复盘页）与事件桥共用 StreamAIChat 编排与并发闸门，双通道互斥由同一 `atomic.Bool` 保证（Wails 侧冲突返回 error 而非 409，前端统一错误 UI）。
 
 ### 5.4 取数、裁剪与脱敏（prompt.go）
 
-**取数**（接线层 ai.Service，复用归档只读路径）：
+**取数**（接线层，复用归档只读路径；方法名为 persist.Writer 现有 API，v2.1 修正——原稿 `ListFlowsByTag/GetTaggedFlow/GetTaggedFlowBody` 系笔误，代码中不存在）：
 
-- explain：`GetTaggedFlow(id)` 详情 + `GetTaggedFlowBody(id, req/resp)`（惰性 zstd 解压）。
-- intent/locate/flowmap：按 `ids` 顺序批量取元数据；`includeReqBody/includeRespBody=true` 时取正文。id 不存在/已删跳过；全部失效 → 直接 error 事件「候选流已不存在，请刷新列表」。
+- explain：`LoadFlowByID(id)` 详情 + `LoadBody(id, req/resp)`（惰性 zstd 解压）。
+- intent/locate/flowmap：**新增 `LoadFlowsByIDs(ids []string)`**（单条 `IN` 查询，n≤MaxFlows≤100，按 StartedAt 降序返回；缺失 id 即失效）；`includeReqBody/includeRespBody=true` 时对入选流逐个 `LoadBody` 取正文。id 不存在/已删跳过；全部失效 → 直接 error 事件「候选流已不存在，请刷新列表」。
 - intent 正文策略：默认不取正文（仅元数据 + 关键头）；`needsBody` 是**模型输出侧标记**而非后端二次取数（一期不做服务端自动二轮调用，避免隐式费用）。
 
 **裁剪（双预算硬封顶，纯函数可测）**：
@@ -299,7 +306,7 @@ data: {"finishReason":"stop","truncated":false}
   3. **接口地址 BaseURL** n-input（placeholder `https://api.deepseek.com`；hint：兼容 OpenAI 接口的任意地址，含本地 OneAPI）。
   4. **API Key** n-input type=password，showable；旁边「保存密钥」按钮——**密钥独立即时保存**：进入 tab 时 `GET /ai/config` 取 `hasApiKey/apiKeyMasked`，输入框 placeholder 显示 `已保存：••••1234（留空保存则不变）`；点保存调 `POST /ai/config`（仅 key 字段，空=不变，另有「清除密钥」按钮走 `__clear__`）。理由：不把 key 放进 SettingsView 全量表单深拷贝/保存链路，减少误覆盖与日志面。
   5. **模型** n-input + 预设 tag 快速填（如 deepseek-chat）。
-  6. **温度** n-slider 0–2 step 0.1（默认 0.3）；**单请求超时秒** n-input-number（10–600）。
+  6. **温度** n-slider 0.1–2 step 0.1（默认 0.3；hint「0 视为未设置，按默认 0.3 生效」——v2.1：0 为哨兵，UI min 0.1）；**单请求超时秒** n-input-number（10–600）。
   7. **分析预算**：最大流数 n-input-number（1–100，默认 50）+ 正文预算 KB（8–256，默认 64）；hint「超过预算自动截断最近更早的记录」。
   8. **发送前脱敏** n-switch（默认开）+ 关闭时的 n-popconfirm 风险确认；hint 列举脱敏范围与「仍会发送 URL、参数名与部分正文到所选服务商」。
   9. **测试连接** n-button：调 Wails 绑定 `AITestConnection(cfg)`（主窗有绑定通道，避免密钥绕浏览器）；结果内联 n-alert（成功显示模型与延迟；失败显示上游错误原文）。测试用界面当前值（未保存也可测），密钥留空时用已存 key。
@@ -327,7 +334,7 @@ AI settings.AISettings `json:"ai"` // 无 apiKey 的配置投影（apiKey 走 /a
 - **顶栏**（ReviewApp top-actions，刷新按钮前）：`✨ AI 分析` n-button（small，secondary）；未配置时仍可点（打开面板后显示未配置空态 + 「去主窗设置」按钮）。
 - **详情标题栏**（ReviewDetail.vue，「调试重发」旁）：`AI 解读` n-button tiny；demo 模式不禁用（走本地模拟，与 compose 的 demo 禁用策略不同——AI 演示不产生外部副作用）。
 - **意图摘要条**（ReviewDetail.vue 顶部、FlowDetailTabs 之上，新增 `review/ReviewIntentBar.vue`）：选中流在意图 Map 中有结果时显示一条细摘要条——`✨ {intent}`（low 置信度/needsBody 用弱化样式 + tooltip 说明），右侧「重新分析」（以单流 ids 发一次 intent 任务，原地转圈覆盖）与「完整解读」（打开 AI 面板 explain 模式）；无结果时不占位（不显示空条），仅在 AI 面板 intent tab 提供主动分析入口。
-- **批量勾选**：FlowTable 新增**可选**勾选列（checkbox wi，经 `selectable`/`v-model:checkedIds` 类 props 开启；主窗 FlowList 不传=不渲染，零影响），仅 ReviewPage 开启；勾选集合作废规则：翻页/切标签/切 scope/清空后清空勾选。列表工具条在有勾选时显示「✨ 标注意图（N）」按钮，无勾选时 intent 范围默认当前已加载页（在面板内明示范围文案）。
+- **批量勾选**：FlowTable 新增**可选**勾选列（checkbox wi，经 `selectable`/`v-model:checkedIds` 类 props 开启；主窗 FlowList 不传=不渲染，零影响），仅 ReviewPage 开启；勾选集合作废规则（v2.1 补全）：翻页/切标签/切 scope/切关键字/改页大小/**清空（含快捷忽略导致列表内容变化）**后清空勾选。列表工具条在有勾选时显示「✨ 标注意图（N）」按钮，无勾选时 intent 范围默认当前已加载页（在面板内明示范围文案）。
 - **容器**：新增 [ReviewAiPanel.vue](../frontend/src/review/ReviewAiPanel.vue)，复盘页内右侧抽屉：
   - 不依赖 naive 的 n-drawer（复盘页已全量引入 naive，可用；但抽屉层级在独立窗口内自绘 `.ai-drawer` 固定定位更可控）——**定稿：自绘 fixed 右侧 560px 滑入面板**（z-index 高于三栏，带 24px 圆角左边、遮罩可选：不设遮罩，允许边看列表边读结论）。
   - `v-model:show`；props：`api: ReviewApi`、初始 `mode`、`flowId`（explain）、候选上下文（勾选/当前视图 ids/总数/标签名/scope/关键字）。
@@ -374,6 +381,7 @@ analyze(
 ```
 
 - HttpApi：`fetch('/api/v1/ai/chat', {method:'POST', headers:Bearer+json, body, signal})`；**首响应先判 ok**（400/409 等走 ApiError），200 后 `resp.body.getReader()` + TextDecoder 按 SSE 帧（`\n\n` 分帧，解析 `event:`/`data:` 行）循环回调；reader 异常/AbortError 静默收尾。
+- WailsReviewApi（v2.1，主窗内嵌形态）：`analyze` 调 `AIChatStart(req)` 拿 handle → `EventsOn('ai:chat', {handle,event,data})` 订阅转发 onEvent → `signal` 触发 `AIChatStop(handle)`；并发冲突 Wails 侧以 error resolve（统一错误 UI，与 HTTP 409 同提示文案）。三实现（http/demo/wails）共用同一 `AiChatEvent` 类型。
 - DemoApi：不发请求，按 mode 用内置中文模板**定时器逐段吐 delta**（explain 讲当前流、intent 为 demoData 每条按 method+path 生成一句话并逐条发 `intent` 事件（约每条 150ms）、locate 从 demoData 里按 question 关键字筛 2–3 条发 match+卡片、flowmap 输出编号步骤），约 800ms 全程；支持 abort 清定时器。
 - 不把 analyze 放进 compose 那类「demo 桩抛错」——AI UI 是本版演示重点（既定：demo 模拟流）。
 
@@ -412,9 +420,10 @@ analyze(
 - `internal/ai/client.go`、`prompt.go`（新包，零外部依赖）：流式 Client（SSE 解析/首块超时/上游代理装配/错误包装）、四模式 Prompt + 裁剪 + 脱敏（纯函数）。
 - `internal/ai/client_test.go`、`prompt_test.go`：SSE 帧/[DONE]/错误体/归一化；脱敏正则；预算截断（流数+字节）；空/二进制正文；locate/intent JSON 块解析（缺 seq/未知 flowId/重复结果覆盖语义）。
 - `internal/ctlapi/server.go`：Service 接口 +4 方法；路由 `/api/v1/ai/config`、`/ai/test`、`/ai/chat`；SSE handler（响应头/Flush/帧编码含 `intent`/409 并发闸门/ctx 取消）；`UISettingsTabs` 加 `"ai"`。
-- `internal/ctlapi/ai_bridge.go`（或并入现有接线文件）：StreamAIChat 取数（归档 RO 路径）→ prompt.go 组装 → ai.Client 流式 → emit（intent/match 结构化事件解析转写）；fakeService（ctlapi_test.go）补 4 方法 + 路由测试（401/400/409/SSE 帧序/demo 不涉及）。
-- `internal/app/dto.go`：SettingsView 加 `AI settings.AISettings`（无 key 投影）；GetSettings 回填、SaveSettings 合并不动 key。
-- `internal/app/bindings_ai.go`（新）：`TestAIConnection` Wails 绑定。
+- `internal/ctlapi/ai_bridge.go`（或并入现有接线文件）：StreamAIChat 取数（归档 RO 路径：`LoadFlowsByIDs`（新增）/`LoadFlowByID`/`LoadBody`）→ prompt.go 组装 → ai.Client 流式 → emit（intent/match 结构化事件解析转写）；fakeService（ctlapi_test.go）补 4 方法 + 路由测试（401/400/409/SSE 帧序/demo 不涉及）。
+- `internal/persist/tags.go`（或新增文件）：`LoadFlowsByIDs(ids []string)`（v2.1：单条 IN 查询，StartedAt 降序）。
+- `internal/app/dto.go`：SettingsView 加 `AI settings.AISettings`（无 key 投影）；GetSettings 回填（经 WithDefaults 兜底）、SaveSettings 合并不动 key。
+- `internal/app/bindings_ai.go`（新）：`TestAIConnection` + **`AIChatStart`/`AIChatStop`（Wails 事件桥，v2.1）+ `GetAIConfigApp`/`SaveAIConfigApp`（主窗密钥独立存取）** Wails 绑定，全部单结构 DTO + error。
 - `internal/app/`（settings 保存接线处）：`SaveAIConfig`（含哨兵语义）、`GetAIConfig`（脱敏）实现 + 全局配置即时落盘（复用 SaveGlobal，注意与运行中缓存一致性：与 SaveSettings 同路径回写 g 并持久化）。
 
 **前端（主窗）**
@@ -428,7 +437,7 @@ analyze(
 - `review/ReviewAiPanel.vue`（新）、`review/ReviewIntentBar.vue`（新，详情顶部意图摘要条）、`review/useIntents.ts`（新，会话级意图 Map 单例）、`review/ai-md.ts`（新，marked+DOMPurify 封装）。
 - `review/ReviewApp.vue`：顶栏入口 + 面板挂载 + locate 跳转选中 + 勾选集合/意图缓存接线；`review/ReviewDetail.vue`：「AI 解读」按钮 + ReviewIntentBar 挂载；`review/ReviewPage.vue`（主窗内嵌承载处，如适用）同口径。
 - `components/FlowTable.vue`：**可选**勾选列（默认关闭，主窗零影响）+ 勾选事件/表头全选。
-- `review/api.ts` + `lib/types.ts`：analyze/getAIConfig 类型（AiChatMode 含 `intent`、AiChatEvent 联合加 `intent`、IntentResult）与双实现（Http SSE 解析 / Demo 模拟逐条 intent）。
+- `review/api/`（目录，v2.1 修正路径——原稿 `review/api.ts` 系笔误；实际为 index/http/demo/wails/types/error 六文件）：`types.ts`（AiChatMode 含 `intent`、AiChatEvent 联合加 `intent`、IntentResult）、`http.ts`（fetch SSE 解析）、`demo.ts`（本地模拟逐条 intent）、`wails.ts`（**事件桥消费，v2.1**）三实现；业务 DTO（IntentResult 等）入 `src/lib/types.ts`。
 - `frontend/package.json`：加 `marked`、`dompurify`（+ `@types/dompurify` 视版本，dompurify 3 自带类型）。
 
 **文档**

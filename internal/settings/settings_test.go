@@ -1,8 +1,10 @@
 package settings
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"prismproxy/internal/rules"
@@ -261,5 +263,197 @@ func TestValidateRules(t *testing.T) {
 
 	if err, _ := ValidateRules([]rules.FilterGroup{{Name: "g", Enabled: true, Mode: rules.ModeBlacklist, Hosts: []string{"@ai"}}}, nil, gmap); err != nil {
 		t.Fatalf("合法规则不应报错: %v", err)
+	}
+}
+
+// ---------- AI 配置（M13 P0，计划 §二） ----------
+
+func TestAIConfigDefaults(t *testing.T) {
+	g := DefaultGlobal()
+	if g.AI.Enabled {
+		t.Fatal("AI 默认应未启用")
+	}
+	if g.AI.Provider != "custom" || g.AI.Temperature != 0.3 || g.AI.TimeoutSec != 120 ||
+		g.AI.MaxFlows != 50 || g.AI.MaxKB != 64 || !g.AI.Redact {
+		t.Fatalf("DefaultGlobal AI 默认子值异常: %+v", g.AI)
+	}
+}
+
+func TestAIConfigLegacyJSONWithDefaults(t *testing.T) {
+	// 旧 settings.json 无 ai 字段：反序列化零值不报错
+	var legacy GlobalSettings
+	if err := json.Unmarshal([]byte(`{"listenAddr":"127.0.0.1:9090","maxFlows":2000}`), &legacy); err != nil {
+		t.Fatalf("旧配置反序列化不应报错: %v", err)
+	}
+	if legacy.AI.Enabled || legacy.AI.Redact || legacy.AI.MaxKB != 0 || legacy.AI.TimeoutSec != 0 {
+		t.Fatalf("旧配置 AI 应为全零值: %+v", legacy.AI)
+	}
+	// WithDefaults 兜底：脱敏默认开 + 四项数值默认（高危 H2：防 Redact=false 隐私倒退）
+	d := legacy.AI.WithDefaults()
+	if !d.Redact || d.Temperature != 0.3 || d.TimeoutSec != 120 || d.MaxFlows != 50 || d.MaxKB != 64 {
+		t.Fatalf("整体未初始化兜底异常: %+v", d)
+	}
+	// 兜底不回写原值（仅读取侧）
+	if legacy.AI.Redact || legacy.AI.MaxKB != 0 {
+		t.Fatalf("WithDefaults 不应修改接收者: %+v", legacy.AI)
+	}
+
+	// 部分初始化：各数值字段独立兜底，显式值不动
+	p := AIConfig{Provider: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-chat"}
+	p = p.WithDefaults()
+	if p.Temperature != 0.3 || p.TimeoutSec != 120 || p.MaxFlows != 50 || p.MaxKB != 64 {
+		t.Fatalf("部分初始化兜底异常: %+v", p)
+	}
+	if p.Provider != "deepseek" || p.BaseURL != "https://api.deepseek.com" || p.Model != "deepseek-chat" {
+		t.Fatalf("兜底不应覆盖显式字段: %+v", p)
+	}
+	// Redact 无哨兵可辨（bool 零值=false）：仅整体未初始化分支兜底 true，
+	// 部分初始化保持原值（防覆盖用户显式关闭的脱敏，见 WithDefaults 注释）
+	if p.Redact {
+		t.Fatalf("部分初始化不应改写 Redact: %+v", p)
+	}
+	e := AIConfig{Provider: "custom", Temperature: 0.7, TimeoutSec: 300, MaxFlows: 10, MaxKB: 32}
+	e = e.WithDefaults()
+	if e.Temperature != 0.7 || e.TimeoutSec != 300 || e.MaxFlows != 10 || e.MaxKB != 32 {
+		t.Fatalf("显式数值不应被兜底覆盖: %+v", e)
+	}
+	// 手工配置 {"enabled":true} 引导走默认参数且保留启用位
+	m := AIConfig{Enabled: true, BaseURL: "http://127.0.0.1:11434"}
+	m = m.WithDefaults()
+	if !m.Enabled || m.Provider != "custom" || m.Temperature != 0.3 || !m.Redact {
+		t.Fatalf("手工半配置兜底异常: %+v", m)
+	}
+}
+
+func TestAIConfigValidate(t *testing.T) {
+	base := AIConfig{Enabled: true, BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-chat",
+		Temperature: 0.3, TimeoutSec: 120, MaxFlows: 50, MaxKB: 64, Redact: true}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("合法配置不应报错: %v", err)
+	}
+
+	assertErr := func(c AIConfig, msg string) {
+		t.Helper()
+		if err := c.Validate(); err == nil {
+			t.Fatal(msg)
+		}
+	}
+	bad := base
+	bad.BaseURL = "ftp://api.deepseek.com"
+	assertErr(bad, "非 http(s) BaseURL 应报错")
+	bad = base
+	bad.BaseURL = "api.deepseek.com"
+	assertErr(bad, "无 scheme BaseURL 应报错")
+	bad = base
+	bad.Model = "  "
+	assertErr(bad, "空模型名应报错")
+	bad = base
+	bad.Temperature = 0
+	assertErr(bad, "温度 0 为哨兵不显式保存，应报错")
+	bad = base
+	bad.Temperature = 2.1
+	assertErr(bad, "温度越上界应报错")
+	bad = base
+	bad.TimeoutSec = 9
+	assertErr(bad, "超时越下界应报错")
+	bad = base
+	bad.TimeoutSec = 601
+	assertErr(bad, "超时越上界应报错")
+	bad = base
+	bad.MaxFlows = 0
+	assertErr(bad, "流数越下界应报错")
+	bad = base
+	bad.MaxFlows = 101
+	assertErr(bad, "流数越上界应报错")
+	bad = base
+	bad.MaxKB = 7
+	assertErr(bad, "预算越下界应报错")
+	bad = base
+	bad.MaxKB = 257
+	assertErr(bad, "预算越上界应报错")
+
+	// 未启用不校验结构（配置半途也能保存）
+	if err := (AIConfig{}).Validate(); err != nil {
+		t.Fatalf("Enabled=false 不应校验: %v", err)
+	}
+}
+
+func TestNormalizeAIBaseURL(t *testing.T) {
+	cases := [][2]string{
+		{"https://api.deepseek.com", "https://api.deepseek.com/v1"},
+		{"https://api.deepseek.com/", "https://api.deepseek.com/v1"},
+		{"https://api.deepseek.com//", "https://api.deepseek.com/v1"},
+		{"https://api.deepseek.com/v1", "https://api.deepseek.com/v1"},
+		{"https://api.deepseek.com/v1/", "https://api.deepseek.com/v1"},
+		{"http://127.0.0.1:11434", "http://127.0.0.1:11434/v1"},
+		{"  https://x.com  ", "https://x.com/v1"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := NormalizeAIBaseURL(c[0]); got != c[1] {
+			t.Fatalf("NormalizeAIBaseURL(%q)=%q, want %q", c[0], got, c[1])
+		}
+	}
+}
+
+func TestAISettingsProjectionNoKey(t *testing.T) {
+	c := AIConfig{Enabled: true, Provider: "deepseek", BaseURL: "https://api.deepseek.com",
+		APIKey: "sk-super-secret", Model: "deepseek-chat", Temperature: 0.3,
+		TimeoutSec: 120, MaxFlows: 50, MaxKB: 64, Redact: true}
+	s := c.AISettings()
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 投影 JSON 不得含 apiKey 字段或原值（防深拷贝/日志/DTO 链路泄漏）
+	if strings.Contains(string(data), "apiKey") || strings.Contains(string(data), "sk-super-secret") {
+		t.Fatalf("AISettings 投影泄漏密钥: %s", data)
+	}
+	if s.Model != "deepseek-chat" || !s.Redact || s.Temperature != 0.3 {
+		t.Fatalf("投影字段不一致: %+v", s)
+	}
+}
+
+func TestWarnNoKey(t *testing.T) {
+	g := DefaultGlobal()
+	if g.WarnNoKey() != "" {
+		t.Fatal("未启用不应产生 warning")
+	}
+	g.AI.Enabled = true
+	if g.WarnNoKey() == "" {
+		t.Fatal("启用但无 key 应产生 warning")
+	}
+	g.AI.Provider = AIProviderOllama
+	if g.WarnNoKey() != "" {
+		t.Fatal("ollama 无 key 属正常形态不应 warning")
+	}
+	g.AI.Provider = "custom"
+	g.AI.APIKey = "sk-x"
+	if g.WarnNoKey() != "" {
+		t.Fatal("已配置 key 不应 warning")
+	}
+}
+
+func TestValidateEnvAI(t *testing.T) {
+	g := DefaultGlobal()
+	g.AI.Enabled = true
+	g.AI.BaseURL = "not a url"
+	if err := g.ValidateEnv(); err == nil {
+		t.Fatal("ValidateEnv 应转发 AI 校验（非法 BaseURL）")
+	}
+	g.AI.BaseURL = "https://api.deepseek.com"
+	g.AI.Model = "deepseek-chat"
+	g.AI.Temperature = 5
+	if err := g.ValidateEnv(); err == nil {
+		t.Fatal("ValidateEnv 应转发 AI 校验（温度越界）")
+	}
+	g.AI.Temperature = 0.3
+	if err := g.ValidateEnv(); err != nil {
+		t.Fatalf("合法 AI 配置不应报错: %v", err)
+	}
+	// key 空不算错误（走 warnings 通道），这里仅确认不阻塞
+	g.AI.APIKey = ""
+	if err := g.ValidateEnv(); err != nil {
+		t.Fatalf("key 空不应阻塞保存: %v", err)
 	}
 }
