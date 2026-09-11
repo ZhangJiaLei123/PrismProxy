@@ -32,6 +32,11 @@ type AITestResult struct {
 	Message   string `json:"message"`
 }
 
+// AIModelsResult 模型列表结果（FetchAIModels，设置页「获取模型」下拉建议）。
+type AIModelsResult struct {
+	Models []string `json:"models"`
+}
+
 // AIChatHandle AI 分析会话句柄：AIChatStart 返回，AIChatStop 按其取消。
 type AIChatHandle struct {
 	Handle string `json:"handle"`
@@ -47,17 +52,47 @@ type AIConfigView struct {
 
 // ---------- 测试连接（P2-9） ----------
 
+// aiDraftKey 解析条目草稿测试/拉模型时的生效 key：草稿 key 非空直接用；为空时仅当
+// 草稿端点与已存当前条目（顶层快照）同端点（归一化 BaseURL 一致）才回填已存 key，
+// 不同端点不外发凭据（多供应商条目下避免 A 家 key 发往 B 家，宁缺勿错——key 缺失
+// 由上游按未配置报错）。调用方须持 projMu，stored 传 a.gcfg.AI 值拷贝。
+func aiDraftKey(cfg settings.AIConfig, stored settings.AIConfig) string {
+	if strings.TrimSpace(cfg.APIKey) != "" {
+		return cfg.APIKey
+	}
+	if settings.NormalizeAIBaseURL(cfg.BaseURL) == settings.NormalizeAIBaseURL(stored.BaseURL) {
+		return stored.APIKey
+	}
+	return ""
+}
+
 // TestAIConnection 用界面当前值探测（未落盘可测，设计稿 §六第 9 项/AC2）：BaseURL/
-// 模型/温度等全按入参；key 留空时回填已存 key。不落盘；配置缺失返回 error，
-// 网络/服务商失败为正常业务结果（ok=false + 上游原文）。
+// 模型/温度等全按入参；key 留空且与已存当前条目同端点时回填已存 key（异端点不外发）。
+// 不落盘；配置缺失返回 error，网络/服务商失败为正常业务结果（ok=false + 上游原文）。
 func (a *App) TestAIConnection(cfg settings.AIConfig) (*AITestResult, error) {
 	a.projMu.Lock()
 	upMode, upProxy, listen := a.gcfg.UpstreamMode, a.gcfg.UpstreamProxy, a.gcfg.ListenAddr
-	if strings.TrimSpace(cfg.APIKey) == "" {
-		cfg.APIKey = a.gcfg.AI.APIKey
-	}
+	cfg.APIKey = aiDraftKey(cfg, a.gcfg.AI)
 	a.projMu.Unlock()
 	return a.aiProbe(cfg, resolveUpstream(upMode, upProxy, listen))
+}
+
+// ---------- 获取模型列表（OpenAI 兼容 GET {base}/models，设置页「获取模型」） ----------
+
+// FetchAIModels 用界面当前值拉取模型列表：语义同 TestAIConnection——key 留空且与
+// 已存当前条目同端点时回填已存 key（异端点不外发）、不落盘；出站代理随全局
+// UpstreamMode。仅 Wails 主窗使用（无 HTTP 状态码映射需求），BaseURL 缺失与
+// 网络/服务商失败一律走 error 由前端 toast 呈现。
+func (a *App) FetchAIModels(cfg settings.AIConfig) (*AIModelsResult, error) {
+	a.projMu.Lock()
+	upMode, upProxy, listen := a.gcfg.UpstreamMode, a.gcfg.UpstreamProxy, a.gcfg.ListenAddr
+	cfg.APIKey = aiDraftKey(cfg, a.gcfg.AI)
+	a.projMu.Unlock()
+	models, err := a.aiListModels(cfg, resolveUpstream(upMode, upProxy, listen))
+	if err != nil {
+		return nil, err
+	}
+	return &AIModelsResult{Models: models}, nil
 }
 
 // ---------- chat 事件桥（P2-13） ----------

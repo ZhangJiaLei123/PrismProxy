@@ -75,6 +75,10 @@ func (a *App) SaveAIConfigPatch(raw json.RawMessage) (map[string]any, error) {
 	bad := func(k string, err error) error {
 		return fmt.Errorf("%w: 字段 %s 解析失败: %v", ctlapi.ErrAIBadReq, k, err)
 	}
+	// apiKey 补丁先记录、循环后最后生效：SyncAICurrent 会以当前条目 key 覆盖顶层，
+	// map 遍历无序，若先应用 key 再同步 entries，补丁会被静默覆盖（含 __clear__ 被复活）
+	var keyPatch string
+	hasKeyPatch := false
 	for k, v := range fields {
 		switch k {
 		case "enabled":
@@ -93,6 +97,12 @@ func (a *App) SaveAIConfigPatch(raw json.RawMessage) (map[string]any, error) {
 			if err := json.Unmarshal(v, &cfg.Model); err != nil {
 				return nil, bad(k, err)
 			}
+		case "entries":
+			var entries []settings.AIModelEntry
+			if err := json.Unmarshal(v, &entries); err != nil {
+				return nil, bad(k, err)
+			}
+			cfg.Entries = entries
 		case "apiKey":
 			var s string
 			if err := json.Unmarshal(v, &s); err != nil {
@@ -101,10 +111,10 @@ func (a *App) SaveAIConfigPatch(raw json.RawMessage) (map[string]any, error) {
 			switch s {
 			case "": // 空串=保持原值（掩码视图不回原 key，防止误清）
 			case "__clear__": // 哨兵：显式清除
-				cfg.APIKey = ""
+				keyPatch, hasKeyPatch = "", true
 			default:
 				if t := strings.TrimSpace(s); t != "" { // 纯空白=未输入，保持原值（防误清，对齐前端守卫与 mock）
-					cfg.APIKey = t
+					keyPatch, hasKeyPatch = t, true
 				}
 			}
 		case "temperature":
@@ -131,6 +141,19 @@ func (a *App) SaveAIConfigPatch(raw json.RawMessage) (map[string]any, error) {
 			return nil, fmt.Errorf("%w: 不支持的配置字段 %q", ctlapi.ErrAIBadReq, k)
 		}
 	}
+	// 条目/顶层 key 同步（循环后统一做，map 遍历无序故不进 case）：
+	// 提供 entries → 归一化 + 当前条目快照同步顶层；提供 apiKey → 顶层 key 单改回写
+	// 当前条目（防下次 SaveSettings 条目落盘把单独改的 key 覆盖回退）。
+	// key 补丁在 entries 同步之后最后生效：SyncAICurrent 以当前条目 key 覆盖顶层，
+	// 先应用 key 补丁会被覆盖（entries+apiKey 同请求时补丁静默丢失，审计问题2）
+	if _, ok := fields["entries"]; ok {
+		cfg.Entries = settings.NormalizeAIEntries(cfg.Entries)
+		cfg.SyncAICurrent()
+	}
+	if hasKeyPatch {
+		cfg.APIKey = keyPatch
+		cfg.SyncKeyToCurrent()
+	}
 	// 校验用兜底副本：哨兵 0 值按默认生效判定（显式 temperature:0 放行），落盘仍保留哨兵
 	if err := cfg.WithDefaults().Validate(); err != nil {
 		return nil, err
@@ -149,12 +172,14 @@ func (a *App) SaveAIConfigPatch(raw json.RawMessage) (map[string]any, error) {
 }
 
 // aiConfigView 掩码视图构造（GET 与保存回传共用，字段名与 settings.AIConfig json tag 一致）。
+// 条目为脱敏视图（不含原文 key，仅 hasKey 供 UI 显示已配置态）。
 func aiConfigView(g settings.GlobalSettings, cfg settings.AIConfig) map[string]any {
 	return map[string]any{
 		"enabled":        cfg.Enabled,
 		"provider":       cfg.Provider,
 		"baseUrl":        cfg.BaseURL,
 		"model":          cfg.Model,
+		"entries":        aiEntriesView(cfg.Entries),
 		"temperature":    cfg.Temperature,
 		"timeoutSec":     cfg.TimeoutSec,
 		"maxFlows":       cfg.MaxFlows,
@@ -164,6 +189,26 @@ func aiConfigView(g settings.GlobalSettings, cfg settings.AIConfig) map[string]a
 		"apiKeyMasked":   maskAPIKey(cfg.APIKey),
 		"keyMissingWarn": g.WarnNoKey(),
 	}
+}
+
+// aiEntriesView 供应商条目脱敏视图：模型/别名/URL/当前标记 + hasKey，永不回原文 key
+//（主窗 AiTab 已不消费此视图；复盘页与 HTTP 端 GET /ai/config 客户端使用）。
+func aiEntriesView(entries []settings.AIModelEntry) []map[string]any {
+	if entries == nil {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, map[string]any{
+			"provider": e.Provider,
+			"model":    e.Model,
+			"alias":    e.Alias,
+			"baseUrl":  e.BaseURL,
+			"hasKey":   e.APIKey != "",
+			"current":  e.Current,
+		})
+	}
+	return out
 }
 
 // maskAPIKey 密钥掩码：不回原值，仅尾 4 位辅助辨认。
@@ -223,6 +268,24 @@ func (a *App) aiProbe(cfg settings.AIConfig, proxyURL string) (*AITestResult, er
 }
 
 const aiTestTimeout = 10 * time.Second
+
+// aiListModels 模型列表核心（ai.Client.ListModels，OpenAI 兼容 GET {base}/models）：
+// 10s 超时、不落盘，供设置页「获取模型」用界面当前值临时构造（key 由调用方回填）。
+// BaseURL 未配置为本地错误；网络/服务商失败（含空列表）原样上抛由前端呈现。
+func (a *App) aiListModels(cfg settings.AIConfig, proxyURL string) ([]string, error) {
+	if strings.TrimSpace(cfg.BaseURL) == "" {
+		return nil, fmt.Errorf("请先填写 AI 接口地址（BaseURL）")
+	}
+	client := ai.NewClient(ai.Config{
+		BaseURL:  cfg.BaseURL,
+		APIKey:   cfg.APIKey,
+		Timeout:  aiTestTimeout,
+		ProxyURL: proxyURL,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), aiTestTimeout)
+	defer cancel()
+	return client.ListModels(ctx)
+}
 
 // ---------- 分析编排（P2-6） ----------
 

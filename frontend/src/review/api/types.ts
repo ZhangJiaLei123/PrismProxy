@@ -83,12 +83,23 @@ export type AiChatEvent =
   | { event: 'error'; data: { message: string } }
   | { event: 'done'; data: { finishReason: string; truncated: boolean } }
 
+/** 模型条目（settings.AIModelEntry 脱敏投影）：每条为独立供应商配置；hasKey 表示已存密钥。 */
+export interface AIEntryView {
+  provider: string
+  model: string
+  alias?: string
+  baseUrl: string
+  hasKey: boolean
+  current: boolean
+}
+
 /** AI 配置掩码视图（GET /ai/config 返回；wails 形态由 SettingsView.ai + GetAIConfigApp 合并）。 */
 export interface AIApiConfigView {
   enabled: boolean
   provider: string
   baseUrl: string
   model: string
+  entries?: AIEntryView[]
   temperature: number
   timeoutSec: number
   maxFlows: number

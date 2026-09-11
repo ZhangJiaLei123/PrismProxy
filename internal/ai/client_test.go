@@ -302,3 +302,68 @@ func TestProxyPassthrough(t *testing.T) {
 		t.Fatalf("代理未被经过，hits=%d", hits.Load())
 	}
 }
+
+// TestListModels 模型列表：GET 路径与归一化（补 /v1、版本段保留）、Bearer 头（空 key 不发）、
+// 去空白去重、非 200 错误包装、空列表报错。
+func TestListModels(t *testing.T) {
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"a"},{"id":"a"},{"id":"  "},{"id":"b"}]}`)
+	}))
+	defer srv.Close()
+
+	// BaseURL 不带 /v1：自动补 /v1/models；key 非空发 Bearer；重复与空白项剔除
+	c := NewClient(Config{BaseURL: srv.URL, APIKey: "sk-x", Model: "m"})
+	got, err := c.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Fatalf("models=%v want [a b]", got)
+	}
+	if gotPath != "/v1/models" {
+		t.Fatalf("path=%q", gotPath)
+	}
+	if gotAuth != "Bearer sk-x" {
+		t.Fatalf("Authorization=%q", gotAuth)
+	}
+
+	// BaseURL 末段 /v<数字>（Ollama /v1、火山 Ark /api/v3）：保留不补 /v1
+	c2 := NewClient(Config{BaseURL: "http://ark.example/api/v3", Model: "m"})
+	if got := normalizeBaseURL(c2.cfg.BaseURL) + "/models"; got != "http://ark.example/api/v3/models" {
+		t.Fatalf("versioned base=%q", got)
+	}
+
+	// 空 key：不发 Authorization（Ollama 场景）
+	c3 := NewClient(Config{BaseURL: srv.URL, Model: "m"})
+	if _, err := c3.ListModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "" {
+		t.Fatalf("空 APIKey 不应发 Authorization，got %q", gotAuth)
+	}
+
+	// 非 200：error.message 提取
+	srvErr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad key"}}`))
+	}))
+	defer srvErr.Close()
+	if _, err := NewClient(Config{BaseURL: srvErr.URL, Model: "m"}).ListModels(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "服务商返回 401") || !strings.Contains(err.Error(), "bad key") {
+		t.Fatalf("got %v", err)
+	}
+
+	// 空列表报错
+	srvEmpty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"object":"list","data":[]}`)
+	}))
+	defer srvEmpty.Close()
+	if _, err := NewClient(Config{BaseURL: srvEmpty.URL, Model: "m"}).ListModels(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "服务商返回空模型列表") {
+		t.Fatalf("got %v", err)
+	}
+}

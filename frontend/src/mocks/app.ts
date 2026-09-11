@@ -228,6 +228,7 @@ function buildSettings(): any {
       maxFlows: 50,
       maxKb: 64,
       redact: true,
+      entries: [],
     },
     filterGroups: rules.filterGroups,
     decryptRules: rules.decryptRules,
@@ -647,12 +648,16 @@ const handlers: Record<string, (...args: any[]) => any> = {
   // --- M13 AI 分析（AiTab 密钥独立存取 + 测试连接，设计稿 §六） ---
   aiView: () => {
     const ai = state.settings?.ai
+    const cur = (ai?.entries ?? []).find((e) => e.current)
+    const key = cur?.apiKey || state.aiKey
     return {
-      hasApiKey: !!state.aiKey,
-      apiKeyMasked: state.aiKey ? (state.aiKey.length <= 8 ? '****' : '****' + state.aiKey.slice(-4)) : '',
-      // 对齐 Go WarnNoKey：仅「已启用 + 无 key + 非 ollama」才告警（审计低-2）
+      hasApiKey: !!key,
+      apiKeyMasked: key ? (key.length <= 8 ? '****' : '****' + key.slice(-4)) : '',
+      // 对齐 Go WarnNoKey：仅「已启用 + 当前条目无 key + 非 ollama」才告警
       keyMissingWarn:
-        ai?.enabled && !state.aiKey && ai.provider !== 'ollama' ? '未配置 API Key：AI 分析不可用（Mock）' : '',
+        ai?.enabled && !key && (cur?.provider ?? ai?.provider) !== 'ollama'
+          ? '未配置 API Key：AI 分析不可用（Mock）'
+          : '',
     }
   },
   GetAIConfigApp: async () => handlers.aiView(),
@@ -673,6 +678,21 @@ const handlers: Record<string, (...args: any[]) => any> = {
       return { model: cfg.model, latencyMs: 0, ok: false, message: '连接失败：无法访问 BaseURL（Mock）' }
     }
     return { model: cfg.model, latencyMs: 386, ok: true, message: '' }
+  },
+  // FetchAIModels：OpenAI 兼容 GET /v1/models 的 Mock；BaseURL 缺失走 error（对齐 Go aiListModels）
+  FetchAIModels: async (cfg: any) => {
+    await delay(400)
+    const url = String(cfg?.baseUrl ?? '')
+    if (!url.trim()) {
+      throw new Error('请先填写 AI 接口地址（BaseURL）')
+    }
+    if (url.includes('error')) {
+      throw new Error('服务商返回 401：Invalid API key（Mock）')
+    }
+    if (/ollama|11434/i.test(url)) {
+      return { models: ['qwen2.5:7b', 'llama3.1:8b', 'deepseek-r1:7b'] }
+    }
+    return { models: ['doubao-seed-1.6-250615', 'deepseek-chat', 'deepseek-reasoner', 'gpt-4o-mini'] }
   },
 }
 

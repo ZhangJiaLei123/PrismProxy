@@ -93,9 +93,9 @@ func (a *App) SaveSettings(nu *SettingsView) (*SaveSettingsResult, error) {
 	g.BypassList = append([]string(nil), nu.BypassList...)
 	g.Persist = nu.Persist
 	g.ADB = nu.ADB
-	// AI 半边（P2-10，设计稿 §六）：SettingsView.ai 为无 key 投影——非 key 字段覆盖，
-	// key 保留已存值（key 永不经全量表单链路）。整体零值=前端未携带 ai 字段
-	//（旧面板整结构回传），跳过合并防误清（判定式与 WithDefaults 未初始化哨兵一致）。
+	// AI 半边（P2-10，设计稿 §六）：顶层 APIKey 仍不经表单链路（保留已存值）；供应商
+	// 条目自带 key、随表单明文往返。整体零值=前端未携带 ai 字段（旧面板整结构回传），
+	// 跳过合并防误清（判定式与 WithDefaults 未初始化哨兵一致）。
 	if !(nu.AI.Provider == "" && nu.AI.MaxKB == 0) {
 		g.AI = settings.AIConfig{
 			Enabled:     nu.AI.Enabled,
@@ -108,7 +108,12 @@ func (a *App) SaveSettings(nu *SettingsView) (*SaveSettingsResult, error) {
 			MaxFlows:    nu.AI.MaxFlows,
 			MaxKB:       nu.AI.MaxKB,
 			Redact:      nu.AI.Redact,
+			// SaveSettings 不走 AI Validate，清单归一化在此显式完成（trim/去空/去重/截断/Current 唯一化）
+			Entries: settings.NormalizeAIEntries(nu.AI.Entries),
 		}
+		// 顶层四字段=当前生效条目快照（分析链路 runAIChatOnce/aiProbe/WarnNoKey/Validate
+		// 只读顶层，零改动）；entries 归一化为空时 no-op，顶层保留存量（旧单顶层形态兼容）
+		g.AI.SyncAICurrent()
 	}
 	if err := g.ValidateEnv(); err != nil {
 		return nil, err

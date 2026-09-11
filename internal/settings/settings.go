@@ -140,26 +140,40 @@ const DefaultDeviceProxyHost = "172.16.1.2"
 // AIProviderOllama 本地 Ollama 预设 id：key 为空属正常形态（自托管无鉴权）
 const AIProviderOllama = "ollama"
 
+// AIModelEntry 模型清单项 = 一个独立供应商配置：模型名 + 别名 + 独立 BaseURL + 独立 API Key。
+// Current=true 的条目为当前生效项（清单至多一个；无 true 时首条视为当前），保存时由
+// SyncAICurrent 同步到顶层 Provider/BaseURL/APIKey/Model 快照（分析链路零改动）。
+type AIModelEntry struct {
+	Provider string `json:"provider,omitempty"` // 服务商预设 id（ollama 免 key 豁免判断用）
+	Model    string `json:"model"`
+	Alias    string `json:"alias,omitempty"`   // 界面友好显示；空=直接显示模型名
+	BaseURL  string `json:"baseUrl,omitempty"` // 独立接口地址（实际请求时归一化，落盘所见即所得）
+	APIKey   string `json:"apiKey,omitempty"`  // 独立密钥；随主窗设置表单明文往返，复盘页脱敏视图不含
+	Current  bool   `json:"current,omitempty"` // 当前生效条目
+}
+
 // AIConfig OpenAI 兼容 Chat Completions 配置。
 // 零值 = 未初始化（旧 settings.json 无 ai 字段）——读取侧一律先经 WithDefaults 兜底；
 // 显式保存路径（Validate）用 [0.1,2] 温度区间，0 是「未设置」哨兵由 WithDefaults 补 0.3。
 type AIConfig struct {
 	Enabled  bool   `json:"enabled"`  // 是否启用 AI 分析（未配置 key 时前端入口仍可见，仅引导去设置）
-	Provider string `json:"provider"` // 服务商预设 id：openai|deepseek|moonshot|zhipu|qwen|ollama|custom（仅 UI 预设用，后端不依赖）
-	BaseURL  string `json:"baseUrl"`  // 形如 https://api.deepseek.com（不带 /v1，拼接时归一化，见 NormalizeAIBaseURL）
-	APIKey   string `json:"apiKey"`   // 密钥；独立读写接口（/ai/config），不进 SettingsView 全量 DTO
-	Model    string `json:"model"`    // 模型名，如 deepseek-chat / gpt-4o-mini
+	Provider string `json:"provider"` // 服务商预设 id（仅 UI 预设用，后端不依赖）；当前条目快照（SyncAICurrent）
+	BaseURL  string `json:"baseUrl"`  // 形如 https://api.deepseek.com（实际请求时归一化）；当前条目快照
+	APIKey   string `json:"apiKey"`   // 当前生效密钥；条目落盘时随 SyncAICurrent 同步，独立接口可单改（同步回当前条目）
+	Model    string `json:"model"`    // 当前生效模型名；当前条目快照
 
 	Temperature float64 `json:"temperature"` // 默认 0.3（分析任务偏低温度）；0=未设置哨兵，显式区间 [0.1,2]
 	TimeoutSec  int     `json:"timeoutSec"`  // 整请求超时秒，默认 120；流式下为首块+整体上限
 	MaxFlows    int     `json:"maxFlows"`    // 单次分析最大流数，默认 50、上限 100
 	MaxKB       int     `json:"maxKb"`       // 单次送审正文总预算 KB，默认 64、上限 256
 	Redact      bool    `json:"redact"`      // 发送前脱敏（默认 true）
+
+	Entries []AIModelEntry `json:"entries,omitempty"` // 供应商条目清单（每条独立 URL/Key）；顶层四字段=当前条目快照（SyncAICurrent）
 }
 
-// AISettings AIConfig 去掉 APIKey 的投影（SettingsView.AI 用）：
-// 主窗设置面板全量表单不携带密钥——SaveSettings 深拷贝/合并/日志链路都不见 key，
-// 密钥读写走独立 /ai/config 接口（设计稿 §5.3/§六）。
+// AISettings AIConfig 的设置面板投影（SettingsView.AI 用）：
+// 顶层 APIKey 不进投影（独立 /ai/config 读写掩码视图）；供应商条目自带 key，
+// 随主窗设置表单明文往返（条目卡片内编辑，与顶层 key 明文落盘 settings.json 同级安全）。
 type AISettings struct {
 	Enabled     bool    `json:"enabled"`
 	Provider    string  `json:"provider"`
@@ -170,9 +184,11 @@ type AISettings struct {
 	MaxFlows    int     `json:"maxFlows"`
 	MaxKB       int     `json:"maxKb"`
 	Redact      bool    `json:"redact"`
+
+	Entries []AIModelEntry `json:"entries,omitempty"`
 }
 
-// AISettings 返回无密钥投影。
+// AISettings 返回设置面板投影（顶层 key 除外；条目含原文 key，浅拷贝防调用方改元素污染全局）。
 func (c AIConfig) AISettings() AISettings {
 	return AISettings{
 		Enabled:     c.Enabled,
@@ -184,6 +200,7 @@ func (c AIConfig) AISettings() AISettings {
 		MaxFlows:    c.MaxFlows,
 		MaxKB:       c.MaxKB,
 		Redact:      c.Redact,
+		Entries:     append([]AIModelEntry(nil), c.Entries...),
 	}
 }
 
@@ -239,6 +256,84 @@ func (c AIConfig) Validate() error {
 		return fmt.Errorf("AI 正文预算须在 8–256 KB")
 	}
 	return nil
+}
+
+// AIEntriesMax 供应商条目清单上限（设置页 UI 与后端归一化共用）。
+const AIEntriesMax = 20
+
+// NormalizeAIEntries 归一化供应商条目清单：trim 各字段（key 含首尾空白视为误输入）、
+// 模型名空的整条丢弃、按 provider+baseUrl+model 三元组去重（保留首个；不同供应商允许
+// 同名模型）、超上限截断、Current 唯一化（保留首个 true；全无 true 时首条置 true）。
+// 落盘两路径（SaveSettings 合并段 / SaveAIConfigPatch 的 entries case）统一走此归一化；
+// Validate 不对清单报错——坏条目静默清理比打断保存更合理。
+func NormalizeAIEntries(in []AIModelEntry) []AIModelEntry {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]AIModelEntry, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	curSet := false
+	for _, e := range in {
+		model := strings.TrimSpace(e.Model)
+		if model == "" {
+			continue
+		}
+		provider := strings.TrimSpace(e.Provider)
+		base := strings.TrimRight(strings.TrimSpace(e.BaseURL), "/")
+		dupKey := provider + "\x00" + base + "\x00" + model
+		if _, dup := seen[dupKey]; dup {
+			continue
+		}
+		seen[dupKey] = struct{}{}
+		cur := e.Current && !curSet // Current 唯一化：保留首个 true
+		if e.Current {
+			curSet = true
+		}
+		out = append(out, AIModelEntry{
+			Provider: provider,
+			Model:    model,
+			Alias:    strings.TrimSpace(e.Alias),
+			BaseURL:  base,
+			APIKey:   strings.TrimSpace(e.APIKey),
+			Current:  cur,
+		})
+		if len(out) >= AIEntriesMax {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	if !curSet { // 全无 true：首条视为当前
+		out[0].Current = true
+	}
+	return out
+}
+
+// SyncAICurrent 把当前生效条目快照同步到顶层 Provider/BaseURL/APIKey/Model：
+// 分析链路（runAIChatOnce/aiProbe/WarnNoKey/Validate）与 ctlapi 旧客户端只读顶层，
+// 条目清单落盘前必须同步（SaveSettings 合并段 / SaveAIConfigPatch 的 entries case）。
+// entries 为空（旧单顶层形态）时不动顶层。
+func (c *AIConfig) SyncAICurrent() {
+	for i := range c.Entries {
+		if c.Entries[i].Current {
+			e := &c.Entries[i]
+			c.Provider, c.BaseURL, c.APIKey, c.Model = e.Provider, e.BaseURL, e.APIKey, e.Model
+			return
+		}
+	}
+}
+
+// SyncKeyToCurrent 把顶层 key 单改（独立 /ai/config 的 apiKey 哨兵语义）同步回当前
+// 生效条目——否则下次条目落盘（SaveSettings）时 SyncAICurrent 会用条目旧 key 覆盖，
+// 造成「单独改的 key 一保存设置就回退」。无条目（旧单顶层形态）时 no-op。
+func (c *AIConfig) SyncKeyToCurrent() {
+	for i := range c.Entries {
+		if c.Entries[i].Current {
+			c.Entries[i].APIKey = c.APIKey
+			return
+		}
+	}
 }
 
 // NormalizeAIBaseURL 归一化 BaseURL：去首尾空白与尾部 `/`；末段为 `/v<纯数字>`
@@ -338,6 +433,17 @@ func LoadGlobal(dir string) (*GlobalSettings, error) {
 	g.Persist.DBPath = ""
 	if g.Projects == nil {
 		g.Projects = []ProjectMeta{}
+	}
+	// 旧配置迁移（零感知）：条目清单为空且顶层已有模型配置时，生成单条目（Current=true，
+	// 条目字段取自顶层快照）。仅内存转换不回写——下次任意保存自然落为新形态。
+	if len(g.AI.Entries) == 0 && strings.TrimSpace(g.AI.Model) != "" {
+		g.AI.Entries = []AIModelEntry{{
+			Provider: g.AI.Provider,
+			Model:    strings.TrimSpace(g.AI.Model),
+			BaseURL:  g.AI.BaseURL,
+			APIKey:   g.AI.APIKey,
+			Current:  true,
+		}}
 	}
 	return g, nil
 }

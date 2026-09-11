@@ -2,6 +2,7 @@ package settings
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -401,21 +402,131 @@ func TestNormalizeAIBaseURL(t *testing.T) {
 	}
 }
 
-func TestAISettingsProjectionNoKey(t *testing.T) {
+func TestAISettingsProjection(t *testing.T) {
 	c := AIConfig{Enabled: true, Provider: "deepseek", BaseURL: "https://api.deepseek.com",
-		APIKey: "sk-super-secret", Model: "deepseek-chat", Temperature: 0.3,
-		TimeoutSec: 120, MaxFlows: 50, MaxKB: 64, Redact: true}
+		APIKey: "sk-top-secret", Model: "deepseek-chat", Temperature: 0.3,
+		TimeoutSec: 120, MaxFlows: 50, MaxKB: 64, Redact: true,
+		Entries: []AIModelEntry{{Provider: "deepseek", Model: "deepseek-chat", Alias: "主力",
+			BaseURL: "https://api.deepseek.com", APIKey: "sk-entry-secret", Current: true}}}
 	s := c.AISettings()
+	// 浅拷贝验证：改投影元素不得污染原配置
+	s.Entries[0].Alias = "污染"
+	if c.Entries[0].Alias != "主力" {
+		t.Fatalf("投影 Entries 未浅拷贝，污染了原配置: %+v", c.Entries)
+	}
 	data, err := json.Marshal(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 投影 JSON 不得含 apiKey 字段或原值（防深拷贝/日志/DTO 链路泄漏）
-	if strings.Contains(string(data), "apiKey") || strings.Contains(string(data), "sk-super-secret") {
-		t.Fatalf("AISettings 投影泄漏密钥: %s", data)
+	// 顶层 key 不进投影（顶层四字段是当前条目快照，key 走独立接口读写）
+	if strings.Contains(string(data), "sk-top-secret") {
+		t.Fatalf("AISettings 投影泄漏顶层密钥: %s", data)
+	}
+	// 条目 key 随表单明文往返（条目卡片内编辑，同级安全于顶层 key 落盘）
+	if !strings.Contains(string(data), "sk-entry-secret") {
+		t.Fatalf("AISettings 投影应携带条目 key: %s", data)
 	}
 	if s.Model != "deepseek-chat" || !s.Redact || s.Temperature != 0.3 {
 		t.Fatalf("投影字段不一致: %+v", s)
+	}
+	if len(s.Entries) != 1 || s.Entries[0].Alias != "污染" || s.Entries[0].APIKey != "sk-entry-secret" {
+		t.Fatalf("投影 Entries 应保留修改后的副本（含 key）: %+v", s.Entries)
+	}
+}
+
+func TestNormalizeAIEntries(t *testing.T) {
+	// nil / 全空 → nil（落盘不固化空数组）
+	if got := NormalizeAIEntries(nil); got != nil {
+		t.Fatalf("nil 输入应得 nil: %+v", got)
+	}
+	if got := NormalizeAIEntries([]AIModelEntry{{Model: "   "}, {}}); got != nil {
+		t.Fatalf("全空项应得 nil: %+v", got)
+	}
+	// trim / 去空 / 三元组去重（保留首个）/ Current 唯一化（保留首个 true）
+	got := NormalizeAIEntries([]AIModelEntry{
+		{Provider: "deepseek", Model: " deepseek-chat ", Alias: " 深度Seek ", BaseURL: " https://api.deepseek.com/ ", APIKey: " k1 ", Current: true},
+		{Model: ""},                                                                                              // 空模型整条丢弃
+		{Provider: "deepseek", Model: "deepseek-chat", Alias: "同三元组应丢弃", BaseURL: "https://api.deepseek.com", Current: true}, // 同三元组去重
+		{Provider: "deepseek", Model: "deepseek-chat", BaseURL: "https://relay.example.com"},                     // 同 provider 同 model 不同 URL（中转）合法
+		{Provider: "openai", Model: "deepseek-chat", BaseURL: "https://api.openai.com", Current: true},           // 不同供应商同名模型合法
+		{Provider: "ollama", Model: "qwen2.5", Current: true},
+	})
+	want := []AIModelEntry{
+		{Provider: "deepseek", Model: "deepseek-chat", Alias: "深度Seek", BaseURL: "https://api.deepseek.com", APIKey: "k1", Current: true},
+		{Provider: "deepseek", Model: "deepseek-chat", BaseURL: "https://relay.example.com"},
+		{Provider: "openai", Model: "deepseek-chat", BaseURL: "https://api.openai.com"},
+		{Provider: "ollama", Model: "qwen2.5"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("归一化条数不符: got=%+v want=%+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("条目 %d 不符: got=%+v want=%+v", i, got[i], want[i])
+		}
+	}
+	// 全无 Current → 首条视为当前
+	got = NormalizeAIEntries([]AIModelEntry{{Model: "a"}, {Model: "b"}})
+	if !got[0].Current || got[1].Current {
+		t.Fatalf("全无 Current 时首条应视为当前: %+v", got)
+	}
+	// 超上限截断
+	many := make([]AIModelEntry, 0, AIEntriesMax+3)
+	for i := 0; i < AIEntriesMax+3; i++ {
+		many = append(many, AIModelEntry{Model: fmt.Sprintf("m-%02d", i)})
+	}
+	got = NormalizeAIEntries(many)
+	if len(got) != AIEntriesMax || got[AIEntriesMax-1].Model != fmt.Sprintf("m-%02d", AIEntriesMax-1) {
+		t.Fatalf("超上限应截断为 %d 项: 实得 %d", AIEntriesMax, len(got))
+	}
+}
+
+func TestAISyncCurrent(t *testing.T) {
+	// SyncAICurrent：当前条目快照同步顶层四字段
+	c := AIConfig{Provider: "old", BaseURL: "https://old.com", APIKey: "sk-old", Model: "old-model",
+		Entries: []AIModelEntry{
+			{Provider: "deepseek", Model: "deepseek-chat", BaseURL: "https://api.deepseek.com", APIKey: "sk-ds"},
+			{Provider: "openai", Model: "gpt-4o-mini", BaseURL: "https://api.openai.com", APIKey: "sk-oa", Current: true},
+		}}
+	c.SyncAICurrent()
+	if c.Provider != "openai" || c.BaseURL != "https://api.openai.com" || c.APIKey != "sk-oa" || c.Model != "gpt-4o-mini" {
+		t.Fatalf("SyncAICurrent 应同步 Current 条目到顶层: %+v", c)
+	}
+	// 无条目（旧单顶层形态）no-op
+	c2 := AIConfig{Provider: "p", BaseURL: "u", APIKey: "k", Model: "m"}
+	c2.SyncAICurrent()
+	if c2.Provider != "p" || c2.APIKey != "k" || c2.Model != "m" {
+		t.Fatalf("无条目时 SyncAICurrent 不应动顶层: %+v", c2)
+	}
+	// SyncKeyToCurrent：顶层 key 单改回写当前条目
+	c.APIKey = "sk-new"
+	c.SyncKeyToCurrent()
+	if c.Entries[1].APIKey != "sk-new" {
+		t.Fatalf("SyncKeyToCurrent 应回写 Current 条目: %+v", c.Entries)
+	}
+	if c.Entries[0].APIKey != "sk-ds" {
+		t.Fatalf("非当前条目不应被回写: %+v", c.Entries[0])
+	}
+}
+
+func TestLoadGlobalLegacyMigration(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"ai":{"enabled":true,"provider":"deepseek","baseUrl":"https://api.deepseek.com","apiKey":"sk-old","model":"deepseek-chat"}}`
+	if err := os.WriteFile(filepath.Join(dir, fileName), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g, err := LoadGlobal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 旧单顶层形态 → 零感知迁移为单条目（Current=true，字段取自顶层）
+	if len(g.AI.Entries) != 1 {
+		t.Fatalf("旧配置应迁移出 1 个条目: %+v", g.AI.Entries)
+	}
+	e := g.AI.Entries[0]
+	if !e.Current || e.Provider != "deepseek" || e.Model != "deepseek-chat" ||
+		e.BaseURL != "https://api.deepseek.com" || e.APIKey != "sk-old" {
+		t.Fatalf("迁移条目字段不符: %+v", e)
 	}
 }
 

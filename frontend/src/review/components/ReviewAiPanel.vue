@@ -67,6 +67,10 @@
           </n-popconfirm>
           <n-button v-else type="primary" size="small" :disabled="startDisabled" @click="requestStart()">{{ startLabel }}</n-button>
           <n-button v-if="phase === 'streaming'" size="small" quaternary @click="stop">停止</n-button>
+          <!-- 分析中状态 pill：弹跳点 + 流动渐变文字（静态线索=紫色底与点色，动画非唯一反馈） -->
+          <span v-if="phase === 'streaming'" class="ai-live" aria-live="polite">
+            <i></i><i></i><i></i><span>AI 分析中</span>
+          </span>
           <span v-if="metaText" class="ai-meta">{{ metaText }}</span>
           <span v-else-if="phase === 'done'" class="ai-state">已完成</span>
           <span v-else-if="phase === 'stopped'" class="ai-state">已停止</span>
@@ -100,7 +104,13 @@
         </div>
 
         <!-- Markdown 结论区（explain/locate/flowmap）：50ms 节流渲染，v-html 唯一出口经 renderMarkdown 净化 -->
-        <div v-else class="ai-md" v-html="renderedHtml"></div>
+        <div v-else class="ai-md">
+          <!-- 首 token 前的等待骨架：微光横条示意"正在思考" -->
+          <div v-if="pendingStream" class="ai-skel" aria-hidden="true">
+            <i></i><i></i><i></i><i></i><i></i>
+          </div>
+          <div v-else v-html="renderedHtml"></div>
+        </div>
 
         <!-- locate 匹配卡片：rank/method/url/置信度/理由/[查看→] -->
         <div v-if="activeTab === 'locate' && matches.length" class="ai-matches">
@@ -120,8 +130,48 @@
       </template>
     </div>
 
-    <!-- 底部外发告知常驻小字（设计 §8-5） -->
-    <footer v-if="cfgOk" class="ai-foot">分析数据将发送至 {{ hostLabel }}</footer>
+    <!-- 底部：外发告知常驻小字（设计 §8-5）+ 右下角日志入口 -->
+    <footer class="ai-foot">
+      <span v-if="cfgOk" class="ai-foot-text">
+        分析数据将发送至 {{ hostLabel }}<template v-if="modelLabel"> · 模型 {{ modelLabel }}</template>
+      </span>
+      <button class="ai-logbtn" title="AI 调用日志与对话" @click="toggleLog">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2.5 4l3.5 3.5L2.5 11" />
+          <path d="M8.5 11.5H13" />
+        </svg>
+        <i v-if="phase === 'streaming'" class="ai-logbtn-dot" aria-hidden="true"></i>
+      </button>
+    </footer>
+
+    <!-- 调用日志抽层：对话内容（模型原始输出实时流）+ 调用日志（帧级事件），自底部滑入 -->
+    <section class="ai-logsheet" :class="{ open: logOpen }" aria-label="AI 调用详情">
+      <header class="ai-log-head">
+        <n-tabs v-model:value="logTab" type="segment" size="small" class="ai-log-tabs">
+          <n-tab-pane name="conv" tab="对话内容" />
+          <n-tab-pane name="log" tab="调用日志" />
+        </n-tabs>
+        <button class="ai-close" title="收起日志" @click="logOpen = false">
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
+            <path d="M8 6.59L12.95 1.64l1.41 1.41L9.41 8l4.95 4.95-1.41 1.41L8 9.41l-4.95 4.95-1.41-1.41L6.59 8 1.64 3.05l1.41-1.41L8 6.59z" />
+          </svg>
+        </button>
+      </header>
+      <div ref="logBodyEl" class="ai-log-body">
+        <pre v-if="logTab === 'conv' && convText" class="ai-log-conv">{{ convText }}</pre>
+        <div v-else-if="logTab === 'conv'" class="ai-hint ai-log-empty">
+          {{ phase === 'streaming' ? '等待模型输出…' : '暂无对话内容 · 发起一次分析后这里实时展示模型原始输出' }}
+        </div>
+        <template v-else>
+          <div v-if="!logs.length" class="ai-hint ai-log-empty">暂无日志 · 发起分析后逐帧记录调用过程</div>
+          <div v-for="(l, i) in logs" :key="i" class="ai-log-line">
+            <span class="ai-log-t">{{ fmtT(l.t) }}</span>
+            <span class="ai-log-kind" :class="'lk-' + l.kind">{{ LOG_KIND_LABEL[l.kind] }}</span>
+            <span class="ai-log-msg" :title="l.msg">{{ l.msg }}</span>
+          </div>
+        </template>
+      </div>
+    </section>
 
     <!-- 首次分析告知（设计 §8-1）：localStorage 记忆，确认后才真正开始 -->
     <n-modal
@@ -144,7 +194,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { NButton, NCheckbox, NInput, NModal, NPopconfirm, NProgress, NTabPane, NTabs } from 'naive-ui'
 import type { AiChatEvent, AiChatMeta, AiChatMode, AIApiConfigView, ReviewApi } from '../api'
 import type { AiMatchItem, IntentResult, ReviewFlowMeta } from '../../lib/types'
@@ -226,6 +276,13 @@ const hostLabel = computed(() => {
   } catch {
     return u || '未配置服务地址'
   }
+})
+// 当前模型显示名：取「当前」条目的别名，否则模型原名（模型未配置时隐藏该段）
+const modelLabel = computed(() => {
+  const c = cfg.value
+  if (!c) return ''
+  const cur = (c.entries ?? []).find((m) => m.current)
+  return cur?.alias?.trim() || cur?.model || c.model
 })
 
 async function loadCfg(): Promise<void> {
@@ -321,6 +378,60 @@ const displayMd = computed(() => {
   return last?.index != null ? rendered.value.slice(0, last.index) : rendered.value
 })
 const renderedHtml = computed(() => renderMarkdown(displayMd.value))
+// 首 token 前的骨架占位：流式进行中且尚无任何输出
+const pendingStream = computed(() => phase.value === 'streaming' && !displayMd.value)
+
+// ===== 调用日志（右下角抽层）=====
+// 每次运行独立记录：帧级事件（meta/intent/match/error…）+ 模型原始输出（对话 tab 实时展示）
+type LogKind = 'start' | 'meta' | 'delta' | 'intent' | 'match' | 'error' | 'done' | 'stop'
+interface LogEntry {
+  t: number
+  kind: LogKind
+  msg: string
+}
+const LOG_KIND_LABEL: Record<LogKind, string> = {
+  start: '开始',
+  meta: '参数',
+  delta: '输出',
+  intent: '意图',
+  match: '匹配',
+  error: '错误',
+  done: '完成',
+  stop: '停止',
+}
+const logs = ref<LogEntry[]>([])
+const logOpen = ref(false)
+const logTab = ref<'conv' | 'log'>('log')
+const logBodyEl = ref<HTMLElement | null>(null)
+// 非响应式：本 run 起始时间与首 delta 标记（done 统计耗时用）
+let runStartTs = 0
+let sawDelta = false
+
+function log(kind: LogKind, msg: string): void {
+  logs.value.push({ t: Date.now(), kind, msg })
+  if (logs.value.length > 500) logs.value.shift()
+}
+// 对话 tab = 模型原始输出（非 locate 截断视图，全量原始流）
+const convText = computed(() => rendered.value)
+
+function toggleLog(): void {
+  logOpen.value = !logOpen.value
+  // 流式中打开优先展示实时对话
+  if (logOpen.value && phase.value === 'streaming') logTab.value = 'conv'
+}
+function fmtT(t: number): string {
+  const d = new Date(t)
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
+}
+// 日志追加/对话更新/tab 切换/开合时自动滚动到底
+watch([() => logs.value.length, convText, logTab, logOpen], () => {
+  if (!logOpen.value) return
+  nextTick(() => {
+    const el = logBodyEl.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+})
 
 // ===== 运行控制 =====
 function requestStart(auto = false): void {
@@ -354,6 +465,9 @@ function onNoticeOk(): void {
 async function doStart(): Promise<void> {
   resetRun()
   phase.value = 'streaming'
+  runStartTs = Date.now()
+  sawDelta = false
+  log('start', TABS.find((t) => t.key === activeTab.value)?.label + ' · ' + scopeText.value)
   const ctl = new AbortController()
   abortCtl = ctl
   const seq = ++runSeq
@@ -399,26 +513,39 @@ function onFrame(ev: AiChatEvent): void {
   // 迟到帧守卫：stop/done/error 之后到达的帧一律忽略
   if (phase.value !== 'streaming') return
   switch (ev.event) {
-    case 'meta':
+    case 'meta': {
       meta.value = ev.data
+      const m = ev.data
+      log('meta', `送审 ${m.sent}/${m.total} 条 · 预算 ${m.budget.flows} 流 / ${m.budget.kb}KB` + (m.truncated ? ' · 已截断' : ''))
       break
+    }
     case 'delta':
-      if (ev.data.text) pushDelta(ev.data.text)
+      if (ev.data.text) {
+        if (!sawDelta) {
+          sawDelta = true
+          log('delta', '模型开始输出')
+        }
+        pushDelta(ev.data.text)
+      }
       break
     case 'intent':
       intentDone.value++
       upsert(ev.data) // P1 审计修复：缓存写入挪进 runSeq+phase 双守卫内（旧任务迟到帧不再污染共享缓存）
+      log('intent', `#${ev.data.seq} ${ev.data.intent}` + (ev.data.needsBody ? '（需正文）' : ''))
       break
     case 'match':
       upsertMatch(ev.data)
+      log('match', `#${ev.data.rank} ${ev.data.method} ${ev.data.url} · ${confLabel(ev.data.confidence)}`)
       break
     case 'error':
       phase.value = 'error'
       errMsg.value = ev.data.message
+      log('error', ev.data.message)
       break
     case 'done':
       flushRender()
       phase.value = 'done'
+      log('done', `共 ${mdBuf.length} 字` + (runStartTs ? ` · 耗时 ${((Date.now() - runStartTs) / 1000).toFixed(1)}s` : ''))
       break
   }
 }
@@ -452,6 +579,7 @@ function stop(): void {
   abortCtl?.abort()
   abortCtl = null
   flushRender() // P2 审计修复：清残余 50ms 合帧定时器并落盘最后一批 delta（防悬空回调）
+  log('stop', '已手动停止')
 }
 
 // 清运行态（保留 question/开关等输入值）
@@ -464,6 +592,7 @@ function resetRun(): void {
   meta.value = null
   matches.value = []
   intentDone.value = 0
+  logs.value = [] // 日志按 run 独立：新运行从零开始
 }
 
 function closePanel(): void {

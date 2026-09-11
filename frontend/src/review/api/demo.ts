@@ -593,6 +593,16 @@ export class DemoApi implements ReviewApi {
       provider: 'demo',
       baseUrl: 'https://api.demo-llm.example/v1',
       model: 'demo-model',
+      entries: [
+        {
+          provider: 'demo',
+          model: 'demo-model',
+          alias: '演示模型',
+          baseUrl: 'https://api.demo-llm.example/v1',
+          hasKey: true,
+          current: true,
+        },
+      ],
       temperature: 0.3,
       timeoutSec: 120,
       maxFlows: 20,

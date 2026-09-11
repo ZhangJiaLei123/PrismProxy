@@ -338,13 +338,260 @@
   color: rgba(255, 255, 255, 0.4);
 }
 
-/* 底部外发告知常驻小字 */
+/* 底部栏：外发告知常驻小字 + 右下角日志入口 */
 .ai-foot {
   flex: none;
-  padding: 6px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 16px;
   font-size: 11px;
   color: rgba(255, 255, 255, 0.35);
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.ai-foot-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-logbtn {
+  flex: none;
+  margin-left: auto;
+  position: relative;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    background-color 0.15s,
+    transform 0.1s;
+}
+.ai-logbtn:hover {
+  color: #b57edc;
+  background: rgba(255, 255, 255, 0.08);
+}
+.ai-logbtn:active {
+  transform: scale(0.96);
+}
+/* 流式中静态提示点（颜色线索，不做动画） */
+.ai-logbtn-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #b57edc;
+}
+
+/* 调用日志抽层：自底部滑入（transform 可中断，visibility 延迟切换，与主抽屉同曲线） */
+.ai-logsheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 35px; /* 恰在 footer 上缘，footer 与日志按钮保持可点 */
+  z-index: 5;
+  height: min(58%, 430px);
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  background: #1a1a21;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px 0 0 0;
+  box-shadow: 0 -10px 28px rgba(0, 0, 0, 0.4);
+  transform: translateY(108%);
+  visibility: hidden;
+  transition:
+    transform 0.26s cubic-bezier(0.2, 0, 0, 1),
+    visibility 0.26s;
+}
+.ai-logsheet.open {
+  transform: translateY(0);
+  visibility: visible;
+}
+.ai-log-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 6px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.ai-log-tabs {
+  flex: 1;
+  min-width: 0;
+}
+.ai-log-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 12px 12px;
+}
+.ai-log-empty {
+  padding: 16px 0;
+  text-align: center;
+}
+/* 对话 tab：模型原始输出（pre 保排版） */
+.ai-log-conv {
+  margin: 0;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.8);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 日志 tab：时间 / 类型 / 消息 三列（等宽数字防抖动） */
+.ai-log-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.ai-log-t {
+  flex: none;
+  color: rgba(255, 255, 255, 0.35);
+  font-variant-numeric: tabular-nums;
+}
+.ai-log-kind {
+  flex: none;
+  width: 2.4em;
+  text-align: right;
+}
+.ai-log-msg {
+  flex: 1;
+  min-width: 0;
+  color: rgba(255, 255, 255, 0.72);
+  word-break: break-word;
+}
+/* 类型色卡（同 k-ai-* 家族：紫=动作 / 绿=成果 / 黄=中止 / 红=错误 / 灰=中性） */
+.lk-start {
+  color: #b57edc;
+}
+.lk-meta,
+.lk-delta {
+  color: rgba(255, 255, 255, 0.5);
+}
+.lk-intent,
+.lk-match,
+.lk-done {
+  color: rgba(126, 200, 181, 0.9);
+}
+.lk-stop {
+  color: rgba(229, 192, 123, 0.9);
+}
+.lk-error {
+  color: #f28b82;
+}
+
+/* ===== AI 分析中动画 =====
+   状态 pill：弹跳点（stagger 150ms）+ 流动渐变文字；
+   静态线索齐备（紫色 pill 底/点色/文字），动画非唯一反馈（motion restraint） */
+.ai-live {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(181, 126, 220, 0.12);
+  border: 1px solid rgba(181, 126, 220, 0.28);
+}
+.ai-live i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #b57edc;
+  animation: ai-live-dot 1.2s ease-in-out infinite;
+}
+.ai-live i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.ai-live i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+.ai-live > span {
+  font-size: 11px;
+  font-weight: 600;
+  background: linear-gradient(90deg, #b57edc, #7ea2e0, #b57edc);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: ai-live-text 2.8s linear infinite;
+}
+@keyframes ai-live-dot {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+@keyframes ai-live-text {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* 首 token 前骨架：微光横条（品牌紫微光示意"思考中"） */
+.ai-skel {
+  padding: 4px 0;
+}
+.ai-skel i {
+  display: block;
+  height: 10px;
+  border-radius: 5px;
+  margin: 9px 0;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.05) 30%,
+    rgba(181, 126, 220, 0.22) 50%,
+    rgba(255, 255, 255, 0.05) 70%
+  );
+  background-size: 220% 100%;
+  animation: ai-skel 1.5s ease-in-out infinite;
+}
+.ai-skel i:nth-child(1) {
+  width: 58%;
+}
+.ai-skel i:nth-child(2) {
+  width: 86%;
+}
+.ai-skel i:nth-child(3) {
+  width: 72%;
+}
+.ai-skel i:nth-child(4) {
+  width: 88%;
+}
+.ai-skel i:nth-child(5) {
+  width: 42%;
+}
+@keyframes ai-skel {
+  0% {
+    background-position: 110% 0;
+  }
+  100% {
+    background-position: -110% 0;
+  }
 }
 
 /* 首次告知 modal 内容 */

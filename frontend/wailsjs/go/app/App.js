@@ -10,6 +10,10 @@ export function AIChatStop(arg1) {
   return window['go']['app']['App']['AIChatStop'](arg1);
 }
 
+export function AITestConn() {
+  return window['go']['app']['App']['AITestConn']();
+}
+
 export function AdbClearProxy(arg1, arg2) {
   return window['go']['app']['App']['AdbClearProxy'](arg1, arg2);
 }
@@ -66,8 +70,20 @@ export function ExportRules(arg1) {
   return window['go']['app']['App']['ExportRules'](arg1);
 }
 
+export function FetchAIModels(arg1) {
+  return window['go']['app']['App']['FetchAIModels'](arg1);
+}
+
 export function FindFreePort(arg1, arg2) {
   return window['go']['app']['App']['FindFreePort'](arg1, arg2);
+}
+
+export function GetAIConfigApp() {
+  return window['go']['app']['App']['GetAIConfigApp']();
+}
+
+export function GetAIConfigView() {
+  return window['go']['app']['App']['GetAIConfigView']();
 }
 
 export function GetCurrentProject() {
@@ -76,10 +92,6 @@ export function GetCurrentProject() {
 
 export function GetDomainGroupText(arg1) {
   return window['go']['app']['App']['GetDomainGroupText'](arg1);
-}
-
-export function GetAIConfigApp() {
-  return window['go']['app']['App']['GetAIConfigApp']();
 }
 
 export function GetFlowBody(arg1, arg2) {
@@ -208,6 +220,10 @@ export function ReviewTagsOverview() {
 
 export function SaveAIConfigApp(arg1) {
   return window['go']['app']['App']['SaveAIConfigApp'](arg1);
+}
+
+export function SaveAIConfigPatch(arg1) {
+  return window['go']['app']['App']['SaveAIConfigPatch'](arg1);
 }
 
 export function SaveDomainGroupText(arg1, arg2) {

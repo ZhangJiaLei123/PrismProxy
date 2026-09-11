@@ -67,12 +67,50 @@ func TestSaveAIConfigPatchSentinel(t *testing.T) {
 		t.Fatalf("部分更新越界: model=%q key=%q", a.gcfg.AI.Model, a.gcfg.AI.APIKey)
 	}
 
-	// __clear__=显式清除
+	// entries 条目清单：归一化（trim/去空/三元组去重/Current 唯一化）+ 当前条目快照同步顶层
+	if _, err := a.SaveAIConfigPatch(json.RawMessage(`{"entries":[{"provider":"deepseek","model":" deepseek-chat ","alias":" 主力 ","baseUrl":" https://api.deepseek.com/ ","apiKey":" sk-ds-1 ","current":true},{"model":""},{"provider":"deepseek","model":"deepseek-chat","alias":"dup","baseUrl":"https://api.deepseek.com","current":true}]}`)); err != nil {
+		t.Fatalf("更新 entries 应成功: %v", err)
+	}
+	if len(a.gcfg.AI.Entries) != 1 || a.gcfg.AI.Entries[0].Model != "deepseek-chat" || a.gcfg.AI.Entries[0].Alias != "主力" || a.gcfg.AI.Entries[0].APIKey != "sk-ds-1" {
+		t.Fatalf("entries 应归一化去重: %+v", a.gcfg.AI.Entries)
+	}
+	if a.gcfg.AI.Model != "deepseek-chat" || a.gcfg.AI.APIKey != "sk-ds-1" || a.gcfg.AI.Provider != "deepseek" {
+		t.Fatalf("entries 更新应同步当前条目到顶层: %+v", a.gcfg.AI)
+	}
+	v, err := a.GetAIConfigView()
+	if err != nil {
+		t.Fatalf("GetAIConfigView: %v", err)
+	}
+	// 视图为脱敏条目（model/alias/baseUrl/hasKey/current，永不回原文 key）
+	ves, ok := v["entries"].([]map[string]any)
+	if !ok || len(ves) != 1 || ves[0]["alias"] != "主力" || ves[0]["hasKey"] != true || ves[0]["current"] != true {
+		t.Fatalf("视图应回传脱敏 entries: %v", v["entries"])
+	}
+	if b, _ := json.Marshal(v); strings.Contains(string(b), "sk-ds-1") {
+		t.Fatalf("条目视图泄漏原 key: %s", b)
+	}
+
+	// 双字段同请求（审计问题2回归）：map 遍历无序，entries+apiKey 同请求时 apiKey
+	// 补丁在 entries 同步之后最后生效——顶层=补丁值，且经 SyncKeyToCurrent 回写当前条目
+	if _, err := a.SaveAIConfigPatch(json.RawMessage(`{"entries":[{"provider":"deepseek","model":"deepseek-chat","baseUrl":"https://api.deepseek.com","apiKey":"sk-entry","current":true}],"apiKey":"sk-patch"}`)); err != nil {
+		t.Fatalf("entries+apiKey 双字段应成功: %v", err)
+	}
+	if a.gcfg.AI.APIKey != "sk-patch" {
+		t.Fatalf("apiKey 补丁不应被 SyncAICurrent 覆盖，得 %q", a.gcfg.AI.APIKey)
+	}
+	if len(a.gcfg.AI.Entries) != 1 || a.gcfg.AI.Entries[0].APIKey != "sk-patch" {
+		t.Fatalf("apiKey 补丁应经 SyncKeyToCurrent 回写当前条目: %+v", a.gcfg.AI.Entries)
+	}
+
+	// __clear__=显式清除（顶层 key 清空并经 SyncKeyToCurrent 回写当前条目，防回退）
 	if _, err := a.SaveAIConfigPatch(json.RawMessage(`{"apiKey":"__clear__"}`)); err != nil {
 		t.Fatalf("__clear__ 应成功: %v", err)
 	}
 	if a.gcfg.AI.APIKey != "" {
 		t.Fatalf("__clear__ 后 key 应为空，得 %q", a.gcfg.AI.APIKey)
+	}
+	if len(a.gcfg.AI.Entries) == 1 && a.gcfg.AI.Entries[0].APIKey != "" {
+		t.Fatalf("__clear__ 后当前条目 key 应同步清空: %+v", a.gcfg.AI.Entries)
 	}
 
 	// 空对象 / 未知字段 / 坏 JSON / 坏字段类型 → ErrAIBadReq（解析错误不得伪装 500）

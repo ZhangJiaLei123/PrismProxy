@@ -207,6 +207,15 @@ export class WailsReviewApi implements ReviewApi {
       provider: ai?.provider ?? '',
       baseUrl: ai?.baseUrl ?? '',
       model: ai?.model ?? '',
+      // GetSettings 投影含明文 apiKey，仅用于设置表单往返；此处映射为脱敏形态
+      entries: (ai?.entries ?? []).map((e) => ({
+        provider: e.provider,
+        model: e.model,
+        alias: e.alias,
+        baseUrl: e.baseUrl,
+        hasKey: !!e.apiKey,
+        current: !!e.current,
+      })),
       temperature: ai?.temperature ?? 0,
       timeoutSec: ai?.timeoutSec ?? 0,
       maxFlows: ai?.maxFlows ?? 0,

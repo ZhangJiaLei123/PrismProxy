@@ -107,6 +107,7 @@ const emptyForm = (): app.SettingsView =>
       maxFlows: 50,
       maxKb: 64,
       redact: true,
+      entries: [],
     },
     rulesProject: '',
   }) as app.SettingsView
@@ -140,7 +141,9 @@ async function loadSettings() {
     maxFlows: 50,
     maxKb: 64,
     redact: true,
+    entries: [],
   }
+  form.value.ai.entries ??= []
   for (const g of form.value.filterGroups) {
     g.hosts ??= []
     g.paths ??= []

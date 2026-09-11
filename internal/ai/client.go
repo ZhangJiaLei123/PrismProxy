@@ -350,3 +350,61 @@ func (c *Client) Probe(ctx context.Context, messages []Message) (string, error) 
 	}
 	return out.Choices[0].Message.Content, nil
 }
+
+// modelsResponse OpenAI 兼容 GET /models 响应（Ollama /v1/models、火山 Ark /api/v3/models 等同形）。
+type modelsResponse struct {
+	Data []struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
+// ListModels 拉取模型列表（OpenAI 兼容 GET {归一化 BaseURL}/models），供设置页
+// 「获取模型」下拉建议。返回去空白、去重后的模型 id；key 非空发 Bearer（Ollama 免鉴权）。
+// 空列表视为错误（可用服务至少返回一个模型）。
+func (c *Client) ListModels(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalizeBaseURL(c.cfg.BaseURL)+"/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("构造请求失败：%w", err)
+	}
+	if c.cfg.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("连接服务商失败：%v，请检查网络或代理设置", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, wrapHTTPError(resp)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败：%w", err)
+	}
+	var out modelsResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("响应解析失败：%w", err)
+	}
+	seen := make(map[string]struct{}, len(out.Data))
+	models := make([]string, 0, len(out.Data))
+	for _, m := range out.Data {
+		id := strings.TrimSpace(m.ID)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		models = append(models, id)
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("服务商返回空模型列表")
+	}
+	return models, nil
+}
