@@ -512,64 +512,78 @@ export class DemoApi implements ReviewApi {
     }
     if (signal?.aborted) return
 
-    // 定时器模拟事件流：abort 清定时器静默收尾（与 HttpApi 中止口径一致）
-    const timers: ReturnType<typeof setTimeout>[] = []
-    const at = (ms: number, fn: () => void): void => {
-      timers.push(setTimeout(fn, ms))
-    }
-    const clearAll = (): void => {
-      for (const t of timers) clearTimeout(t)
-      timers.length = 0
-    }
-    signal?.addEventListener('abort', clearAll, { once: true })
+    // P3 审计修复：三实现契约「analyze resolve = 流已结束」——resolve 必须等 finish/abort，
+    // 不能注册完定时器立即返回（否则面板 await 抢跑置 done，后续帧全被迟到守卫丢弃）
+    return new Promise<void>((resolve) => {
+      // 定时器模拟事件流：abort 清定时器静默收尾（与 HttpApi 中止口径一致）
+      const timers: ReturnType<typeof setTimeout>[] = []
+      const at = (ms: number, fn: () => void): void => {
+        timers.push(setTimeout(fn, ms))
+      }
+      const clearAll = (): void => {
+        for (const t of timers) clearTimeout(t)
+        timers.length = 0
+      }
+      signal?.addEventListener(
+        'abort',
+        () => {
+          clearAll()
+          resolve()
+        },
+        { once: true },
+      )
 
-    // meta：送审规模先回显（demo 全量送审，无截断）
-    const meta: AiChatMeta = {
-      mode,
-      total: flows.length,
-      sent: flows.length,
-      budget: { flows: 20, kb: 512 },
-      truncated: false,
-    }
-    onEvent({ event: 'meta', data: meta })
-    const finish = (): void => onEvent({ event: 'done', data: { finishReason: 'stop', truncated: false } })
+      // meta：送审规模先回显（demo 全量送审，无截断）
+      const meta: AiChatMeta = {
+        mode,
+        total: flows.length,
+        sent: flows.length,
+        budget: { flows: 20, kb: 512 },
+        truncated: false,
+      }
+      onEvent({ event: 'meta', data: meta })
+      const finish = (): void => {
+        onEvent({ event: 'done', data: { finishReason: 'stop', truncated: false } })
+        resolve()
+      }
 
-    if (mode === 'intent') {
-      // 每条候选 ~150ms 逐条吐 intent（seq 对应送审序号 [#n]）
-      flows.forEach((f, i) => {
-        at(120 + i * 150, () => onEvent({ event: 'intent', data: this.demoIntent(f, i + 1) }))
+      if (mode === 'intent') {
+        // 每条候选 ~150ms 逐条吐 intent（seq 对应送审序号 [#n]）
+        flows.forEach((f, i) => {
+          at(120 + i * 150, () => onEvent({ event: 'intent', data: this.demoIntent(f, i + 1) }))
+        })
+        at(140 + flows.length * 150, finish)
+        return
+      }
+
+      if (mode === 'locate') {
+        const hits = this.demoLocate(flows, req.question!.trim())
+        hits.forEach((f, i) => {
+          at(150 + i * 200, () =>
+            onEvent({
+              event: 'match',
+              data: {
+                flowId: f.ID,
+                rank: i + 1,
+                method: f.Method,
+                url: f.URL,
+                reason: this.demoReason(f),
+                confidence: f.Tags.length > 0 ? 'high' : 'medium',
+              },
+            }),
+          )
+        })
+        at(200 + hits.length * 200, finish)
+        return
+      }
+
+      // explain / flowmap：markdown 分段 delta（每段 ~180ms）
+      const segs = mode === 'explain' ? this.demoExplain(flows[0]!) : this.demoFlowmap([...flows].reverse())
+      segs.forEach((text, i) => {
+        at(150 + i * 180, () => onEvent({ event: 'delta', data: { text } }))
       })
-      at(140 + flows.length * 150, finish)
-      return
-    }
-
-    if (mode === 'locate') {
-      const hits = this.demoLocate(flows, req.question!.trim())
-      hits.forEach((f, i) => {
-        at(150 + i * 200, () =>
-          onEvent({
-            event: 'match',
-            data: {
-              flowId: f.ID,
-              rank: i + 1,
-              method: f.Method,
-              url: f.URL,
-              reason: this.demoReason(f),
-              confidence: f.Tags.length > 0 ? 'high' : 'medium',
-            },
-          }),
-        )
-      })
-      at(200 + hits.length * 200, finish)
-      return
-    }
-
-    // explain / flowmap：markdown 分段 delta（每段 ~180ms）
-    const segs = mode === 'explain' ? this.demoExplain(flows[0]!) : this.demoFlowmap([...flows].reverse())
-    segs.forEach((text, i) => {
-      at(150 + i * 180, () => onEvent({ event: 'delta', data: { text } }))
+      at(200 + segs.length * 180, finish)
     })
-    at(200 + segs.length * 180, finish)
   }
 
   async getAIConfig(): Promise<AIApiConfigView> {

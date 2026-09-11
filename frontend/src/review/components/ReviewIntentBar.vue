@@ -8,7 +8,7 @@
       :title="intentTip"
     >{{ intent.intent }}</span>
     <span class="ib-actions">
-      <n-button size="tiny" quaternary :loading="reanalyzing" title="仅对本条重新发起意图标注，原地覆盖旧结果" @click="onReanalyze">
+      <n-button size="tiny" quaternary :loading="reanalyzing" :disabled="busy" title="仅对本条重新发起意图标注，原地覆盖旧结果" @click="onReanalyze">
         重新分析
       </n-button>
       <n-button size="tiny" quaternary title="打开 AI 面板，完整解读本条接口" @click="emit('explain')">完整解读</n-button>
@@ -27,7 +27,7 @@ const props = defineProps<{ api: ReviewApi; flowId: string }>()
 const emit = defineEmits<{ (e: 'explain'): void; (e: 'error', msg: string): void }>()
 
 // 意图缓存为 useIntents 模块级单例（reactive Map），标注完成即在此响应式出现
-const { intentOf, runIntent } = useIntents()
+const { intentOf, runIntent, upsert, busy } = useIntents()
 const intent = computed<IntentResult | undefined>(() => intentOf(props.flowId))
 const reanalyzing = ref(false)
 
@@ -41,11 +41,14 @@ const intentTip = computed(() => {
   return tips.join('；')
 })
 
-// 单流重析：以单元素 ids 发一次 intent 任务，intent 帧到达即覆盖缓存（Map 响应式刷新本条）
+// 单流重析：以单元素 ids 发一次 intent 任务；intent 帧在此消费覆盖缓存
+// （P1 审计修复：runIntent 不再代写 upsert）；busy 时与面板批量标注互斥（按钮已禁用，此处兜底报错）
 async function onReanalyze(): Promise<void> {
   reanalyzing.value = true
   try {
-    await runIntent(props.api, [props.flowId], () => {})
+    await runIntent(props.api, [props.flowId], (ev) => {
+      if (ev.event === 'intent') upsert(ev.data)
+    })
   } catch (e) {
     emit('error', String((e as Error)?.message ?? e))
   } finally {

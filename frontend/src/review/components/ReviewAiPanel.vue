@@ -187,7 +187,7 @@ const TABS: { key: AiChatMode; label: string }[] = [
 ]
 const NOTICE_KEY = 'prismproxy:review-ai-notice-v1'
 
-const { intentOf, runIntent } = useIntents()
+const { intentOf, runIntent, upsert, busy } = useIntents()
 
 const activeTab = ref<AiChatMode>(props.mode)
 const phase = ref<Phase>('idle')
@@ -297,7 +297,7 @@ const startLabel = computed(() =>
 const startDisabled = computed(() => {
   if (phase.value === 'streaming' || !cfgOk.value) return true
   if (activeTab.value === 'explain') return !props.flowId
-  if (activeTab.value === 'intent') return !intentIds.value.length
+  if (activeTab.value === 'intent') return busy.value || !intentIds.value.length
   return !question.value.trim()
 })
 const metaText = computed(() => {
@@ -407,6 +407,7 @@ function onFrame(ev: AiChatEvent): void {
       break
     case 'intent':
       intentDone.value++
+      upsert(ev.data) // P1 审计修复：缓存写入挪进 runSeq+phase 双守卫内（旧任务迟到帧不再污染共享缓存）
       break
     case 'match':
       upsertMatch(ev.data)
@@ -450,6 +451,7 @@ function stop(): void {
   phase.value = 'stopped'
   abortCtl?.abort()
   abortCtl = null
+  flushRender() // P2 审计修复：清残余 50ms 合帧定时器并落盘最后一批 delta（防悬空回调）
 }
 
 // 清运行态（保留 question/开关等输入值）
@@ -532,6 +534,7 @@ watch(
 // 摘除 Esc 监听（该监听仅 show→false 时移除，跨挂载会泄漏）
 onBeforeUnmount(() => {
   stop()
+  flushRender() // P2 审计修复：非 streaming 卸载（如 error 态）时合帧定时器可能仍挂，兜底清掉
   window.removeEventListener('keydown', onEsc)
 })
 </script>
