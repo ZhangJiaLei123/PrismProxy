@@ -132,6 +132,7 @@ const state = {
   ignoreProcs: new Set<string>(),
   ignorePaths: new Set<string>(),
   settings: null as any,
+  aiKey: '' as string, // M13：AI API Key（内存态，刷新即重置）
 }
 
 function currentProject() {
@@ -217,6 +218,17 @@ function buildSettings(): any {
         { name: '雷电模拟器', path: 'D:\\leidian\\LDPlayer9\\adb.exe', serial: 'emulator-5554', autoSet: true },
       ],
     },
+    ai: {
+      enabled: false,
+      provider: 'custom',
+      baseUrl: '',
+      model: '',
+      temperature: 0.3,
+      timeoutSec: 120,
+      maxFlows: 50,
+      maxKb: 64,
+      redact: true,
+    },
     filterGroups: rules.filterGroups,
     decryptRules: rules.decryptRules,
     currentProject: proj ?? undefined,
@@ -236,6 +248,7 @@ function buildSettings(): any {
     bypassList: saved.bypassList ?? base.bypassList,
     persist: saved.persist ?? base.persist,
     adb: saved.adb ?? base.adb,
+    ai: saved.ai ?? base.ai,
   }
 }
 
@@ -630,6 +643,28 @@ const handlers: Record<string, (...args: any[]) => any> = {
   AdbClearProxy: async (_path: string, _serial: string) => '设备代理已清除（Mock）',
 
   AddDecryptBypass: async (_host: string) => {},
+
+  // --- M13 AI 分析（AiTab 密钥独立存取 + 测试连接，设计稿 §六） ---
+  aiView: () => ({
+    hasApiKey: !!state.aiKey,
+    apiKeyMasked: state.aiKey ? (state.aiKey.length <= 8 ? '****' : '****' + state.aiKey.slice(-4)) : '',
+    keyMissingWarn: state.aiKey ? '' : '未配置 API Key：AI 分析不可用（Mock）',
+  }),
+  GetAIConfigApp: async () => handlers.aiView(),
+  SaveAIConfigApp: async (key: string) => {
+    // 哨兵语义与后端一致：空串=保持、__clear__=清除、传值=换 key
+    if (key === '__clear__') state.aiKey = ''
+    else if (key.trim()) state.aiKey = key.trim()
+    return handlers.aiView()
+  },
+  TestAIConnection: async (cfg: any) => {
+    await delay(400)
+    const url = String(cfg?.baseUrl ?? '')
+    if (!url || url.includes('error')) {
+      return { model: cfg?.model ?? '', latencyMs: 0, ok: false, message: '连接失败：无法访问 BaseURL（Mock）' }
+    }
+    return { model: cfg?.model ?? 'glm-4-flash', latencyMs: 386, ok: true, message: '' }
+  },
 }
 
 // Proxy 兜底：未实现的方法不崩页面，返回空值并告警

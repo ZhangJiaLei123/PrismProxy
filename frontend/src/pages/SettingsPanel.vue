@@ -22,6 +22,11 @@
           <adb-tab :form="form" />
         </n-tab-pane>
 
+        <!-- ============ AI 分析：服务商/密钥/参数/脱敏（全局） ============ -->
+        <n-tab-pane name="ai" tab="AI 分析">
+          <ai-tab :form="form" />
+        </n-tab-pane>
+
         <!-- ============ 解密规则（项目级，仅打开项目后可见） ============ -->
         <n-tab-pane v-if="hasOpenProject" name="decrypt" tab="解密规则">
           <decrypt-tab :form="form" />
@@ -59,6 +64,7 @@ import { NDrawer, NDrawerContent, NTabs, NTabPane, NButton, NAlert, useMessage }
 import GeneralTab from './settings/GeneralTab.vue'
 import NetworkTab from './settings/NetworkTab.vue'
 import AdbTab from './settings/AdbTab.vue'
+import AiTab from './settings/AiTab.vue'
 import DecryptTab from './settings/DecryptTab.vue'
 import CaptureTab from './settings/CaptureTab.vue'
 import DomainsTab from './settings/DomainsTab.vue'
@@ -91,6 +97,17 @@ const emptyForm = (): app.SettingsView =>
     decryptRules: [],
     persist: { enabled: false, retainDays: 7, maxMB: 500 },
     adb: { deviceProxyHost: '172.16.1.2', configs: [] },
+    ai: {
+      enabled: false,
+      provider: 'custom',
+      baseUrl: '',
+      model: '',
+      temperature: 0.3,
+      timeoutSec: 120,
+      maxFlows: 50,
+      maxKb: 64,
+      redact: true,
+    },
     rulesProject: '',
   }) as app.SettingsView
 
@@ -112,6 +129,18 @@ async function loadSettings() {
   form.value.adb ??= { deviceProxyHost: '172.16.1.2', configs: [] }
   form.value.adb.configs ??= []
   if (!form.value.adb.deviceProxyHost) form.value.adb.deviceProxyHost = '172.16.1.2'
+  // M13 AI 设置兜底（设计稿 §5.1：SettingsView.ai 非可选，缺省走默认值避免 AiTab 运行时崩）
+  form.value.ai ??= {
+    enabled: false,
+    provider: 'custom',
+    baseUrl: '',
+    model: '',
+    temperature: 0.3,
+    timeoutSec: 120,
+    maxFlows: 50,
+    maxKb: 64,
+    redact: true,
+  }
   for (const g of form.value.filterGroups) {
     g.hosts ??= []
     g.paths ??= []
