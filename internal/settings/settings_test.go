@@ -388,6 +388,10 @@ func TestNormalizeAIBaseURL(t *testing.T) {
 		{"http://127.0.0.1:11434", "http://127.0.0.1:11434/v1"},
 		{"  https://x.com  ", "https://x.com/v1"},
 		{"", ""},
+		{"https://open.bigmodel.cn/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4"},  // 智谱 GLM 官方 v4 端点
+		{"https://open.bigmodel.cn/api/paas/v4/", "https://open.bigmodel.cn/api/paas/v4"}, // 尾斜杠 + v4
+		{"https://x.com/v2", "https://x.com/v2"},                                          // 其他版本段保留
+		{"https://x.com/ver1", "https://x.com/ver1/v1"},                                   // 非版本段（字母尾）不误判
 	}
 	for _, c := range cases {
 		if got := NormalizeAIBaseURL(c[0]); got != c[1] {

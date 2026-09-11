@@ -252,6 +252,8 @@ func TestNormalizeBaseURL(t *testing.T) {
 		{"http://a.com/v1", "http://a.com/v1"},
 		{"http://a.com/v1/", "http://a.com/v1"},
 		{"http://a.com/api/v1", "http://a.com/api/v1"},
+		{"http://a.com/api/paas/v4", "http://a.com/api/paas/v4"}, // 智谱 GLM v4 形态
+		{"http://a.com/v2", "http://a.com/v2"},                   // 其他版本段保留
 	}
 	for _, tc := range cases {
 		if got := normalizeBaseURL(tc.in); got != tc.want {

@@ -83,14 +83,32 @@ func NewClient(cfg Config) *Client {
 	return &Client{cfg: cfg, http: &http.Client{Transport: tr}}
 }
 
-// normalizeBaseURL 归一化 BaseURL：去空白/尾 /；已以 /v1 结尾则原样，否则补 /v1。
-// 与 settings.NormalizeAIBaseURL 同语义镜像（7 行小函数重复换解耦，避免 import settings）。
+// normalizeBaseURL 归一化 BaseURL：去空白/尾 /；末段为 /v<纯数字>（如 /v1、智谱 /v4）
+// 则保留，否则补 /v1。与 settings.NormalizeAIBaseURL 同语义镜像（小函数重复换解耦，避免 import settings）。
 func normalizeBaseURL(raw string) string {
 	b := strings.TrimRight(strings.TrimSpace(raw), "/")
-	if b == "" || strings.HasSuffix(b, "/v1") {
+	if b == "" || endsWithVersionSeg(b) {
 		return b
 	}
 	return b + "/v1"
+}
+
+// endsWithVersionSeg 判断末段是否为 /v<纯数字> 形态（v1/v4/...），镜像 settings 包实现。
+func endsWithVersionSeg(b string) bool {
+	i := strings.LastIndex(b, "/")
+	if i < 0 {
+		return false
+	}
+	v := b[i+1:]
+	if len(v) < 2 || v[0] != 'v' {
+		return false
+	}
+	for j := 1; j < len(v); j++ {
+		if v[j] < '0' || v[j] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // firstChunkTimeout 首块超时 = min(30s, Timeout/4)；Timeout 未设（<=0）时取 30s。

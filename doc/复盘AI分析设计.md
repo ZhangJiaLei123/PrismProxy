@@ -1,6 +1,7 @@
 # 数据复盘 × AI 分析设计（M13）
 
-> 版本：v2.1（2026-09-10，计划审计后定稿修订：主窗内嵌 AI 通道=Wails 事件桥、/ai/config 部分更新语义、温度 0 哨兵、取数方法名与截断方向修正、AIConfig 零值兜底）
+> 版本：v2.2（2026-09-11，BaseURL 归一化放宽为「末段 `/v<纯数字>` 保留」——智谱 GLM 官方 OpenAI 兼容端点为 https://open.bigmodel.cn/api/paas/v4 ，仅认 /v1 会误补成 /v4/v1 404）
+> v2.1：2026-09-10，计划审计后定稿修订：主窗内嵌 AI 通道=Wails 事件桥、/ai/config 部分更新语义、温度 0 哨兵、取数方法名与截断方向修正、AIConfig 零值兜底。
 > v2：2026-09-10，增补「接口意图批量标注 intent」需求。
 > v1：2026-09-09 初稿。
 > 适用里程碑：M13（下一个版本：数据复盘 × AI 分析，见 README Roadmap）
@@ -119,7 +120,7 @@ AI AIConfig `json:"ai"`
 type AIConfig struct {
     Enabled  bool   `json:"enabled"`  // 是否启用 AI 分析（未配置 key 时前端入口仍可见，仅置灰引导）
     Provider string `json:"provider"` // 服务商预设 id：openai|deepseek|moonshot|zhipu|qwen|ollama|custom（仅 UI 预设用，后端不依赖）
-    BaseURL  string `json:"baseUrl"`  // 形如 https://api.deepseek.com（不带 /v1；后端拼 /chat/completions）；允许填到 /v1 前缀，拼接时归一化
+    BaseURL  string `json:"baseUrl"`  // 形如 https://api.deepseek.com（不带版本段，拼接时归一化）；允许填到 /v1（或 /v4 等版本段）前缀，见 NormalizeAIBaseURL
     APIKey   string `json:"apiKey"`   // 密钥；独立读写接口，不进 SettingsView 全量 DTO
     Model    string `json:"model"`    // 模型名，如 deepseek-chat / gpt-4o-mini
     // 调参（旧配置 JSON 缺 AI 字段反序列化得零值，读取侧统一经 withDefaults() 兜底，见下）
@@ -134,7 +135,7 @@ type AIConfig struct {
 - `DefaultGlobal()` 给默认子值：`AI{Enabled:false, Provider:"custom", Temperature:0.3, TimeoutSec:120, MaxFlows:50, MaxKB:64, Redact:true}`。
 - **零值兜底（v2.1 定稿）**：`func (c AIConfig) WithDefaults() AIConfig`——Temperature==0→0.3、TimeoutSec<10→120、MaxFlows<1→50、MaxKB<8→64、零值（未初始化）Redact→true；**仅读取侧兜底不回写落盘**。调用点三处：SettingsView 投影（GetSettings/GetAIConfig）、ai.Client 构造、裁剪入口。动机：老用户 settings.json 无 `ai` 字段，反序列化后 `AI` 为零值——若不兜底，Redact=false 等于脱敏默认关闭（隐私倒退）、Timeout/预算 0 导致裁剪与首块超时行为未定义。ValidateEnv 仍按界面显式保存的值校验（Enabled=true 时值已在 UI 约束内）。
 - `ValidateEnv()` 增补：`Enabled=true` 时 BaseURL 必须是 http(s) URL、Model 非空；Temperature ∈ [0.1,2]（0 为哨兵不显式保存）；TimeoutSec ∈ [10,600]；MaxFlows ∈ [1,100]；MaxKB ∈ [8,256]。**APIKey 不强制（自托管 Ollama 可无 key）**；key 空仅 warning。**warning 通道归属（v2.1 定稿）**：`ValidateEnv()` 现签名只返 `error`，不改签名——key 空检查放在 `app.SaveSettings` 环境半边校验后追加到既有 `SaveSettingsResult.warnings`（与 M9 规则 warning 同通道），零签名变更零调用方波及。
-- BaseURL 归一化：`strings.TrimRight` 去尾 `/`；若已以 `/v1`（或 `/v1/`）结尾则直接用，否则追加 `/v1`；最终请求 URL = base + `/chat/completions`。
+- BaseURL 归一化（v2.2 修订）：`strings.TrimRight` 去尾 `/`；**末段为 `/v<纯数字>`**（如 `/v1`、智谱 GLM 官方端点 `https://open.bigmodel.cn/api/paas/v4` 末段 `/v4`）则原样保留，否则追加 `/v1`；最终请求 URL = base + `/chat/completions`。判定取 `LastIndex('/')` 后的末段校验 `v`+全数字（域名段如 `api.deepseek.com` 不含 `/` 分隔不会误判）。
 
 ### 5.2 AI 客户端（新包 internal/ai，零外部依赖）
 

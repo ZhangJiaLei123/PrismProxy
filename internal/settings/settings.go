@@ -3,7 +3,7 @@
 //
 // M9 起配置拆分为两层（项目配置设计 §3/§4）：
 //   - 全局配置 GlobalSettings：环境类（监听/上游/预算/开关/bypassList/persist 策略/ADB）
-//     + 项目清单与当前指针，存 config/settings.json；
+//   - 项目清单与当前指针，存 config/settings.json；
 //   - 项目配置 ProjectConfig：规则类（filterGroups/decryptRules），
 //     存 config/projects/<id>/project.json（见 project.go）。
 package settings
@@ -241,14 +241,34 @@ func (c AIConfig) Validate() error {
 	return nil
 }
 
-// NormalizeAIBaseURL 归一化 BaseURL：去首尾空白与尾部 `/`；已以 `/v1` 结尾保留，
-// 否则补 `/v1`。最终请求 URL = 归一化结果 + `/chat/completions`（设计稿 §5.1）。
+// NormalizeAIBaseURL 归一化 BaseURL：去首尾空白与尾部 `/`；末段为 `/v<纯数字>`
+// （如 /v1、智谱 GLM 官方端点 /api/paas/v4）则保留，否则补 `/v1`。
+// 最终请求 URL = 归一化结果 + `/chat/completions`（设计稿 §5.1，v2.2）。
 func NormalizeAIBaseURL(raw string) string {
 	b := strings.TrimRight(strings.TrimSpace(raw), "/")
-	if b == "" || strings.HasSuffix(b, "/v1") {
+	if b == "" || endsWithAIVersionSeg(b) {
 		return b
 	}
 	return b + "/v1"
+}
+
+// endsWithAIVersionSeg 判断末段是否为 /v<纯数字> 形态（v1/v4/...）。
+// 取 LastIndex('/') 后的末段校验；无 `/` 分隔（纯域名）不会误判。
+func endsWithAIVersionSeg(b string) bool {
+	i := strings.LastIndex(b, "/")
+	if i < 0 {
+		return false
+	}
+	v := b[i+1:]
+	if len(v) < 2 || v[0] != 'v' {
+		return false
+	}
+	for j := 1; j < len(v); j++ {
+		if v[j] < '0' || v[j] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // WarnNoKey 非阻塞检查：AI 已启用但 key 为空且非本地 Ollama 预设时返回提示文案。
