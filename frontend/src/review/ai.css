@@ -76,6 +76,18 @@
   flex: 1;
   min-width: 0;
 }
+/* 修复 naive-ui 暗色主题 segment 缺陷：轨道与选中滑块同色（滑块隐形）、
+   激活文字反而比未激活更暗。naive-ui 把主题变量以内联 style 写在组件根上，
+   必须用 !important 才能盖过内联声明 */
+.ai-tabs.n-tabs,
+.ai-log-tabs.n-tabs {
+  --n-color-segment: rgba(255, 255, 255, 0.06) !important;
+  --n-tab-color-segment: rgba(181, 126, 220, 0.25) !important;
+  --n-tab-text-color: rgba(255, 255, 255, 0.55) !important;
+  --n-tab-text-color-hover: rgba(255, 255, 255, 0.85) !important;
+  --n-tab-text-color-active: #fff !important;
+  --n-tab-font-weight-active: 600 !important;
+}
 .ai-close {
   flex: none;
   width: 26px;
@@ -441,6 +453,39 @@
 .ai-logsheet.open {
   transform: translateY(0);
   visibility: visible;
+}
+/* 拖拽调高中：关过渡保证 1:1 跟手，禁文本选择 */
+.ai-logsheet.dragging {
+  transition: none;
+  user-select: none;
+}
+/* 顶部拖拽把手：居中短横条示意可拖，hover/拖拽中品牌紫高亮（对齐复盘页 .splitter） */
+.ai-log-grip {
+  flex: none;
+  height: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+  touch-action: none; /* 触屏拖动不触发滚动 */
+}
+.ai-log-grip::before {
+  content: '';
+  width: 34px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.14);
+  transition: background 0.12s;
+}
+.ai-log-grip:hover::before,
+.ai-logsheet.dragging .ai-log-grip::before {
+  background: rgba(181, 126, 220, 0.65);
+}
+/* 垂直拖拽中：全局光标 + 禁选（对齐复盘页列宽拖拽的 col-resizing；ai.css 为全局样式无需 :global） */
+body.row-resizing,
+body.row-resizing * {
+  cursor: ns-resize !important;
+  user-select: none;
 }
 .ai-log-head {
   flex: none;

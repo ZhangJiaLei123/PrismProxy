@@ -397,19 +397,22 @@ func maskPhones(s string) string {
 
 // IntentItem intent 模式结构化输出项。
 type IntentItem struct {
-	Seq        int // 流序号（对应 [#n]）；缺失按数组序补
-	FlowID     string
-	Intent     string
-	Confidence string // high|medium|low
-	NeedsBody  bool
+	Seq        int    `json:"seq"` // 流序号（对应 [#n]）；缺失按数组序补
+	FlowID     string `json:"flowId"`
+	Intent     string `json:"intent"`
+	Confidence string `json:"confidence"` // high|medium|low
+	NeedsBody  bool   `json:"needsBody"`
 }
 
-// MatchItem locate 模式结构化输出项。
+// MatchItem locate 模式结构化输出项（Prompt 只要求 flowId/rank/reason/confidence；
+// Method/URL 由接线层按 FlowID 从候选流回填，供前端卡片展示）。
 type MatchItem struct {
-	FlowID     string
-	Rank       int // 缺失按数组序补
-	Reason     string
-	Confidence string
+	FlowID     string `json:"flowId"`
+	Rank       int    `json:"rank"` // 缺失按数组序补
+	Method     string `json:"method"`
+	URL        string `json:"url"`
+	Reason     string `json:"reason"`
+	Confidence string `json:"confidence"`
 }
 
 // lastJSONBlock 找最后一个 ```json 围栏（大小写不敏感；兼容 ```json{...}``` 内联形态）。

@@ -38,6 +38,10 @@ export interface ReviewFlowMeta {
   Source: string
   Historical: boolean
   Tags: string[]
+  // AI 意图解析结果（M13 §7，复盘链路由归档库注入；AIIntent 空/缺省=未解析）
+  AIIntent?: string
+  AIConfidence?: string
+  AINeedsBody?: boolean
 }
 
 export interface ReviewFlowDetail extends ReviewFlowMeta {

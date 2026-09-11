@@ -277,6 +277,7 @@
 
                 <!-- M12.3：与主窗共用 FlowTable（虚拟滚动/列布局/双击复制/右键复制 URL、三 shell cURL、
                      调试重发、忽略域名/路径/进程）；排序为服务端排序，翻页后回到顶部 -->
+                <!-- M13 §7：item-height=44 容纳路径列两行（路径 + 意图概要）；主窗默认 28 不受影响 -->
                 <flow-table
                   v-else
                   ref="tableRef"
@@ -289,13 +290,28 @@
                   :col-mins="TABLE_COL_MINS"
                   :selected-id="selectedFlow"
                   :actions="tableActions"
+                  :item-height="44"
                   selectable
                   v-model:checkedIds="checkedIds"
                   @select="onSelectFlow"
                   @sort="onSort"
                   @action-error="(m) => message.error(m, { duration: 6000, closable: true })"
                   @curl-omitted="onCurlOmitted"
-                />
+                >
+                  <template #cell-path="{ flow: f }">
+                    <span class="iv-cell">
+                      <span class="iv-path">{{ f.Path || f.URL }}</span>
+                      <button
+                        v-if="intentOf(f.ID)"
+                        class="iv-intent"
+                        :class="intentConfCls(intentOf(f.ID)!.confidence)"
+                        :title="intentTitle(intentOf(f.ID)!)"
+                        @click.stop="onIntentClick(f)"
+                        @dblclick.stop
+                      >✨ {{ intentOf(f.ID)!.intent }}</button>
+                    </span>
+                  </template>
+                </flow-table>
 
                 <!-- 页码分页：上一页/下一页/页码/跳页 + 每页条数切换 -->
                 <div v-if="total > 0" class="pager-bar">
@@ -365,11 +381,12 @@ import FlowTable from '../../components/FlowTable.vue'
 import type { FlowColumn, FlowTableActions } from '../../components/FlowTable.vue'
 import { ApiError, createApi } from '../api'
 import type { AiChatMode, ReviewApi } from '../api'
-import type { ReviewFlowMeta, ReviewHistogram, ReviewIgnoreItem, ReviewIgnoreKind, ReviewScope, ReviewSortDir, ReviewSortKey, ReviewTagInfo } from '../../lib/types'
+import type { IntentResult, ReviewFlowMeta, ReviewHistogram, ReviewIgnoreItem, ReviewIgnoreKind, ReviewScope, ReviewSortDir, ReviewSortKey, ReviewTagInfo } from '../../lib/types'
 import { fmtDateTime } from '../../lib/format'
 import { b64ToBytes } from '../../lib/format'
 import { buildCurl } from '../../lib/curl'
 import type { CurlShell } from '../../lib/curl'
+import { useIntents } from '../useIntents'
 // P4 AI 组件级样式（k-ai-* 色卡 + .ai-* 面板）：主窗内嵌与独立入口均经本组件挂载，
 // 必须在此 import 才能进两形态构建图谱（H1 审计修复；review.css 仅独立入口底座）
 import '../ai.css'
@@ -407,6 +424,27 @@ const aiPanelLabel = computed(() => {
 })
 function onDetailExplain(): void {
   aiPanelFlowId.value = selectedFlow.value
+  aiPanelMode.value = 'explain'
+  aiPanelShow.value = true
+}
+// M13 §7 意图持久化展示：与 AI 面板共享的会话缓存（模块级单例）；
+// 列表加载时经 seed 回填归档库持久化结果（仅缓存缺失时写入，详见 useIntents）
+const { intentOf, seed: seedIntents, clear: clearIntents } = useIntents()
+// 意图置信度 → ai.css 色卡：high 绿 / medium 黄 / low 暗黄斜体（异常值降级 low）
+function intentConfCls(confidence: string): string {
+  if (confidence === 'high') return 'k-ai-conf-high'
+  if (confidence === 'medium') return 'k-ai-conf-med'
+  return 'k-ai-low'
+}
+// 意图按钮悬浮提示：正文未送审时提示重析可精判
+function intentTitle(it: IntentResult): string {
+  const base = '点击查看 AI 详细分析'
+  return it.needsBody ? base + '（正文未送审，含正文重析可精判）' : base
+}
+// 路径列意图概要点击：选中该流并打开 AI 面板 explain 模式看详细分析（M13 §7）
+function onIntentClick(f: ReviewFlowMeta): void {
+  selectedFlow.value = f.ID
+  aiPanelFlowId.value = f.ID
   aiPanelMode.value = 'explain'
   aiPanelShow.value = true
 }
@@ -709,6 +747,7 @@ async function loadFlows(reset = false, restoreOnError = false): Promise<boolean
     if (my !== flowSeq) return false // 已被更新的请求取代
     flows.value = resp.flows
     total.value = resp.total
+    seedIntents(resp.flows) // M13 §7：回填归档库持久化意图（仅缓存缺失时写入）
     return true
   } catch (e) {
     if (my !== flowSeq) return false // 过期错误不弹 fatal、不回滚
@@ -1026,6 +1065,7 @@ function initListW() {
 
 onMounted(() => {
   initListW()
+  clearIntents() // 跨项目清理（§7 审计修复）：重挂即换会话上下文，旧项目意图缓存不留存
   refreshAll()
 })
 
@@ -1160,4 +1200,12 @@ onBeforeUnmount(() => {
 .list-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: rgba(255,255,255,0.4); text-align: center; padding: 20px; }
 .le-icon { font-size: 30px; opacity: 0.7; }
 .le-sub { font-size: 11px; color: rgba(255,255,255,0.32); max-width: 300px; line-height: 1.7; }
+/* 路径列两行布局（M13 §7）：上=请求路径，下=AI 意图概要（点击打开 AI 面板详细分析） */
+.iv-cell { display: flex; flex-direction: column; justify-content: center; gap: 1px; height: 100%; min-width: 0; }
+.iv-path { font-family: Consolas, monospace; font-size: 11px; color: rgba(255,255,255,0.78); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iv-intent {
+  display: block; max-width: 100%; padding: 0; border: none; background: none; text-align: left;
+  font-size: 10px; line-height: 13px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.iv-intent:hover { filter: brightness(1.25); text-decoration: underline; }
 </style>

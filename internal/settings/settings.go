@@ -163,7 +163,7 @@ type AIConfig struct {
 	Model    string `json:"model"`    // 当前生效模型名；当前条目快照
 
 	Temperature float64 `json:"temperature"` // 默认 0.3（分析任务偏低温度）；0=未设置哨兵，显式区间 [0.1,2]
-	TimeoutSec  int     `json:"timeoutSec"`  // 整请求超时秒，默认 120；流式下为首块+整体上限
+	TimeoutSec  int     `json:"timeoutSec"`  // 整请求超时秒，默认 120；流式下=首块看门狗阈值（自托管全额/云端 min(30s, Timeout/4)），首帧后不再限时
 	MaxFlows    int     `json:"maxFlows"`    // 单次分析最大流数，默认 50、上限 100
 	MaxKB       int     `json:"maxKb"`       // 单次送审正文总预算 KB，默认 64、上限 256
 	Redact      bool    `json:"redact"`      // 发送前脱敏（默认 true）

@@ -2,7 +2,7 @@
   <!--
     运行时无关的共享流量表格：主窗 FlowList（客户端排序/实时 store）与数据复盘列表
     （服务端排序+分页/归档库）共用。本组件只负责：
-    - 虚拟滚动（固定 28px 行高）、列宽拖拽 / 列顺序 / 显隐 / 重置（localStorage 按 layoutKey 隔离）
+    - 虚拟滚动（固定行高，itemHeight prop，默认 28px，复盘页 44px）、列宽拖拽 / 列顺序 / 显隐 / 重置（localStorage 按 layoutKey 隔离）
     - 双击复制单元格、复制 toast
     - 行右键菜单与表头右键菜单（菜单项与动作经 actions 注入，组件内不碰 wails/store）
     排序方向状态在父级（@sort），本组件只呈现并上抛。
@@ -46,7 +46,7 @@
           v-for="{ data: f } in list"
           :key="f.ID"
           class="row item"
-          :style="gridStyle"
+          :style="[gridStyle, { height: itemHeight + 'px' }]"
           :class="rowClass(f)"
           @click="emit('select', f.ID)"
           @contextmenu.prevent="onContextMenu($event, f)"
@@ -171,8 +171,11 @@ const props = withDefaults(
     selectable?: boolean
     /** v-model:checkedIds：当前勾选的流 id 集合（父级持有并负责作废规则） */
     checkedIds?: string[]
+    /** M13 §7：行高像素（useVirtualList 固定行高，构造期取值非响应式）；
+     *  默认 28=主窗口径不变；复盘页传 44 容纳路径列下两行展示 */
+    itemHeight?: number
   }>(),
-  { selectedId: '', emptyText: '', selectable: false, checkedIds: () => [] },
+  { selectedId: '', emptyText: '', selectable: false, checkedIds: () => [], itemHeight: 28 },
 )
 
 const emit = defineEmits<{
@@ -297,8 +300,9 @@ function startResize(e: PointerEvent, wi: number) {
   window.addEventListener('pointerup', onUp)
 }
 
-// ---- 虚拟滚动（固定 28px 行高，overscan 15，与原 FlowList 一致） ----
-const virtual = useVirtualList(computed(() => props.rows), { itemHeight: 28, overscan: 15 })
+// ---- 虚拟滚动（固定行高 itemHeight prop，默认 28=主窗口径；复盘页 44 两行展示，overscan 15） ----
+// useVirtualList 的 itemHeight 构造期取值非响应式（切换行高需重建列表，不支持动态切换）
+const virtual = useVirtualList(computed(() => props.rows), { itemHeight: props.itemHeight, overscan: 15 })
 const list = virtual.list
 const containerProps = virtual.containerProps
 const wrapperProps = virtual.wrapperProps
@@ -650,7 +654,7 @@ function onHeadCtxSelect(key: string) {
 .th:hover .col-resizer::after { background: rgba(255, 255, 255, 0.25); }
 .col-resizer:hover::after, .col-resizer.active::after { background: #70c0e8; }
 .list-body { flex: 1; overflow-y: auto; }
-.item { height: 28px; cursor: pointer; border-bottom: 1px solid rgba(255, 255, 255, 0.04); }
+.item { cursor: pointer; border-bottom: 1px solid rgba(255, 255, 255, 0.04); }
 .item:hover { background: rgba(255, 255, 255, 0.06); }
 .item.selected { background: rgba(32, 128, 240, 0.25); }
 .item.error { color: #e88080; }

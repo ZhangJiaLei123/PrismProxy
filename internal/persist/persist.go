@@ -207,6 +207,17 @@ CREATE TABLE IF NOT EXISTS review_ignores (
     note       TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (kind, value)
 );
+
+-- AI 意图解析结果（M13 §7）：intent 模式解析完成后按流持久化，复盘列表/详情回读展示。
+-- 每流一行（重新解析覆盖旧值）；仅归档库链路产生，主窗实时列表不受影响。
+CREATE TABLE IF NOT EXISTS flow_intents (
+    flow_id    TEXT PRIMARY KEY,
+    seq        INTEGER NOT NULL DEFAULT 0,  -- 流序号（对应送审 [#n]）
+    intent     TEXT NOT NULL,               -- 意图概要（一句话）
+    confidence TEXT NOT NULL DEFAULT '',    -- high|medium|low（异常值原样保存，前端降级展示）
+    needs_body INTEGER NOT NULL DEFAULT 0,  -- 0/1：是否需要正文才能精判
+    updated_at INTEGER NOT NULL             -- unix 毫秒
+);
 `)
 	return err
 }

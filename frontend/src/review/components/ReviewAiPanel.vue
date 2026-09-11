@@ -9,8 +9,11 @@
         </svg>
         AI 分析
       </span>
+      <!-- 用 n-tab（纯导航 tab）而非自闭合 n-tab-pane：naive-ui 2.40.4 的 normalizeSlots
+           会把自闭合 pane 的空 children 包装成"渲染注释"的 truthy slot，短路 props.tab，
+           导致标签文字永不渲染（tab 被压成 8px 高的"进度条"） -->
       <n-tabs v-model:value="activeTab" type="segment" size="small" class="ai-tabs">
-        <n-tab-pane v-for="t in TABS" :key="t.key" :name="t.key" :tab="t.label" />
+        <n-tab v-for="t in TABS" :key="t.key" :name="t.key">{{ t.label }}</n-tab>
       </n-tabs>
       <button class="ai-close" title="关闭（Esc）" @click="closePanel">
         <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
@@ -146,12 +149,21 @@
       </button>
     </footer>
 
-    <!-- 调用日志抽层：对话内容（模型原始输出实时流）+ 调用日志（帧级事件），自底部滑入 -->
-    <section class="ai-logsheet" :class="{ open: logOpen }" aria-label="AI 调用详情">
+    <!-- 调用日志抽层：对话内容（模型原始输出实时流）+ 调用日志（帧级事件），自底部滑入；
+         高度可拖拽调整（顶部把手）并经 localStorage 缓存 -->
+    <section
+      ref="logsheetEl"
+      class="ai-logsheet"
+      :class="{ open: logOpen, dragging: logDragging }"
+      :style="logHStyle"
+      aria-label="AI 调用详情"
+    >
+      <!-- 顶部拖拽把手：上下拖动调整高度，双击恢复默认 -->
+      <div class="ai-log-grip" title="拖拽调整高度 · 双击恢复默认" @pointerdown="startLogDrag" @dblclick="resetLogH"></div>
       <header class="ai-log-head">
         <n-tabs v-model:value="logTab" type="segment" size="small" class="ai-log-tabs">
-          <n-tab-pane name="conv" tab="对话内容" />
-          <n-tab-pane name="log" tab="调用日志" />
+          <n-tab name="conv">对话内容</n-tab>
+          <n-tab name="log">调用日志</n-tab>
         </n-tabs>
         <button class="ai-close" title="收起日志" @click="logOpen = false">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
@@ -160,10 +172,53 @@
         </button>
       </header>
       <div ref="logBodyEl" class="ai-log-body">
-        <pre v-if="logTab === 'conv' && convText" class="ai-log-conv">{{ convText }}</pre>
-        <div v-else-if="logTab === 'conv'" class="ai-hint ai-log-empty">
-          {{ phase === 'streaming' ? '等待模型输出…' : '暂无对话内容 · 发起一次分析后这里实时展示模型原始输出' }}
-        </div>
+        <!-- 对话 tab：提问 → 提示词（折叠）→ 思考过程（推理流自动展开、答案开始自动收起）→ 模型输出 -->
+        <template v-if="logTab === 'conv'">
+          <div v-if="convEmpty" class="ai-hint ai-log-empty">
+            {{ phase === 'streaming' ? '等待模型输出…' : '暂无对话内容 · 发起一次分析后这里实时展示模型原始输出' }}
+          </div>
+          <template v-else>
+            <section class="ai-conv-sec">
+              <div class="ai-conv-label">提问</div>
+              <div class="ai-conv-q">{{ qAsked }}</div>
+              <div v-if="hasQuestion" class="ai-conv-scope">{{ scopeText }}</div>
+            </section>
+            <section v-if="promptSystem || promptUser" class="ai-conv-sec">
+              <button class="ai-conv-toggle" :class="{ open: promptOpen }" @click="promptOpen = !promptOpen">
+                <svg class="chev" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M6 4.5l4 4-4 4" />
+                </svg>
+                <span>提示词（实际送审）</span>
+                <span class="ai-conv-count">{{ promptLen }} 字</span>
+              </button>
+              <div class="ai-conv-fold" :class="{ open: promptOpen }">
+                <div class="ai-conv-fold-in">
+                  <div class="ai-conv-label-sub">System</div>
+                  <pre class="ai-log-conv">{{ promptSystem }}</pre>
+                  <div class="ai-conv-label-sub">User</div>
+                  <pre class="ai-log-conv">{{ promptUser }}</pre>
+                </div>
+              </div>
+            </section>
+            <section v-if="reasonText" class="ai-conv-sec">
+              <button
+                class="ai-conv-toggle"
+                :class="{ open: reasonOpen, live: phase === 'streaming' && reasonOpen }"
+                @click="toggleReason"
+              >
+                <svg class="chev" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M6 4.5l4 4-4 4" />
+                </svg>
+                <span>思考过程</span>
+                <span class="ai-conv-count">{{ reasonText.length }} 字</span>
+              </button>
+              <div class="ai-conv-fold" :class="{ open: reasonOpen }">
+                <pre class="ai-log-conv ai-conv-think">{{ reasonText }}</pre>
+              </div>
+            </section>
+            <pre v-if="convText" class="ai-log-conv">{{ convText }}</pre>
+          </template>
+        </template>
         <template v-else>
           <div v-if="!logs.length && !prevLogs.length" class="ai-hint ai-log-empty">暂无日志 · 发起分析后逐帧记录调用过程</div>
           <!-- 上一轮归档（G3 审计建议）：默认收起，展开弱化展示最近一轮帧序列 -->
@@ -212,7 +267,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { NButton, NCheckbox, NInput, NModal, NPopconfirm, NProgress, NTabPane, NTabs } from 'naive-ui'
+import { NButton, NCheckbox, NInput, NModal, NPopconfirm, NProgress, NTab, NTabs } from 'naive-ui'
 import type { AiChatEvent, AiChatMeta, AiChatMode, AIApiConfigView, ReviewApi } from '../api'
 import type { AiMatchItem, IntentResult, ReviewFlowMeta } from '../../lib/types'
 import { renderMarkdown } from '../ai-md'
@@ -466,6 +521,86 @@ watch([() => logs.value[logs.value.length - 1]?.id ?? 0, convText], () => {
   })
 })
 
+// ===== 抽层高度拖拽 + 缓存 =====
+// 顶部把手上下拖动调高，pointerup 落盘 localStorage；双击恢复 CSS 默认。
+// 缓存值以内联 height: min(px, calc(100% - 保留)) 生效——窗口变小时 CSS 就近钳制不溢出抽屉
+const LOG_H_KEY = 'prismproxy:review-ai-logsheet-h-v1'
+const LOG_H_MIN = 200 // 与 .ai-logsheet min-height 一致
+const LOG_H_RESERVE_EXTRA = 120 // 正文可视保留；上限 = 抽屉高 - footer 高(--ai-foot-h) - 120（I2 审计修复：footer 高单一事实源是 CSS 变量）
+const logsheetEl = ref<HTMLElement | null>(null)
+const logH = ref(0) // 0 = 未自定义，走 CSS 默认 min(58%, 430px)
+const logDragging = ref(false)
+let logDragStartY = 0
+let logDragStartH = 0
+
+try {
+  const v = Number(localStorage.getItem(LOG_H_KEY))
+  if (v >= LOG_H_MIN) logH.value = v
+} catch {
+  /* 存储不可用仅本会话生效 */
+}
+
+const logHStyle = computed<{ height: string } | undefined>(() =>
+  logH.value > 0
+    ? { height: `min(${logH.value}px, calc(100% - var(--ai-foot-h) - ${LOG_H_RESERVE_EXTRA}px))` }
+    : undefined,
+)
+
+function logMaxH(): number {
+  const drawerH = logsheetEl.value?.parentElement?.clientHeight ?? 0
+  const footH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ai-foot-h')) || 35
+  return Math.max(LOG_H_MIN, drawerH - footH - LOG_H_RESERVE_EXTRA)
+}
+
+function startLogDrag(e: PointerEvent): void {
+  if (e.button !== 0) return // 仅左键拖拽（I1 审计修复：右键/中键不进入拖拽）
+  const el = logsheetEl.value
+  if (!el) return
+  logDragging.value = true
+  logDragStartY = e.clientY
+  logDragStartH = el.getBoundingClientRect().height
+  window.addEventListener('pointermove', onLogDragMove)
+  window.addEventListener('pointerup', onLogDragEnd)
+  window.addEventListener('pointercancel', onLogDragEnd)
+  document.body.classList.add('row-resizing')
+  try {
+    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+  } catch {
+    /* 合成事件无活动指针，捕获失败不影响拖拽逻辑 */
+  }
+  e.preventDefault() // 防触发文本选择
+}
+
+function onLogDragMove(e: PointerEvent): void {
+  if (!logDragging.value) return
+  // 向上拖（clientY 减小）增高
+  logH.value = Math.min(Math.max(logDragStartH + (logDragStartY - e.clientY), LOG_H_MIN), logMaxH())
+}
+
+function onLogDragEnd(): void {
+  if (!logDragging.value) return
+  logDragging.value = false
+  window.removeEventListener('pointermove', onLogDragMove)
+  window.removeEventListener('pointerup', onLogDragEnd)
+  window.removeEventListener('pointercancel', onLogDragEnd)
+  document.body.classList.remove('row-resizing')
+  try {
+    localStorage.setItem(LOG_H_KEY, String(logH.value))
+  } catch {
+    /* 存储不可用仅本会话生效 */
+  }
+}
+
+// 双击把手恢复默认高度
+function resetLogH(): void {
+  logH.value = 0
+  try {
+    localStorage.removeItem(LOG_H_KEY)
+  } catch {
+    /* 忽略 */
+  }
+}
+
 // ===== 运行控制 =====
 function requestStart(auto = false): void {
   if (phase.value === 'streaming') return
@@ -645,6 +780,7 @@ function onEsc(e: KeyboardEvent): void {
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
   // 日志抽层展开时先收抽层，再按一次 Esc 才关面板（Z1 审计修复：交互层级）
   if (logOpen.value) {
+    if (logDragging.value) onLogDragEnd() // 拖拽中收抽层先终止拖拽态（摘监听/落盘，I3 审计修复）
     logOpen.value = false
     return
   }
@@ -708,5 +844,7 @@ onBeforeUnmount(() => {
   stop()
   flushRender() // P2 审计修复：非 streaming 卸载（如 error 态）时合帧定时器可能仍挂，兜底清掉
   window.removeEventListener('keydown', onEsc)
+  // 高度拖拽中卸载：摘除 window 级监听并还原 body 光标
+  if (logDragging.value) onLogDragEnd()
 })
 </script>

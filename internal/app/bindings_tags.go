@@ -461,6 +461,7 @@ func (a *App) ReviewFlowList(tagID, scope string, start, end int64, limit, offse
 		ids = append(ids, string(f.ID))
 	}
 	dbTags, _ := w.TagsForFlows(ids)
+	dbIntents, _ := w.IntentsForFlows(ids) // AI 意图（M13 §7）；旧库无表容错为空
 	out := make([]FlowMeta, 0, len(flows))
 	for _, f := range flows {
 		m := a.toMeta(f)
@@ -468,6 +469,9 @@ func (a *App) ReviewFlowList(tagID, scope string, start, end int64, limit, offse
 			if names := dbTags[string(f.ID)]; len(names) > 0 {
 				m.Tags = names
 			}
+		}
+		if it, ok := dbIntents[string(f.ID)]; ok {
+			m.AIIntent, m.AIConfidence, m.AINeedsBody = it.Intent, it.Confidence, it.NeedsBody
 		}
 		out = append(out, m)
 	}
@@ -603,6 +607,12 @@ func (a *App) ReviewFlowDetail(flowID string) (*FlowDetail, error) {
 	if len(d.Tags) == 0 {
 		if names, _ := w.TagsForFlows([]string{flowID}); len(names[flowID]) > 0 {
 			d.Tags = names[flowID]
+		}
+	}
+	// AI 意图（M13 §7）：从库回读注入（旧库无表容错为空）
+	if intents, ierr := w.IntentsForFlows([]string{flowID}); ierr == nil {
+		if it, ok := intents[flowID]; ok {
+			d.AIIntent, d.AIConfidence, d.AINeedsBody = it.Intent, it.Confidence, it.NeedsBody
 		}
 	}
 	return d, nil

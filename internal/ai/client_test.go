@@ -139,7 +139,8 @@ func TestStreamErrorFrame(t *testing.T) {
 	}
 }
 
-// TestStreamFirstChunkTimeout 首块超时：Timeout=4s → 阈值 1s；服务器 3s 后才发数据。
+// TestStreamFirstChunkTimeout 云端首块超时：已配 APIKey → 阈值 min(30s, Timeout/4)；
+// Timeout=4s → 阈值 1s；服务器 3s 后才发数据。
 func TestStreamFirstChunkTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body) // 读掉 body，使 server 能监测客户端断开
@@ -151,12 +152,44 @@ func TestStreamFirstChunkTimeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(Config{BaseURL: srv.URL, Model: "m", Timeout: 4 * time.Second})
+	c := NewClient(Config{BaseURL: srv.URL, APIKey: "k", Model: "m", Timeout: 4 * time.Second})
 	start := time.Now()
 	err := c.Stream(context.Background(), nil, func(Delta) {})
 	elapsed := time.Since(start)
 	if err == nil || !strings.Contains(err.Error(), "连接服务商超时") || !strings.Contains(err.Error(), "1 秒内未收到首个响应") {
 		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(err.Error(), "调大") {
+		t.Fatalf("云端超时文案不应出现自托管提示：%v", err)
+	}
+	if elapsed < 900*time.Millisecond || elapsed > 2500*time.Millisecond {
+		t.Fatalf("elapsed=%v，应在首块阈值 1s 附近", elapsed)
+	}
+}
+
+// TestStreamFirstChunkTimeoutSelfHosted 自托管首块超时（v2.3）：未配 APIKey →
+// 阈值取 Timeout 全额（本地模型冷启动/prefill 慢，30s 上限会误杀）；
+// Timeout=1s、服务器 3s 后才发数据，错误文案带「调大超时」提示。
+func TestStreamFirstChunkTimeoutSelfHosted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-time.After(3 * time.Second):
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n")
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, Model: "m", Timeout: 1 * time.Second})
+	start := time.Now()
+	err := c.Stream(context.Background(), nil, func(Delta) {})
+	elapsed := time.Since(start)
+	if err == nil || !strings.Contains(err.Error(), "连接服务商超时") || !strings.Contains(err.Error(), "1 秒内未收到首个响应") {
+		t.Fatalf("got %v", err)
+	}
+	if !strings.Contains(err.Error(), "调大") {
+		t.Fatalf("自托管超时文案应包含「调大超时」提示：%v", err)
 	}
 	if elapsed < 900*time.Millisecond || elapsed > 2500*time.Millisecond {
 		t.Fatalf("elapsed=%v，应在首块阈值 1s 附近", elapsed)

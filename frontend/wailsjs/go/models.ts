@@ -205,6 +205,9 @@ export namespace app {
 	    Source: string;
 	    Historical: boolean;
 	    Tags: string[];
+	    AIIntent: string;
+	    AIConfidence: string;
+	    AINeedsBody: boolean;
 	    ReqURL: string;
 	    ReqProto: string;
 	    ReqHeader: Record<string, Array<string>>;
@@ -242,6 +245,9 @@ export namespace app {
 	        this.Source = source["Source"];
 	        this.Historical = source["Historical"];
 	        this.Tags = source["Tags"];
+	        this.AIIntent = source["AIIntent"];
+	        this.AIConfidence = source["AIConfidence"];
+	        this.AINeedsBody = source["AINeedsBody"];
 	        this.ReqURL = source["ReqURL"];
 	        this.ReqProto = source["ReqProto"];
 	        this.ReqHeader = source["ReqHeader"];
@@ -293,6 +299,9 @@ export namespace app {
 	    Source: string;
 	    Historical: boolean;
 	    Tags: string[];
+	    AIIntent: string;
+	    AIConfidence: string;
+	    AINeedsBody: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new FlowMeta(source);
@@ -320,6 +329,9 @@ export namespace app {
 	        this.Source = source["Source"];
 	        this.Historical = source["Historical"];
 	        this.Tags = source["Tags"];
+	        this.AIIntent = source["AIIntent"];
+	        this.AIConfidence = source["AIConfidence"];
+	        this.AINeedsBody = source["AINeedsBody"];
 	    }
 	}
 	export class ImportRulesResult {

@@ -32,6 +32,11 @@ type FlowMeta struct {
 	Source      string   // capture | composer（M6 调试重发标记）| history（M7 历史库加载）
 	Historical  bool     // M7：是否为从 SQLite 历史库加载的历史流（正文惰性回查 DB）
 	Tags        []string // M12：该流所属标签名列表（会话态，由 App tagIndex COW 快照注入，不来自 flows.data）
+	// AI 意图解析结果（M13 §7）：复盘链路由归档库 flow_intents 批量注入；
+	// AIIntent 空=未解析。主窗实时列表恒为空（意图仅复盘 AI 链路产生）。
+	AIIntent     string
+	AIConfidence string // high|medium|low
+	AINeedsBody  bool
 }
 
 // FilterFields 实现 ctlapi.Filterable：供 SSE Hub 按订阅者 filter 过滤 flows upsert

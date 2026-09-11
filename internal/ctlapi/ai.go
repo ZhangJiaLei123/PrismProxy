@@ -40,8 +40,8 @@ type AIChatEmit func(event string, data any) error
 
 // AI 事件名（设计 §5.3 帧协议）
 const (
-	AIEventMeta   = "meta"   // {mode,total,sent,budget:{flows,kb},truncated}
-	AIEventDelta  = "delta"  // {text}
+	AIEventMeta   = "meta"   // {mode,total,sent,budget:{flows,kb},truncated,system,user}（system/user=实际送审提示词，对话 tab 展示用）
+	AIEventDelta  = "delta"  // {text} 或 {reason}（reason=推理模型思考增量）
 	AIEventIntent = "intent" // {flowId,seq,intent,confidence,needsBody}
 	AIEventMatch  = "match"  // {flowId,rank,method,url,reason,confidence}
 	AIEventError  = "error"  // {message}

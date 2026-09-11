@@ -65,13 +65,15 @@ export interface AiChatOptions {
   language?: string
 }
 
-/** meta 事件：组完 Prompt、调上游前下发（送审规模先回显）。 */
+/** meta 事件：组完 Prompt、调上游前下发（送审规模先回显）；system/user=实际送审提示词（对话 tab 展示）。 */
 export interface AiChatMeta {
   mode: string
   total: number
   sent: number
   budget: { flows: number; kb: number }
   truncated: boolean
+  system?: string
+  user?: string
 }
 
 /** SSE 事件判别联合（{event, data} 帧形态；三实现零转换上抛，面板统一消费）。 */

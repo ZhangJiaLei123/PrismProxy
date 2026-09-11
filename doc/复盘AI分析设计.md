@@ -1,6 +1,7 @@
 # 数据复盘 × AI 分析设计（M13）
 
-> 版本：v2.2（2026-09-11，BaseURL 归一化放宽为「末段 `/v<纯数字>` 保留」——智谱 GLM 官方 OpenAI 兼容端点为 https://open.bigmodel.cn/api/paas/v4 ，仅认 /v1 会误补成 /v4/v1 404）
+> 版本：v2.3（2026-09-11，首块超时按自托管/云端区分：自托管（未配 APIKey）取 Timeout 全额，云端维持 min(30s, Timeout/4)——实测本地 Ollama 64KB prompt 温机 TTFB≈17s，冷启动叠加模型加载可破 30s；测试连接小 prompt 探不出该差异）
+> v2.2（2026-09-11，BaseURL 归一化放宽为「末段 `/v<纯数字>` 保留」——智谱 GLM 官方 OpenAI 兼容端点为 https://open.bigmodel.cn/api/paas/v4 ，仅认 /v1 会误补成 /v4/v1 404）
 > v2.1：2026-09-10，计划审计后定稿修订：主窗内嵌 AI 通道=Wails 事件桥、/ai/config 部分更新语义、温度 0 哨兵、取数方法名与截断方向修正、AIConfig 零值兜底。
 > v2：2026-09-10，增补「接口意图批量标注 intent」需求。
 > v1：2026-09-09 初稿。
@@ -170,7 +171,10 @@ func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(De
 - 请求体：标准 OpenAI 形态 `{model, messages:[{role,content}...], temperature, stream:true, stream_options:{include_usage:false}}`。
 - 响应：`Content-Type: text/event-stream`，逐行扫 `data: {...JSON...}`，取 `choices[0].delta.content` 拼接回调；遇 `data: [DONE]` 正常结束。
 - 非 200：读响应体（截断 2KB）解析 `error.message`，包装为可读错误（如「服务商返回 401：Incorrect API key」）。
-- 传输：`http.Client{Timeout}` 不适合流式（整体超时会掐断长回答）——用 `http.NewRequestWithContext(ctx)` + 「首块超时」控制：启动一个 30s（或 Timeout 的 1/4，取小）定时器，收到首个 data 帧后取消，整体由 SSE handler 的客户端断连/`TimeoutSec` 外层 ctx 兜底。
+- 传输：`http.Client{Timeout}` 不适合流式（整体超时会掐断长回答）——用 `http.NewRequestWithContext(ctx)` + 「首块超时」控制：启动定时器，收到首个 data 帧后取消，整体由 SSE handler 的客户端断连/`TimeoutSec` 外层 ctx 兜底。首块超时阈值（v2.3 修订）按部署形态区分：
+    - **云端（已配 APIKey）**：`min(30s, Timeout/4)`——云端 TTFB 通常秒级，快速判死减少无效等待。
+    - **自托管（未配 APIKey，Ollama/LM Studio 等）**：`Timeout` 全额——本地模型首 token 前需完成冷加载 + 全量 prompt prefill，实测 64KB prompt 温机 TTFB≈17s（8192 上下文截断后仍需 17s），冷启动叠加模型加载可破 30s；`Timeout<=0` 时兜底 30s。
+    - 自托管超时错误文案追加提示：「本地模型冷启动/长文本推理可能较慢，可调大设置中的超时时间后重试」。测试连接用小 prompt 探不出该差异（温机小 prompt TTFB≈0.2s），属预期。
 - 出站代理（v2.1 修订）：**ai 包不做代理装配**——`Config.ProxyURL` 由接线层按全局 `UpstreamMode` 算好传入（空=直连）：manual 取配置代理；system 取系统代理并经既有防环逻辑排除自身（接管后防环返回空=直连，语义自动继承）；direct 直连。compose 现状是调用方算好 `Upstream` 字符串传入（compose.go `Sender.Upstream`），ai 包同构——**无可复用的独立 helper，不引入 compose 依赖**。
 
 ### 5.3 ctlapi 接口

@@ -52,9 +52,12 @@ import ReviewComposer from './ReviewComposer.vue'
 import ReviewIntentBar from './ReviewIntentBar.vue'
 import type { BodyLoader, ReviewFlowDetail } from '../../lib/types'
 import type { ReviewApi } from '../api'
+import { useIntents } from '../useIntents'
 
 const props = defineProps<{ api: ReviewApi; flowId: string }>()
 const emit = defineEmits<{ (e: 'error', msg: string): void; (e: 'explain'): void }>()
+// M13 §7：详情加载成功后把后端带出的持久化意图回填会话缓存（与 AI 面板/列表共享）
+const { seed: seedIntents } = useIntents()
 
 const detail = ref<ReviewFlowDetail | null>(null)
 const composerShow = ref(false)
@@ -89,6 +92,7 @@ watch(
       // A 慢 B 快：过期响应不得覆盖当前流详情
       if (my !== detailSeq) return
       detail.value = d
+      seedIntents([d]) // M13 §7：详情带出的持久化意图回填缓存（仅缺失时写入）
     } catch (e) {
       if (my !== detailSeq) return // 过期 reject 不误导错误提示
       emit('error', String((e as Error)?.message ?? e))

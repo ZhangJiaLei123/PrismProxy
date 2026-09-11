@@ -27,7 +27,8 @@ const (
 )
 
 const (
-	// firstChunkTimeoutMax 首块超时上限：30s 内收不到首个 data 帧即视为服务不可用。
+	// firstChunkTimeoutMax 首块超时上限（云端/自托管 Timeout 未设时的兜底）：
+	// 30s 内收不到首个 data 帧即视为服务不可用。
 	// 不用 http.Client.Timeout 的原因：整体超时会掐断长回答的流式输出（设计稿 §5.2）。
 	firstChunkTimeoutMax = 30 * time.Second
 	// errBodyLimit 非 200 响应读体上限（截断 2KB 解析 error.message）。
@@ -44,7 +45,7 @@ type Config struct {
 	APIKey      string        // Bearer 凭据；空则不发 Authorization 头（自托管 Ollama）
 	Model       string        // 模型名，如 deepseek-chat
 	Temperature float64       // 采样温度（0 为哨兵，调用方应先经 WithDefaults 兜底）
-	Timeout     time.Duration // 整请求超时（ctx 之外的最后兜底；流式下体现为首块超时 = min(30s, Timeout/4)）
+	Timeout     time.Duration // 整请求超时（ctx 之外的最后兜底；流式下=首块看门狗阈值：云端 min(30s, Timeout/4)、自托管 Timeout 全额）
 	ProxyURL    string        // 出站代理（接线层按 UpstreamMode 算好传入；空=直连），本包不反查全局配置
 }
 
@@ -111,16 +112,30 @@ func endsWithVersionSeg(b string) bool {
 	return true
 }
 
-// firstChunkTimeout 首块超时 = min(30s, Timeout/4)；Timeout 未设（<=0）时取 30s。
+// firstChunkTimeout 首块超时按部署形态区分（设计稿 §5.2 v2.3）：
+// 自托管（未配 APIKey，Ollama/LM Studio 等）取 Timeout 全额——本地模型首 token 前需
+// 完成冷加载 + 全量 prompt prefill，实测 64KB prompt 温机 TTFB≈17s，30s 上限会误杀；
+// 云端（已配 APIKey）维持 min(30s, Timeout/4) 快速判死。Timeout 未设（<=0）时兜底 30s。
 func (c *Client) firstChunkTimeout() time.Duration {
 	if c.cfg.Timeout <= 0 {
 		return firstChunkTimeoutMax
+	}
+	if c.cfg.APIKey == "" {
+		return c.cfg.Timeout
 	}
 	ft := c.cfg.Timeout / 4
 	if ft > firstChunkTimeoutMax {
 		ft = firstChunkTimeoutMax
 	}
 	return ft
+}
+
+// firstChunkTimeoutErr 首块看门狗超时的统一错误文案；自托管附加「调大超时/确认服务可达」提示。
+func (c *Client) firstChunkTimeoutErr(ft time.Duration) error {
+	if c.cfg.APIKey == "" {
+		return fmt.Errorf("连接服务商超时：%.0f 秒内未收到首个响应。本地模型冷启动/长文本推理可能较慢，可调大设置中的超时时间后重试；若持续超时，请确认服务已启动、地址可达", ft.Seconds())
+	}
+	return fmt.Errorf("连接服务商超时：%.0f 秒内未收到首个响应，请检查网络或代理设置", ft.Seconds())
 }
 
 // endpoint 请求地址 = 归一化 BaseURL + /chat/completions。
@@ -159,8 +174,9 @@ type sseChunk struct {
 // Stream 发起一次流式对话。onDelta 在收到增量块时回调（同 goroutine 顺序调用）；
 // ctx 取消即关闭 HTTP 连接并返回 ctx.Err()。
 //
-// 超时模型（设计稿 §5.2）：不设 http.Client.Timeout；启动「首块超时」定时器
-// min(30s, Timeout/4)，收到首个 data 帧后撤销，整体由外层 ctx 兜底——长回答不再被整体超时掐断。
+// 超时模型（设计稿 §5.2 v2.3）：不设 http.Client.Timeout；启动「首块超时」定时器
+// （云端 min(30s, Timeout/4)、自托管 Timeout 全额），收到首个 data 帧后撤销，
+// 整体由外层 ctx 兜底——长回答不再被整体超时掐断。
 func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(Delta)) error {
 	reqBody, err := json.Marshal(chatRequest{
 		Model:         c.cfg.Model,
@@ -201,7 +217,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(De
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if timedOut.Load() {
-			return fmt.Errorf("连接服务商超时：%.0f 秒内未收到首个响应，请检查网络或代理设置", ft.Seconds())
+			return c.firstChunkTimeoutErr(ft)
 		}
 		if ctx.Err() != nil {
 			return ctx.Err() // 用户主动停止：正常关闭路径，由编排层转为「已停止」
@@ -250,7 +266,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(De
 	}
 	if err := scanner.Err(); err != nil {
 		if timedOut.Load() {
-			return fmt.Errorf("连接服务商超时：%.0f 秒内未收到首个响应，请检查网络或代理设置", ft.Seconds())
+			return c.firstChunkTimeoutErr(ft)
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()

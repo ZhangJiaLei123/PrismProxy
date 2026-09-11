@@ -548,9 +548,17 @@ export class DemoApi implements ReviewApi {
       }
 
       if (mode === 'intent') {
-        // 每条候选 ~150ms 逐条吐 intent（seq 对应送审序号 [#n]）
+        // 每条候选 ~150ms 逐条吐 intent（seq 对应送审序号 [#n]）；
+        // 同时写回 db.flows 模拟后端持久化（M13 §7）：列表重新拉取即经 seed 回填展示
         flows.forEach((f, i) => {
-          at(120 + i * 150, () => onEvent({ event: 'intent', data: this.demoIntent(f, i + 1) }))
+          const it = this.demoIntent(f, i + 1)
+          const row = this.db.flows.find((x) => x.ID === f.ID)
+          if (row) {
+            row.AIIntent = it.intent
+            row.AIConfidence = it.confidence
+            row.AINeedsBody = it.needsBody
+          }
+          at(120 + i * 150, () => onEvent({ event: 'intent', data: it }))
         })
         at(140 + flows.length * 150, finish)
         return

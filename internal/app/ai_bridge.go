@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -355,6 +356,7 @@ func (a *App) runAIChatOnce(ctx context.Context, req ctlapi.AIChatRequest, emit 
 	}
 	inputs := make([]ai.FlowInput, 0, 1)
 	valid := make(map[string]bool, 1)
+	flows := make(map[string]*capture.Flow, 1) // locate 回填 match 帧 method/url 用
 	if w == nil {
 		done()
 		if mode == ai.ModeExplain {
@@ -372,6 +374,7 @@ func (a *App) runAIChatOnce(ctx context.Context, req ctlapi.AIChatRequest, emit 
 		default:
 			inputs = append(inputs, flowToAIInput(w, f, wantReq, wantResp))
 			valid[f.ID] = true
+			flows[f.ID] = f
 		}
 	} else {
 		list, ferr := w.LoadFlowsByIDs(req.IDs)
@@ -384,6 +387,7 @@ func (a *App) runAIChatOnce(ctx context.Context, req ctlapi.AIChatRequest, emit 
 			for _, f := range list {
 				inputs = append(inputs, flowToAIInput(w, f, wantReq, wantResp))
 				valid[f.ID] = true
+				flows[f.ID] = f
 			}
 		}
 	}
@@ -415,13 +419,16 @@ func (a *App) runAIChatOnce(ctx context.Context, req ctlapi.AIChatRequest, emit 
 		ProxyURL:    resolveUpstream(upMode, upProxy, listen),
 	})
 
-	// 8) meta 帧：首个 emit——此后错误一律走 error 事件帧
+	// 8) meta 帧：首个 emit——此后错误一律走 error 事件帧；
+	// system/user 同帧带回实际送审提示词（前端对话 tab 展示，已按配置脱敏）
 	meta := map[string]any{
 		"mode":      string(mode),
 		"total":     br.Total,
 		"sent":      br.Sent,
 		"budget":    map[string]any{"flows": cfg.MaxFlows, "kb": cfg.MaxKB},
 		"truncated": br.Truncated,
+		"system":    br.System,
+		"user":      br.User,
 	}
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -478,11 +485,17 @@ func (a *App) runAIChatOnce(ctx context.Context, req ctlapi.AIChatRequest, emit 
 					return nil
 				}
 			}
+			// 解析完成后持久化到归档库（复盘列表/详情回读展示，M13 §7）；
+			// 失败仅记日志不影响流式收尾。
+			a.persistFlowIntents(items)
 		}
 	case ai.ModeLocate:
 		if items, cleaned, ok := ai.ExtractMatches(md, valid); ok {
 			md = cleaned
 			for _, it := range items {
+				if f := flows[it.FlowID]; f != nil && f.Request != nil {
+					it.Method, it.URL = f.Request.Method, f.Request.URL
+				}
 				if !emitSafe(ctlapi.AIEventMatch, it) {
 					return nil
 				}
@@ -491,6 +504,43 @@ func (a *App) runAIChatOnce(ctx context.Context, req ctlapi.AIChatRequest, emit 
 	}
 	emitSafe(ctlapi.AIEventDone, map[string]any{"finishReason": "stop", "truncated": br.Truncated})
 	return nil
+}
+
+// persistFlowIntents 意图解析结果持久化到归档库（M13 §7，fire-and-forget）：
+// 复盘列表/详情经 flow_intents 回读展示。归档库打不开或项目代际不匹配时静默跳过
+// （仅记日志），持久化是增强能力，绝不影响流式收尾与前端会话缓存。
+// 注意：走 acquireArchive——intent 分析取数已依赖归档库存在（reviewReader 读到过数据），
+// 此处打开的必是既有库，不会凭空建库。
+func (a *App) persistFlowIntents(items []ai.IntentItem) {
+	if len(items) == 0 {
+		return
+	}
+	gen := a.projGen.Load()
+	if a.currentID() == "" {
+		return
+	}
+	w, archGen, done, err := a.acquireArchive()
+	if err != nil {
+		log.Printf("ai: 意图结果持久化跳过（归档库不可用）: %v", err)
+		return
+	}
+	defer done()
+	if archGen != gen {
+		return // 项目已切换：放弃回写，防写错库（同 TagFlows gen 校验口径）
+	}
+	its := make([]persist.FlowIntent, 0, len(items))
+	for _, it := range items {
+		its = append(its, persist.FlowIntent{
+			FlowID:     it.FlowID,
+			Seq:        it.Seq,
+			Intent:     it.Intent,
+			Confidence: it.Confidence,
+			NeedsBody:  it.NeedsBody,
+		})
+	}
+	if err := w.UpsertFlowIntents(its); err != nil {
+		log.Printf("ai: 意图结果持久化失败: %v", err)
+	}
 }
 
 // flowToAIInput 归档流 → AI 送审输入；wantBody 时惰性回查库正文并解传输编码
