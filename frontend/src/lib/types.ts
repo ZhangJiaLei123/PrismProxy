@@ -149,3 +149,26 @@ export interface ReviewIgnoreAddResult {
   ignore: ReviewIgnoreItem
   added: boolean
 }
+
+// ===== M13 复盘 AI 分析（设计稿 §5.3/§7）=====
+
+/** 意图标注单条结果（intent 事件载荷；useIntents 会话内存缓存 + 摘要条展示）。 */
+export interface IntentResult {
+  flowId: string
+  /** 模型输出序号（对应送审 [#n]，重析覆盖以最新为准） */
+  seq: number
+  intent: string
+  confidence: 'high' | 'medium' | 'low'
+  /** 模型判不准（如全是无语义路径），提示用户带正文重析 */
+  needsBody: boolean
+}
+
+/** 智能定位单条匹配（match 事件载荷，面板可点击卡片跳转选中流）。 */
+export interface AiMatchItem {
+  flowId: string
+  rank: number
+  method: string
+  url: string
+  reason: string
+  confidence: 'high' | 'medium' | 'low'
+}

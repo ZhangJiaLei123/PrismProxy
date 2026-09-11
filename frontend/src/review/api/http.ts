@@ -14,7 +14,7 @@ import type {
   ReviewTagsOverview,
 } from '../../lib/types'
 import { ApiError } from './error'
-import type { ApiMode, ListFlowsOpts, ReviewApi, TagFlowsResp } from './types'
+import type { AiChatEvent, AiChatRequest, ApiMode, AIApiConfigView, ListFlowsOpts, ReviewApi, TagFlowsResp } from './types'
 
 export class HttpApi implements ReviewApi {
   mode: ApiMode = 'http'
@@ -139,5 +139,94 @@ export class HttpApi implements ReviewApi {
     return this.req(`/api/v1/tags/${encodeURIComponent(tagID)}?flows=${deleteFlows ? 1 : 0}`, {
       method: 'DELETE',
     })
+  }
+
+  async getAIConfig(): Promise<AIApiConfigView> {
+    return this.req<AIApiConfigView>('/api/v1/ai/config')
+  }
+
+  // 空态引导：POST /ui/settings{tab:'ai'} 唤起主窗并切到 AI 设置页；
+  // headless（无 GUI）返回 ui:false，如实提示。
+  async openSettingsAI(): Promise<{ opened: boolean; msg: string }> {
+    const v = await this.req<{ ui?: boolean }>('/api/v1/ui/settings', {
+      method: 'POST',
+      headers: { ...this.headers(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tab: 'ai' }),
+    })
+    return v.ui
+      ? { opened: true, msg: '已在主窗打开「AI 分析」设置' }
+      : { opened: false, msg: '当前无 GUI 主窗（headless 模式），请直接编辑配置文件中 [ai] 段' }
+  }
+
+  // SSE 流式不能走 req()（其 await resp.json()）：首响应先判 ok（400/409 同步错误段），
+  // 200 后 getReader 按 \n\n 分帧解析 event:/data: 行逐帧回调。signal 取消时 AbortError 静默收尾。
+  async analyze(req: AiChatRequest, onEvent: (ev: AiChatEvent) => void, signal?: AbortSignal): Promise<void> {
+    let resp: Response
+    try {
+      resp = await fetch('/api/v1/ai/chat', {
+        method: 'POST',
+        headers: { ...this.headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(req),
+        signal,
+      })
+    } catch (e) {
+      if (signal?.aborted) return // 停止：静默收尾
+      throw new ApiError('offline', '无法连接 PrismProxy（应用可能已退出）')
+    }
+    if (resp.status === 401 || resp.status === 403) {
+      throw new ApiError('unauthorized', '未授权或登录态已失效（应用重启后 token 变更）')
+    }
+    if (!resp.ok) {
+      let msg = `请求失败（HTTP ${resp.status}）`
+      try {
+        const j = await resp.json()
+        if (j && typeof j.error === 'string') msg = j.error
+      } catch { /* 非 JSON 错误体 */ }
+      // 409 并发闸门复用 http 错误面（面板统一内联提示）
+      throw new ApiError('http', msg)
+    }
+    const reader = resp.body?.getReader()
+    if (!reader) throw new ApiError('http', '响应流不可用')
+    const decoder = new TextDecoder()
+    let buf = ''
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        // SSE 以空行分帧；末帧可能未完整，留在 buf
+        let idx: number
+        while ((idx = buf.indexOf('\n\n')) >= 0) {
+          const frame = buf.slice(0, idx)
+          buf = buf.slice(idx + 2)
+          const ev = parseSseFrame(frame)
+          if (ev) onEvent(ev)
+        }
+      }
+      buf += decoder.decode()
+      if (buf.trim()) {
+        const ev = parseSseFrame(buf)
+        if (ev) onEvent(ev)
+      }
+    } catch (e) {
+      if (signal?.aborted) return // 停止/关面板：静默收尾（后端 ctx 取消，无后续帧）
+      throw e
+    }
+  }
+}
+
+/** 单帧解析：event: xxx 行 + data: {...} 行（后端每帧恰一个 event 一个 data）。 */
+function parseSseFrame(frame: string): AiChatEvent | null {
+  let event = ''
+  let data = ''
+  for (const line of frame.split('\n')) {
+    if (line.startsWith('event:')) event = line.slice(6).trim()
+    else if (line.startsWith('data:')) data += line.slice(5).trim()
+  }
+  if (!event) return null
+  try {
+    return { event, data: data ? JSON.parse(data) : null } as AiChatEvent
+  } catch {
+    return null // 坏 JSON 帧丢弃，不中断流
   }
 }

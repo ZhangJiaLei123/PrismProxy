@@ -2,9 +2,13 @@
 // 字段形态与 HTTP 完全同源（同一批 Go DTO）：TagInfo/HistBucket/ReviewIgnore 小写 json，
 // FlowMeta/FlowDetail/BodyPayload 大写字段。多返回值绑定在 JS 侧 resolve 为数组，按序解构。
 import {
+  AIChatStart,
+  AIChatStop,
   DeleteTagApp,
+  GetAIConfigApp,
   GetFlowBody,
   GetFlowDetail,
+  GetSettings,
   RenameTagApp,
   ReviewDeleteIgnore,
   ReviewFlowBody,
@@ -16,6 +20,7 @@ import {
   WailsHistogram,
   WailsTagsOverview,
 } from '../../../wailsjs/go/app/App'
+import { EventsOn } from '../../../wailsjs/runtime/runtime'
 import type {
   ReviewBodyPayload,
   ReviewComposedRequest,
@@ -26,7 +31,15 @@ import type {
   ReviewScope,
   ReviewTagsOverview,
 } from '../../lib/types'
-import type { ApiMode, ListFlowsOpts, ReviewApi, TagFlowsResp } from './types'
+import type { AIApiConfigView, AiChatEvent, AiChatRequest, ApiMode, ListFlowsOpts, ReviewApi, TagFlowsResp } from './types'
+import { ApiError } from './error'
+
+// Go 侧事件桥载荷：EventsEmit("ai:chat", {handle, event, data})——handle 用于过滤本会话帧
+interface AiChatFrame {
+  handle: string
+  event: AiChatEvent['event']
+  data: unknown
+}
 
 export class WailsReviewApi implements ReviewApi {
   mode: ApiMode = 'wails'
@@ -130,5 +143,79 @@ export class WailsReviewApi implements ReviewApi {
     // DeleteTagApp(...) 多返回值：(deletedCount, error)
     const n = (await DeleteTagApp(tagID, deleteFlows)) as unknown as number
     return { id: tagID, deletedFlows: n ?? 0 }
+  }
+
+  // ===== AI 分析（M13 P4：AIChatStart 事件桥转发；ctlapi.AIChatRequest 字段全必选需显式补齐）=====
+
+  async analyze(req: AiChatRequest, onEvent: (ev: AiChatEvent) => void, signal?: AbortSignal): Promise<void> {
+    const h = await AIChatStart({
+      mode: req.mode,
+      flowId: req.flowId ?? '',
+      ids: req.ids ?? [],
+      question: req.question ?? '',
+      options: {
+        includeReqBody: req.options?.includeReqBody ?? false,
+        includeRespBody: req.options?.includeRespBody ?? false,
+        language: req.options?.language ?? '',
+      },
+    })
+    const handle = h?.handle ?? ''
+    if (signal?.aborted) {
+      void AIChatStop(handle)
+      return
+    }
+    // 事件桥：过滤本 handle 帧，{event,data} 零转换上抛（error→reject，done→resolve，abort→静默收尾）
+    await new Promise<void>((resolve, reject) => {
+      let settled = false
+      const onAbort = (): void => {
+        void AIChatStop(handle)
+        settle(resolve)
+      }
+      const settle = (fn: () => void): void => {
+        if (settled) return
+        settled = true
+        off()
+        signal?.removeEventListener('abort', onAbort)
+        fn()
+      }
+      const off = EventsOn('ai:chat', (payload: AiChatFrame) => {
+        if (!payload || payload.handle !== handle) return
+        const ev = { event: payload.event, data: payload.data } as AiChatEvent
+        onEvent(ev)
+        if (payload.event === 'error') {
+          const msg = (payload.data as { message?: string } | null)?.message ?? 'AI 分析失败'
+          settle(() => reject(new ApiError('wails', msg)))
+        } else if (payload.event === 'done') {
+          settle(resolve)
+        }
+      })
+      if (signal?.aborted) onAbort()
+      else signal?.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+
+  async getAIConfig(): Promise<AIApiConfigView> {
+    // Go 侧 GetAIConfigApp 仅 3 字段（主窗 AiTab 设计）；baseUrl/redact 等从 SettingsView.ai 补齐合并
+    const [s, c] = await Promise.all([GetSettings(), GetAIConfigApp()])
+    const ai = s?.ai
+    return {
+      enabled: ai?.enabled ?? true,
+      provider: ai?.provider ?? '',
+      baseUrl: ai?.baseUrl ?? '',
+      model: ai?.model ?? '',
+      temperature: ai?.temperature ?? 0,
+      timeoutSec: ai?.timeoutSec ?? 0,
+      maxFlows: ai?.maxFlows ?? 0,
+      maxKb: ai?.maxKb ?? 0,
+      redact: ai?.redact ?? true,
+      hasApiKey: !!c?.hasApiKey,
+      apiKeyMasked: c?.apiKeyMasked ?? '',
+      keyMissingWarn: c?.keyMissingWarn,
+    }
+  }
+
+  // wails=主窗内嵌，设置就在本窗（无 ctlapi HTTP 通道跨源不可达）：静态提示（设计 §九）
+  async openSettingsAI(): Promise<{ opened: boolean; msg: string }> {
+    return { opened: false, msg: '请在主窗底部状态栏「设置」→「AI 分析」中配置' }
   }
 }

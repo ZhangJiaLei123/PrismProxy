@@ -9,6 +9,16 @@
   -->
   <div class="flow-table">
     <div class="list-head row" :style="gridStyle" @contextmenu.prevent="onHeaderMenu($event)">
+      <!-- 勾选列独立于 columns 渲染：不进 colOrder/显隐菜单/布局持久化（M13 P4-9） -->
+      <span v-if="selectable" class="c-check" @contextmenu.stop>
+        <n-checkbox
+          size="small"
+          :checked="allChecked"
+          :indeterminate="someChecked && !allChecked"
+          :disabled="!rows.length"
+          @update:checked="toggleAll"
+        />
+      </span>
       <span class="c-state"></span>
       <span
         v-for="col in visColumns"
@@ -41,6 +51,19 @@
           @click="emit('select', f.ID)"
           @contextmenu.prevent="onContextMenu($event, f)"
         >
+          <span
+            v-if="selectable"
+            class="c-check"
+            @click.stop
+            @dblclick.stop
+            @contextmenu.stop
+          >
+            <n-checkbox
+              size="small"
+              :checked="checkedSet.has(f.ID)"
+              @update:checked="() => toggleRow(f.ID)"
+            />
+          </span>
           <span class="c-state"><i class="dot" :class="f.State"></i></span>
           <span
             v-for="col in visColumns"
@@ -87,7 +110,7 @@
 <script setup lang="ts">
 import { useVirtualList } from '@vueuse/core'
 import { computed, ref, watch } from 'vue'
-import { NDropdown } from 'naive-ui'
+import { NCheckbox, NDropdown } from 'naive-ui'
 import type { DropdownOption } from 'naive-ui'
 import { fmtBytes, fmtDuration, fmtTime } from '../lib/format'
 import { copyText } from '../lib/clip'
@@ -144,8 +167,12 @@ const props = withDefaults(
     emptyText?: string
     /** 行附加 class（如 pinned/error 之外的定制） */
     rowExtraClass?: (f: ReviewFlowMeta) => Record<string, boolean>
+    /** M13 P4-9：开启行勾选列（仅复盘页传入；默认关闭=主窗零影响） */
+    selectable?: boolean
+    /** v-model:checkedIds：当前勾选的流 id 集合（父级持有并负责作废规则） */
+    checkedIds?: string[]
   }>(),
-  { selectedId: '', emptyText: '' },
+  { selectedId: '', emptyText: '', selectable: false, checkedIds: () => [] },
 )
 
 const emit = defineEmits<{
@@ -155,6 +182,8 @@ const emit = defineEmits<{
   (e: 'action-error', message: string): void
   /** cURL 生成成功但 body 因二进制/超限/截断未内联 */
   (e: 'curl-omitted'): void
+  /** v-model:checkedIds */
+  (e: 'update:checkedIds', ids: string[]): void
 }>()
 
 const COL_MAX = 400
@@ -213,9 +242,33 @@ watch(
   },
 )
 
-const gridStyle = computed(() => ({
-  gridTemplateColumns: colOrder.value.map((w) => (colWidths.value[w] === null ? '1fr' : colWidths.value[w] + 'px')).join(' '),
-}))
+const gridStyle = computed(() => {
+  const cols = colOrder.value.map((w) => (colWidths.value[w] === null ? '1fr' : colWidths.value[w] + 'px'))
+  // 勾选列固定 22px 前缀（不参与拖宽/重排/持久化）
+  return { gridTemplateColumns: props.selectable ? '22px ' + cols.join(' ') : cols.join(' ') }
+})
+
+// ---- 行勾选（M13 P4-9：仅 selectable 开启时；集合由父级持有，组件只上抛变更） ----
+const checkedSet = computed(() => new Set(props.checkedIds ?? []))
+const allChecked = computed(() => props.rows.length > 0 && props.rows.every((f) => checkedSet.value.has(f.ID)))
+const someChecked = computed(() => props.rows.some((f) => checkedSet.value.has(f.ID)))
+
+function toggleRow(id: string) {
+  const set = new Set(props.checkedIds ?? [])
+  if (set.has(id)) set.delete(id)
+  else set.add(id)
+  emit('update:checkedIds', [...set])
+}
+
+function toggleAll(checked: boolean) {
+  // 全选范围=当前视图行（复盘页即当前页数据）；取消仅移除本页勾选
+  const set = new Set(props.checkedIds ?? [])
+  for (const f of props.rows) {
+    if (checked) set.add(f.ID)
+    else set.delete(f.ID)
+  }
+  emit('update:checkedIds', [...set])
+}
 
 function startResize(e: PointerEvent, wi: number) {
   const th = (e.target as HTMLElement).closest('.th') as HTMLElement | null
@@ -609,6 +662,7 @@ function onHeadCtxSelect(key: string) {
 .c-tags :deep(.tag-badge) { flex: none; max-width: 72px; height: 18px; font-size: 10px; line-height: 18px; padding: 0 5px; color: #c0a8f0; background: rgba(181, 126, 220, 0.16); }
 .c-tags .tag-more { flex: none; font-size: 10px; color: rgba(255, 255, 255, 0.5); }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-check { display: flex; align-items: center; justify-content: center; }
 .c-time { font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.65); }
 .list-head .c-time { color: inherit; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #555; }

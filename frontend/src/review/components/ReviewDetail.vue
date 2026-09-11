@@ -9,6 +9,8 @@
       <div class="title">
         <n-tag size="small" :type="stateTagType">{{ detail.State }}</n-tag>
         <span class="url" :title="detail.URL">{{ detail.Method }} {{ detail.URL }}</span>
+        <!-- AI 解读入口（设计 §7.1）：置于调试重发前；demo 模式不禁用（走本地模拟，无外部副作用） -->
+        <n-button size="tiny" type="primary" secondary class="ai-btn" title="AI 完整解读本条接口" @click="emit('explain')">AI 解读</n-button>
         <!-- 调试重发：仅真实环境（ctlapi HTTP）可用；demo/无 token 演示模式禁用 -->
         <n-tooltip v-if="composeDisabled" placement="bottom">
           <template #trigger>
@@ -19,6 +21,8 @@
         </n-tooltip>
         <n-button v-else size="tiny" type="primary" secondary class="resend-btn" :disabled="!detail.URL || detail.Method === 'CONNECT'" @click="composerShow = true">调试重发</n-button>
       </div>
+      <!-- 意图摘要条（设计 §7.1）：Tabs 之上，无意图结果时不占位；「完整解读」上抛打开 AI 面板 explain -->
+      <review-intent-bar :api="api" :flow-id="flowId" @explain="emit('explain')" @error="(m) => emit('error', m)" />
       <!-- 四 Tab 展示层与主窗共用；loader 走复盘 HTTP API（归档 tags/flows 取数），无复制栏插槽 -->
       <flow-detail-tabs
         :meta="detail"
@@ -45,11 +49,12 @@ import { computed, ref, watch } from 'vue'
 import { NButton, NSpin, NTag, NTooltip } from 'naive-ui'
 import FlowDetailTabs from '../../components/FlowDetailTabs.vue'
 import ReviewComposer from './ReviewComposer.vue'
+import ReviewIntentBar from './ReviewIntentBar.vue'
 import type { BodyLoader, ReviewFlowDetail } from '../../lib/types'
 import type { ReviewApi } from '../api'
 
 const props = defineProps<{ api: ReviewApi; flowId: string }>()
-const emit = defineEmits<{ (e: 'error', msg: string): void }>()
+const emit = defineEmits<{ (e: 'error', msg: string): void; (e: 'explain'): void }>()
 
 const detail = ref<ReviewFlowDetail | null>(null)
 const composerShow = ref(false)
@@ -100,5 +105,6 @@ watch(
 .empty-sub { font-size: 11px; color: rgba(255, 255, 255, 0.3); }
 .title { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.1); flex: none; }
 .url { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.resend-btn { margin-left: auto; flex: none; }
+.ai-btn { margin-left: auto; flex: none; }
+.resend-btn { flex: none; }
 </style>

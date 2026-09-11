@@ -67,6 +67,15 @@
                   </div>
                 </div>
               </n-popover>
+              <!-- P4-14 AI 分析入口：打开右侧 AI 面板（默认 intent 模式） -->
+              <n-button size="small" quaternary title="AI 分析：意图标注 / 解读 / 定位 / 流程" @click="onMarkIntents">
+                <span style="display: inline-flex; align-items: center; gap: 4px">
+                  <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" style="color: #b57edc">
+                    <path d="M8 1l1.9 4.6 4.6 1.9-4.6 1.9L8 14 6.1 9.4 1.5 7.5l4.6-1.9L8 1zm4.5 9.5l.8 1.9 1.9.8-1.9.8-.8 1.9-.8-1.9-1.9-.8 1.9-.8.8-1.9z" />
+                  </svg>
+                  AI 分析
+                </span>
+              </n-button>
               <n-button size="small" quaternary :loading="loading" title="重新加载标签与列表" @click="refreshAll">
                 <span style="display: inline-flex; align-items: center; gap: 4px">
                   <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
@@ -202,6 +211,16 @@
                     {{ fmtDateTime(winStart) }} ~ {{ fmtDateTime(winEnd) }}
                     <i class="win-x" title="清除时间筛选" @click="clearWindow">✕</i>
                   </span>
+                  <!-- P4-10 批量标注意图：有勾选时出现，点击打开 AI 面板 intent 模式 -->
+                  <n-button
+                    v-if="checkedIds.length"
+                    size="tiny"
+                    type="primary"
+                    ghost
+                    @click="onMarkIntents"
+                  >
+                    ✨ 标注意图（{{ checkedIds.length }}）
+                  </n-button>
                   <span class="list-count">{{ currentTagName }} · {{ rangeText }} · 第 {{ page }} 页 · 共 {{ total }} 条</span>
                 </div>
 
@@ -270,6 +289,8 @@
                   :col-mins="TABLE_COL_MINS"
                   :selected-id="selectedFlow"
                   :actions="tableActions"
+                  selectable
+                  v-model:checkedIds="checkedIds"
                   @select="onSelectFlow"
                   @sort="onSort"
                   @action-error="(m) => message.error(m, { duration: 6000, closable: true })"
@@ -300,10 +321,27 @@
               ></div>
 
               <div class="detail-pane">
-                <review-detail :api="api" :flow-id="selectedFlow" @error="onDetailError" />
+                <review-detail :api="api" :flow-id="selectedFlow" @error="onDetailError" @explain="onDetailExplain" />
               </div>
             </div>
           </div>
+
+      <!-- P4 AI 分析面板：右侧滑入抽屉（四模式：解读/意图/定位/流程） -->
+      <review-ai-panel
+        v-model:show="aiPanelShow"
+        :api="api"
+        :mode="aiPanelMode"
+        :flow-id="aiPanelFlowId"
+        :flow-label="aiPanelLabel"
+        :checked-ids="checkedIds"
+        :view-flows="flows"
+        :view-total="total"
+        :tag-name="currentTagName"
+        :scope="scope"
+        :keyword="keyword"
+        @locate="onAiLocate"
+        @error="(m) => message.error(m, { duration: 6000, closable: true })"
+      />
 
       <!-- M12.3：列表右键「调试重发」的弹窗（与详情页内按钮各自独立挂载，互不影响） -->
       <review-composer
@@ -322,10 +360,11 @@ import ReviewSidebar from '../components/ReviewSidebar.vue'
 import ReviewDetail from '../components/ReviewDetail.vue'
 import ReviewTimeline from '../components/ReviewTimeline.vue'
 import ReviewComposer from '../components/ReviewComposer.vue'
+import ReviewAiPanel from '../components/ReviewAiPanel.vue'
 import FlowTable from '../../components/FlowTable.vue'
 import type { FlowColumn, FlowTableActions } from '../../components/FlowTable.vue'
 import { ApiError, createApi } from '../api'
-import type { ReviewApi } from '../api'
+import type { AiChatMode, ReviewApi } from '../api'
 import type { ReviewFlowMeta, ReviewHistogram, ReviewIgnoreItem, ReviewIgnoreKind, ReviewScope, ReviewSortDir, ReviewSortKey, ReviewTagInfo } from '../../lib/types'
 import { fmtDateTime } from '../../lib/format'
 import { b64ToBytes } from '../../lib/format'
@@ -347,6 +386,35 @@ const total = ref(0)
 const selectedFlow = ref('')
 const keyword = ref('')
 const loading = ref(false)
+// P4 复盘 AI：列表勾选集合（批量标注意图候选）；作废规则见 loadFlows(reset) / onPageChange
+const checkedIds = ref<string[]>([])
+// AI 面板显隐与初始模式（P4-14 挂载 ReviewAiPanel）：各入口设置后打开
+const aiPanelShow = ref(false)
+const aiPanelMode = ref<AiChatMode>('intent')
+// 标注意图入口：打开面板并预选 intent 模式（候选=勾选集，无勾选=当前已加载页，由面板内说明）
+function onMarkIntents(): void {
+  aiPanelMode.value = 'intent'
+  aiPanelShow.value = true
+}
+// AI 面板 explain 目标流与展示名（详情页「AI 解读」入口设置）
+const aiPanelFlowId = ref('')
+const aiPanelLabel = computed(() => {
+  const f = flows.value.find((x) => x.ID === aiPanelFlowId.value)
+  return f ? f.Method + ' ' + (f.Path || f.URL) : aiPanelFlowId.value
+})
+function onDetailExplain(): void {
+  aiPanelFlowId.value = selectedFlow.value
+  aiPanelMode.value = 'explain'
+  aiPanelShow.value = true
+}
+// 面板「查看 →」跳转：目标在当前已加载列表内则选中，否则提示切分页（设计 §7.1）
+function onAiLocate(flowId: string): void {
+  if (flows.value.some((f) => f.ID === flowId)) {
+    selectedFlow.value = flowId
+  } else {
+    message.info('该流不在当前列表（可能被筛选或翻页），请切换到该流所在分页后重试', { duration: 5000, closable: true })
+  }
+}
 // 页码分页（1 起）；页大小可选 50/100/200/500，默认 100
 const page = ref(1)
 const pageSize = ref(100)
@@ -614,11 +682,12 @@ async function loadFlows(reset = false, restoreOnError = false): Promise<boolean
   const prevFlows = flows.value
   const prevTotal = total.value
   if (reset) {
-    // 筛选条件变化（标签/scope/时间窗/关键字/页大小）一律回到第 1 页
+    // 筛选条件变化（标签/scope/时间窗/关键字/页大小/排序）一律回到第 1 页
     page.value = 1
     flows.value = []
     total.value = 0
     selectedFlow.value = ''
+    checkedIds.value = [] // P4-10 作废规则：筛选/列表重置后勾选集合失效
   }
   loading.value = true
   try {
@@ -659,6 +728,7 @@ async function onPageChange(p: number) {
   const prev = page.value
   page.value = p
   selectedFlow.value = ''
+  checkedIds.value = [] // P4-10 作废规则：翻页后勾选集合失效
   const ok = await loadFlows()
   if (!ok && !fatal.value) {
     page.value = prev
@@ -964,7 +1034,8 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.review-root { height: 100%; display: flex; flex-direction: column; }
+/* position:relative：AI 抽屉（.ai-drawer absolute）的定位锚点——主窗内嵌时抽屉只覆盖复盘页区域 */
+.review-root { position: relative; height: 100%; display: flex; flex-direction: column; }
 .topbar {
   height: 42px; flex: none; display: flex; align-items: center; gap: 10px;
   padding: 0 14px; border-bottom: 1px solid rgba(255,255,255,0.08);

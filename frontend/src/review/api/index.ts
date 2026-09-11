@@ -7,7 +7,18 @@ import type { ReviewApi } from './types'
 export { ApiError } from './error'
 export { DemoApi } from './demo'
 export { HttpApi } from './http'
-export type { ApiMode, ListFlowsOpts, ReviewApi, TagFlowsResp } from './types'
+export type {
+  AIApiConfigView,
+  AiChatEvent,
+  AiChatMeta,
+  AiChatMode,
+  AiChatOptions,
+  AiChatRequest,
+  ApiMode,
+  ListFlowsOpts,
+  ReviewApi,
+  TagFlowsResp,
+} from './types'
 
 export function createApi(): { api: ReviewApi; token: string } {
   const token = new URLSearchParams(location.search).get('token') ?? ''

@@ -1,6 +1,8 @@
 // 浏览器预览数据层（无 token / fetch 失败降级）：内置 demo 数据，内存模拟 rename/delete，
 // 服务端查询/排序/忽略口径均在此 JS 复刻（设计 §7），UI 可脱离后端独立调试。
 import type {
+  AiMatchItem,
+  IntentResult,
   ReviewBodyPayload,
   ReviewFlowDetail,
   ReviewFlowMeta,
@@ -15,7 +17,17 @@ import type {
   ReviewTagsOverview,
 } from '../../lib/types'
 import { ApiError } from './error'
-import type { ApiMode, ListFlowsOpts, ReviewApi, TagFlowsResp } from './types'
+import type {
+  AIApiConfigView,
+  AiChatEvent,
+  AiChatMeta,
+  AiChatMode,
+  AiChatRequest,
+  ApiMode,
+  ListFlowsOpts,
+  ReviewApi,
+  TagFlowsResp,
+} from './types'
 
 function b64(s: string): string {
   return btoa(unescape(encodeURIComponent(s)))
@@ -483,5 +495,182 @@ export class DemoApi implements ReviewApi {
     }
     this.db.tags = this.db.tags.filter((x) => x.id !== tagID)
     return { id: tagID, deletedFlows }
+  }
+
+  // ===== AI 分析（M13 P4 demo 桩：不发网络，定时器模拟 SSE 事件序列）=====
+
+  async analyze(req: AiChatRequest, onEvent: (ev: AiChatEvent) => void, signal?: AbortSignal): Promise<void> {
+    const mode: AiChatMode = req.mode
+    const wanted = mode === 'explain' ? (req.flowId ? [req.flowId] : []) : (req.ids ?? [])
+    const flows = wanted
+      .map((id) => this.db.flows.find((f) => f.ID === id))
+      .filter((f): f is ReviewFlowMeta => !!f)
+    if (mode === 'explain' && flows.length === 0) throw new ApiError('http', '演示流不存在或已被删除')
+    if (mode !== 'explain' && flows.length === 0) throw new ApiError('http', '当前视图没有可分析的候选流')
+    if ((mode === 'locate' || mode === 'flowmap') && !req.question?.trim()) {
+      throw new ApiError('http', '请先输入分析目标')
+    }
+    if (signal?.aborted) return
+
+    // 定时器模拟事件流：abort 清定时器静默收尾（与 HttpApi 中止口径一致）
+    const timers: ReturnType<typeof setTimeout>[] = []
+    const at = (ms: number, fn: () => void): void => {
+      timers.push(setTimeout(fn, ms))
+    }
+    const clearAll = (): void => {
+      for (const t of timers) clearTimeout(t)
+      timers.length = 0
+    }
+    signal?.addEventListener('abort', clearAll, { once: true })
+
+    // meta：送审规模先回显（demo 全量送审，无截断）
+    const meta: AiChatMeta = {
+      mode,
+      total: flows.length,
+      sent: flows.length,
+      budget: { flows: 20, kb: 512 },
+      truncated: false,
+    }
+    onEvent({ event: 'meta', data: meta })
+    const finish = (): void => onEvent({ event: 'done', data: { finishReason: 'stop', truncated: false } })
+
+    if (mode === 'intent') {
+      // 每条候选 ~150ms 逐条吐 intent（seq 对应送审序号 [#n]）
+      flows.forEach((f, i) => {
+        at(120 + i * 150, () => onEvent({ event: 'intent', data: this.demoIntent(f, i + 1) }))
+      })
+      at(140 + flows.length * 150, finish)
+      return
+    }
+
+    if (mode === 'locate') {
+      const hits = this.demoLocate(flows, req.question!.trim())
+      hits.forEach((f, i) => {
+        at(150 + i * 200, () =>
+          onEvent({
+            event: 'match',
+            data: {
+              flowId: f.ID,
+              rank: i + 1,
+              method: f.Method,
+              url: f.URL,
+              reason: this.demoReason(f),
+              confidence: f.Tags.length > 0 ? 'high' : 'medium',
+            },
+          }),
+        )
+      })
+      at(200 + hits.length * 200, finish)
+      return
+    }
+
+    // explain / flowmap：markdown 分段 delta（每段 ~180ms）
+    const segs = mode === 'explain' ? this.demoExplain(flows[0]!) : this.demoFlowmap([...flows].reverse())
+    segs.forEach((text, i) => {
+      at(150 + i * 180, () => onEvent({ event: 'delta', data: { text } }))
+    })
+    at(200 + segs.length * 180, finish)
+  }
+
+  async getAIConfig(): Promise<AIApiConfigView> {
+    // 内存桩：默认已配置可用（面板据此跳过空态提示）
+    return {
+      enabled: true,
+      provider: 'demo',
+      baseUrl: 'https://api.demo-llm.example/v1',
+      model: 'demo-model',
+      temperature: 0.3,
+      timeoutSec: 120,
+      maxFlows: 20,
+      maxKb: 512,
+      redact: true,
+      hasApiKey: true,
+      apiKeyMasked: 'sk-demo****',
+    }
+  }
+
+  // demo 无外部设置面板：静态提示（设计 §九，空态按钮隐藏改文案）
+  async openSettingsAI(): Promise<{ opened: boolean; msg: string }> {
+    return { opened: false, msg: '演示模式无需配置，AI 分析走内置模拟数据' }
+  }
+
+  // demo：按路径形态推断接口意图（真实实现由模型输出）
+  private demoIntent(f: ReviewFlowMeta, seq: number): IntentResult {
+    const p = f.Path.toLowerCase()
+    let intent = `访问 ${f.Method} ${p}`
+    let ok = true
+    if (p.includes('login')) intent = '提交登录认证'
+    else if (p.includes('captcha')) intent = '获取图形验证码'
+    else if (p.includes('orders/')) intent = '查询订单详情'
+    else if (p.endsWith('/orders')) intent = f.Method === 'POST' ? '创建订单' : '查询订单列表'
+    else if (p.includes('banners') || p.includes('feed')) intent = '拉取首页内容'
+    else if (p.includes('metrics') || p.includes('log')) intent = '上报埋点/日志'
+    else if (p.includes('config')) intent = '拉取启动配置'
+    else if (p.includes('health')) intent = '健康检查探活'
+    else if (p.includes('/assets/') || /\.(js|css|png|jpe?g|gif|svg|ico|woff2?)$/.test(p)) intent = '加载静态资源'
+    else {
+      // 无语义路径：降置信度并提示带正文重析
+      ok = false
+      intent = `访问 ${f.Method} ${p}（路径无语义，建议带正文重析）`
+    }
+    return { flowId: f.ID, seq, intent, confidence: ok ? 'high' : 'low', needsBody: !ok }
+  }
+
+  // demo：按 question 关键字对候选流打分取前 3 条；零命中兜底最近 2 条
+  private demoLocate(flows: ReviewFlowMeta[], question: string): ReviewFlowMeta[] {
+    const kws = question
+      .toLowerCase()
+      .split(/[\s,，。;；、?？!！]+/)
+      .filter(Boolean)
+    const ranked = flows
+      .map((f) => {
+        const hay = `${f.Method} ${f.Host} ${f.Path} ${f.Status} ${f.Tags.join(' ')}`.toLowerCase()
+        let s = 0
+        for (const k of kws) if (hay.includes(k)) s++
+        return { f, s }
+      })
+      .filter((x) => x.s > 0)
+      .sort((a, b) => b.s - a.s || b.f.StartedAt - a.f.StartedAt)
+      .map((x) => x.f)
+    if (ranked.length === 0) return flows.slice(0, 2)
+    return ranked.slice(0, 3)
+  }
+
+  private demoReason(f: ReviewFlowMeta): string {
+    if (f.Status >= 400) return `状态 ${f.Status} 异常，与排查目标相关性最高`
+    if (f.Tags.length > 0) return `属于「${f.Tags[0]}」标签，路径直接命中关键字`
+    return '路径/方法与目标关键字匹配'
+  }
+
+  private demoExplain(f: ReviewFlowMeta): string[] {
+    const when = new Date(f.StartedAt).toLocaleString()
+    const out = [
+      `### 请求概览\n\n- **方法**：${f.Method} ${f.Scheme}://${f.Host}${f.Path}\n- **状态**：${f.Status}，耗时 ${f.DurationMS}ms\n- **进程**：${f.ProcessName}（PID ${f.PID}）\n- **时间**：${when}\n`,
+    ]
+    if (f.Status >= 400) {
+      out.push(
+        `### 状态分析\n\n该请求返回 **${f.Status}**，属于${f.Status >= 500 ? '服务端错误' : '客户端错误'}。建议重点检查请求参数与鉴权凭证。\n`,
+      )
+    } else {
+      out.push(`### 状态分析\n\n请求正常返回（${f.Status}），耗时 ${f.DurationMS}ms，响应体 ${f.BytesDown} 字节。\n`)
+    }
+    if (f.Tags.length > 0) out.push(`### 归属\n\n该流已被打标「${f.Tags.join('、')}」。\n`)
+    out.push('> 演示模式说明：以上为内置桩数据解读，接入真实 AI 后由模型输出分析。\n')
+    return out
+  }
+
+  private demoFlowmap(flows: ReviewFlowMeta[]): string[] {
+    // flows 已按时间正序（旧→新）；每 4 步一段 delta 模拟流式输出
+    const head = `### 调用流程（按时间正序，共 ${flows.length} 步）\n\n`
+    const steps = flows.map((f, i) => {
+      const st = f.Status >= 400 ? ` ⚠️ ${f.Status}` : ''
+      return `${i + 1}. \`${f.Method} ${f.Path}\` → ${f.Status}${st}`
+    })
+    const out: string[] = []
+    for (let i = 0; i < steps.length; i += 4) {
+      out.push((i === 0 ? head : '') + steps.slice(i, i + 4).join('\n') + '\n')
+    }
+    if (out.length === 0) out.push('当前候选为空，无法生成流程图。\n')
+    return out
   }
 }
