@@ -52,23 +52,29 @@ func (a *App) GetAIConfigView() (map[string]any, error) {
 
 // SaveAIConfigPatch AI 配置部分更新（POST /ai/config）：map[string]json.RawMessage
 // 逐字段合并，未提供字段保持不变；apiKey 空串=保持原值、__clear__=显式清除。
-// 校验失败不落盘；成功即时写全局配置（SaveGlobal）并回传更新后掩码视图。
+// 合并基准为原始存量值：兜底仅读取侧生效，落盘保留哨兵 0 值不固化 WithDefaults
+// 结果（P0-7 红线）；校验用兜底副本，显式 temperature:0 等哨兵按默认值放行。
+// 校验失败不落盘；成功即时写全局配置（SaveGlobal）并回传兜底生效后的掩码视图。
 func (a *App) SaveAIConfigPatch(raw json.RawMessage) (map[string]any, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, fmt.Errorf("请求体解析失败: %w", err)
+		// 坏 JSON（含 64KB 截断残缺体）属客户端错误 → 400，不得伪装 500
+		return nil, fmt.Errorf("%w: 请求体解析失败: %v", ctlapi.ErrAIBadReq, err)
 	}
 	if len(fields) == 0 {
 		return nil, fmt.Errorf("%w: 未提供任何字段", ctlapi.ErrAIBadReq)
 	}
 
-	// 候选副本合并（SaveSettings 同模式）：合并/校验期间不持锁写全局
+	// 候选副本合并（SaveSettings 同模式）：合并/校验期间不持锁写全局。
+	// 基准用原始存量值：兜底只在读取侧，落盘不固化（P0-7）。
 	a.projMu.Lock()
 	g := *a.gcfg
 	a.projMu.Unlock()
-	cfg := g.AI.WithDefaults()
+	cfg := g.AI
 
-	bad := func(k string, err error) error { return fmt.Errorf("字段 %s 解析失败: %w", k, err) }
+	bad := func(k string, err error) error {
+		return fmt.Errorf("%w: 字段 %s 解析失败: %v", ctlapi.ErrAIBadReq, k, err)
+	}
 	for k, v := range fields {
 		switch k {
 		case "enabled":
@@ -123,7 +129,8 @@ func (a *App) SaveAIConfigPatch(raw json.RawMessage) (map[string]any, error) {
 			return nil, fmt.Errorf("%w: 不支持的配置字段 %q", ctlapi.ErrAIBadReq, k)
 		}
 	}
-	if err := cfg.Validate(); err != nil {
+	// 校验用兜底副本：哨兵 0 值按默认生效判定（显式 temperature:0 放行），落盘仍保留哨兵
+	if err := cfg.WithDefaults().Validate(); err != nil {
 		return nil, err
 	}
 
@@ -135,8 +142,8 @@ func (a *App) SaveAIConfigPatch(raw json.RawMessage) (map[string]any, error) {
 		return nil, fmt.Errorf("保存全局配置: %w", err)
 	}
 
-	g.AI = cfg // 供 WarnNoKey 按新值判定
-	return aiConfigView(g, cfg), nil
+	g.AI = cfg                                      // 供 WarnNoKey 按新值判定（Enabled/APIKey/Provider 与兜底副本一致）
+	return aiConfigView(g, cfg.WithDefaults()), nil // 视图回传兜底生效值
 }
 
 // aiConfigView 掩码视图构造（GET 与保存回传共用，字段名与 settings.AIConfig json tag 一致）。
@@ -391,6 +398,9 @@ func (a *App) runAIChatOnce(ctx context.Context, req ctlapi.AIChatRequest, emit 
 		emitSafe(ctlapi.AIEventError, map[string]any{"message": streamErr.Error()})
 		return nil
 	}
+	if sctx.Err() != nil {
+		return nil // 停止/断连恰在完成边界：静默收尾，不发残余 intent/match/done 帧
+	}
 
 	// 10) 文末 JSON 块解析 → intent/match 事件（解析失败仅展示 Markdown，不报错）
 	md := sb.String()
@@ -414,7 +424,7 @@ func (a *App) runAIChatOnce(ctx context.Context, req ctlapi.AIChatRequest, emit 
 			}
 		}
 	}
-	emitSafe(ctlapi.AIEventDone, map[string]any{"finishReason": "stop", "truncated": false})
+	emitSafe(ctlapi.AIEventDone, map[string]any{"finishReason": "stop", "truncated": br.Truncated})
 	return nil
 }
 

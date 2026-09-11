@@ -61,7 +61,7 @@ type Service interface {
 	AdbTest(adbPath string) (string, error)
 	AdbSetProxy(adbPath, serial string) (string, error) // deviceHost 由后端按配置/默认补
 	AdbClearProxy(adbPath, serial string) (string, error)
-	AdbDevices() any                                    // 已配置的 ADB 设备清单（供 CLI 发现 path/serial）
+	AdbDevices() any // 已配置的 ADB 设备清单（供 CLI 发现 path/serial）
 	// 域名组（M10 补面）；project 空=当前项目，非当前项目写文件不热切换
 	ListDomainGroups(project string) (any, error)
 	GetDomainGroup(project, id string) (any, error) // 返回 {id,text}
@@ -90,9 +90,9 @@ type Service interface {
 	DeleteTag(tagID string, deleteFlows bool) (int, error)
 	// AI 分析（M13，设计 §5.3）：Wails 主窗另有直连绑定（bindings_ai.go）不经此处；
 	// StreamAIChat 在首次 emit 前返回 error 视为同步错误（sentinel 映射 400/409/500）
-	GetAIConfig() (any, error)                                          // 掩码视图，key 永不回原值
-	SaveAIConfig(raw json.RawMessage) (any, error)                      // 部分更新，返回更新后掩码视图
-	AITestConnection() (any, error)                                     // 连通探测 {ok,model,latencyMs,message}
+	GetAIConfig() (any, error)                                                  // 掩码视图，key 永不回原值
+	SaveAIConfig(raw json.RawMessage) (any, error)                              // 部分更新，返回更新后掩码视图
+	AITestConnection() (any, error)                                             // 连通探测 {ok,model,latencyMs,message}
 	StreamAIChat(ctx context.Context, req AIChatRequest, emit AIChatEmit) error // SSE 编排（实现层含并发闸门）
 }
 
@@ -102,7 +102,7 @@ type Server struct {
 	token    string
 	endpoint string // 落盘文件（endpoint.json）
 	svc      Service
-	staticFS fs.FS  // M12：前端 dist 静态资源（复盘页托管；nil=不托管，/api/ 外全部 404）
+	staticFS fs.FS // M12：前端 dist 静态资源（复盘页托管；nil=不托管，/api/ 外全部 404）
 
 	mu         sync.Mutex
 	listener   net.Listener
@@ -233,7 +233,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/v1/compose", s.auth(s.handleCompose))
 	// M12 标签/复盘（设计 §4.4）：/tags 列表/打标 与 /tags/ 子树（手动分段解析）
 	mux.HandleFunc("/api/v1/tags", s.auth(s.handleTags))
-	mux.HandleFunc("/api/v1/tags/flows", s.auth(s.handleTags)) // POST 打标（显式注册，防落到子树被当 flowId）
+	mux.HandleFunc("/api/v1/tags/flows", s.auth(s.handleTags))         // POST 打标（显式注册，防落到子树被当 flowId）
 	mux.HandleFunc("/api/v1/tags/ignores", s.auth(s.handleTagIgnores)) // M12.2 忽略名单：GET 列表/POST 添加（显式注册）
 	mux.HandleFunc("/api/v1/tags/", s.auth(s.handleTagSub))
 	// M13 AI 分析（设计 §5.3）：config GET/POST 部分更新、test 连通探测、chat SSE

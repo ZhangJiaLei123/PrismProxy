@@ -752,10 +752,11 @@ func TestAIChatSyncErrors(t *testing.T) {
 	svc.chatScript = nil
 	svc.mu.Unlock()
 
-	// 已开流（meta 后）错误：200 + 帧已发，不转 JSON
+	// 已开流（meta 后）错误：200 + 帧已发不转 JSON；error 帧由实现层发出（契约 §5.5）
 	svc.mu.Lock()
 	svc.chatScript = func(emit AIChatEmit) error {
 		_ = emit(AIEventMeta, map[string]any{"total": 1})
+		_ = emit(AIEventError, map[string]any{"message": "流中异常"})
 		return fmt.Errorf("流中异常")
 	}
 	svc.mu.Unlock()
@@ -767,8 +768,10 @@ func TestAIChatSyncErrors(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != 200 || !strings.Contains(string(body), "event: meta") {
-		t.Fatalf("meta 后错误应 200+已发帧: %d %q", resp.StatusCode, body)
+	frames := parseSSEFrames(t, string(body))
+	if resp.StatusCode != 200 || len(frames) < 2 ||
+		frames[0].event != AIEventMeta || frames[len(frames)-1].event != AIEventError {
+		t.Fatalf("meta 后错误应 200+meta/error 帧: %d %q", resp.StatusCode, body)
 	}
 
 	if code, _ := doRequest(t, "GET", addr, token, "/ai/chat", nil); code != http.StatusMethodNotAllowed {

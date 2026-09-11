@@ -20,9 +20,9 @@ import (
 
 // AIChatRequest POST /ai/chat 请求体（Wails AIChatStart 复用同一结构，设计 §5.3）。
 type AIChatRequest struct {
-	Mode     string        `json:"mode"`     // explain|intents|locate|flowmap（对应 ai.ChatMode）
+	Mode     string        `json:"mode"`     // explain|intent|locate|flowmap（对应 ai.ChatMode）
 	FlowID   string        `json:"flowId"`   // explain 单流 id
-	IDs      []string      `json:"ids"`      // intents/locate/flowmap 批量流 id
+	IDs      []string      `json:"ids"`      // intent/locate/flowmap 批量流 id
 	Question string        `json:"question"` // locate/flowmap 用户目标
 	Options  AIChatOptions `json:"options"`
 }
@@ -52,7 +52,7 @@ const (
 // handler 据此映射 HTTP 码；首次 emit 后不再适用（错误走 error 帧）。
 var (
 	ErrAIConflict = errors.New("已有 AI 分析任务在进行，请等待完成或停止") // → 409
-	ErrAIBadReq   = errors.New("AI 请求非法")                            // → 400（未配置/参数/ids 全失效）
+	ErrAIBadReq   = errors.New("AI 请求非法")                // → 400（未配置/参数/ids 全失效）
 )
 
 // aiErrCode 同步错误 → HTTP 状态码（未识别错误视为内部错误）
@@ -138,6 +138,7 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 			h.Set("Content-Type", "text/event-stream")
 			h.Set("Cache-Control", "no-cache")
 			h.Set("Connection", "keep-alive")
+			h.Set("X-Accel-Buffering", "no")
 			w.WriteHeader(http.StatusOK)
 			started = true
 		}

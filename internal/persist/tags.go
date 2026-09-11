@@ -25,9 +25,9 @@ import (
 type TagInfo struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
-	Count      int    `json:"count"`       // 关联流数
-	CreatedAt  int64  `json:"createdAt"`   // unix 毫秒
-	LastUsedAt int64  `json:"lastUsedAt"`  // unix 毫秒
+	Count      int    `json:"count"`      // 关联流数
+	CreatedAt  int64  `json:"createdAt"`  // unix 毫秒
+	LastUsedAt int64  `json:"lastUsedAt"` // unix 毫秒
 }
 
 // validTagID 标签 id 格式：t_ + 12 位 hex（碰撞升级为 16 位时可选后 4 位）。

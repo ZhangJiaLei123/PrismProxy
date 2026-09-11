@@ -67,12 +67,56 @@ func TestSaveAIConfigPatchSentinel(t *testing.T) {
 		t.Fatalf("__clear__ 后 key 应为空，得 %q", a.gcfg.AI.APIKey)
 	}
 
-	// 空对象 / 未知字段 → ErrAIBadReq
+	// 空对象 / 未知字段 / 坏 JSON / 坏字段类型 → ErrAIBadReq（解析错误不得伪装 500）
 	if _, err := a.SaveAIConfigPatch(json.RawMessage(`{}`)); !errors.Is(err, ctlapi.ErrAIBadReq) {
 		t.Fatalf("空对象应 ErrAIBadReq，得 %v", err)
 	}
 	if _, err := a.SaveAIConfigPatch(json.RawMessage(`{"foo":1}`)); !errors.Is(err, ctlapi.ErrAIBadReq) {
 		t.Fatalf("未知字段应 ErrAIBadReq，得 %v", err)
+	}
+	if _, err := a.SaveAIConfigPatch(json.RawMessage(`{`)); !errors.Is(err, ctlapi.ErrAIBadReq) {
+		t.Fatalf("坏 JSON 应 ErrAIBadReq，得 %v", err)
+	}
+	if _, err := a.SaveAIConfigPatch(json.RawMessage(`{"enabled":"yes"}`)); !errors.Is(err, ctlapi.ErrAIBadReq) {
+		t.Fatalf("坏字段类型应 ErrAIBadReq，得 %v", err)
+	}
+}
+
+// TestSaveAIConfigPatchDefaultsNotPersisted 兜底不固化（P0-7 红线）+ 温度哨兵放行：
+// 落盘保留哨兵 0 值（Provider=""/Temperature=0/MaxKB=0），视图展示兜底生效值
+func TestSaveAIConfigPatchDefaultsNotPersisted(t *testing.T) {
+	a := newTestApp(t)
+	a.gcfg.AI = settings.AIConfig{}
+
+	// 未初始化配置部分更新：校验用兜底副本通过，落盘不固化 WithDefaults 结果
+	if _, err := a.SaveAIConfigPatch(json.RawMessage(`{"enabled":true,"baseUrl":"https://x.example","model":"m1"}`)); err != nil {
+		t.Fatalf("未初始化配置部分更新应成功: %v", err)
+	}
+	if a.gcfg.AI.Provider != "" || a.gcfg.AI.Temperature != 0 || a.gcfg.AI.MaxKB != 0 {
+		t.Fatalf("兜底值不应固化落盘: %+v", a.gcfg.AI)
+	}
+	v, err := a.GetAIConfigView()
+	if err != nil {
+		t.Fatalf("GetAIConfigView: %v", err)
+	}
+	if v["temperature"] != 0.3 || v["provider"] != "custom" {
+		t.Fatalf("视图应展示兜底生效值: %v", v)
+	}
+
+	// 已初始化配置显式 temperature:0 → 哨兵语义：校验放行、落盘保留 0、视图显示 0.3
+	a.gcfg.AI = seedAI()
+	if _, err := a.SaveAIConfigPatch(json.RawMessage(`{"temperature":0}`)); err != nil {
+		t.Fatalf("显式 0 应回到哨兵语义: %v", err)
+	}
+	if a.gcfg.AI.Temperature != 0 {
+		t.Fatalf("0 应作为哨兵保留（不固化 0.3）: %v", a.gcfg.AI.Temperature)
+	}
+	v, err = a.GetAIConfigView()
+	if err != nil {
+		t.Fatalf("GetAIConfigView: %v", err)
+	}
+	if v["temperature"] != 0.3 {
+		t.Fatalf("视图温度应显示生效值 0.3: %v", v["temperature"])
 	}
 }
 
