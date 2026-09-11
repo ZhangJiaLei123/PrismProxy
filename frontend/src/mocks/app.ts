@@ -645,11 +645,16 @@ const handlers: Record<string, (...args: any[]) => any> = {
   AddDecryptBypass: async (_host: string) => {},
 
   // --- M13 AI 分析（AiTab 密钥独立存取 + 测试连接，设计稿 §六） ---
-  aiView: () => ({
-    hasApiKey: !!state.aiKey,
-    apiKeyMasked: state.aiKey ? (state.aiKey.length <= 8 ? '****' : '****' + state.aiKey.slice(-4)) : '',
-    keyMissingWarn: state.aiKey ? '' : '未配置 API Key：AI 分析不可用（Mock）',
-  }),
+  aiView: () => {
+    const ai = state.settings?.ai
+    return {
+      hasApiKey: !!state.aiKey,
+      apiKeyMasked: state.aiKey ? (state.aiKey.length <= 8 ? '****' : '****' + state.aiKey.slice(-4)) : '',
+      // 对齐 Go WarnNoKey：仅「已启用 + 无 key + 非 ollama」才告警（审计低-2）
+      keyMissingWarn:
+        ai?.enabled && !state.aiKey && ai.provider !== 'ollama' ? '未配置 API Key：AI 分析不可用（Mock）' : '',
+    }
+  },
   GetAIConfigApp: async () => handlers.aiView(),
   SaveAIConfigApp: async (key: string) => {
     // 哨兵语义与后端一致：空串=保持、__clear__=清除、传值=换 key
@@ -660,10 +665,14 @@ const handlers: Record<string, (...args: any[]) => any> = {
   TestAIConnection: async (cfg: any) => {
     await delay(400)
     const url = String(cfg?.baseUrl ?? '')
-    if (!url || url.includes('error')) {
-      return { model: cfg?.model ?? '', latencyMs: 0, ok: false, message: '连接失败：无法访问 BaseURL（Mock）' }
+    // 对齐 Go aiProbe 哨兵：BaseURL/模型缺失走 error（reject），非正常业务结果（审计低-3）
+    if (!url.trim() || !String(cfg?.model ?? '').trim()) {
+      throw new Error('请先配置 AI 接口地址与模型')
     }
-    return { model: cfg?.model ?? 'glm-4-flash', latencyMs: 386, ok: true, message: '' }
+    if (url.includes('error')) {
+      return { model: cfg.model, latencyMs: 0, ok: false, message: '连接失败：无法访问 BaseURL（Mock）' }
+    }
+    return { model: cfg.model, latencyMs: 386, ok: true, message: '' }
   },
 }
 

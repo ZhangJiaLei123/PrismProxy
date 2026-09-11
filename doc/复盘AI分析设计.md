@@ -303,7 +303,7 @@ data: {"finishReason":"stop","truncated":false}
 - `UISettingsTabs`（server.go）增加 `"ai"`；`cli ui settings ai` 可直达。
 - 表单项（n-form 暗色调，沿用 `.sec/.sec-title/.hint` 风格）：
   1. **启用 AI 分析** n-switch（`form.ai.enabled`）。
-  2. **服务商预设** n-select：OpenAI / DeepSeek / 月之暗面 Kimi / 智谱 GLM / 通义千问 / Ollama(本地) / 自定义；选中后填充 baseURL + 推荐 model（可改）。预设表前端常量维护（id/baseUrl/model/docURL）。
+  2. **服务商预设** n-select：OpenAI / DeepSeek / 月之暗面 Kimi / 智谱 GLM / 通义千问 / Ollama(本地) / 自定义；选中后填充 baseURL + 推荐 model（可改）。预设表前端常量维护（id/baseUrl/model/docURL）。选「自定义」不回填，保留当前 baseURL/model 输入（v2.2 审计补充：custom 通常用于微调现有配置）。
   3. **接口地址 BaseURL** n-input（placeholder `https://api.deepseek.com`；hint：兼容 OpenAI 接口的任意地址，含本地 OneAPI）。
   4. **API Key** n-input type=password，showable；旁边「保存密钥」按钮——**密钥独立即时保存**：进入 tab 时 `GET /ai/config` 取 `hasApiKey/apiKeyMasked`，输入框 placeholder 显示 `已保存：••••1234（留空保存则不变）`；点保存调 `POST /ai/config`（仅 key 字段，空=不变，另有「清除密钥」按钮走 `__clear__`）。理由：不把 key 放进 SettingsView 全量表单深拷贝/保存链路，减少误覆盖与日志面。
   5. **模型** n-input + 预设 tag 快速填（如 deepseek-chat）。
