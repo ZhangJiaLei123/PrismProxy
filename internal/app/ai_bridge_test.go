@@ -40,6 +40,14 @@ func TestSaveAIConfigPatchSentinel(t *testing.T) {
 		t.Fatalf("空串不应清 key，得 %q", a.gcfg.AI.APIKey)
 	}
 
+	// 纯空白=未输入，保持原值（审计低-1：与空串哨兵同防误清语义）
+	if _, err := a.SaveAIConfigPatch(json.RawMessage(`{"apiKey":"   "}`)); err != nil {
+		t.Fatalf("纯空白保持应成功: %v", err)
+	}
+	if a.gcfg.AI.APIKey != "sk-abcdef123456" {
+		t.Fatalf("纯空白不应清 key，得 %q", a.gcfg.AI.APIKey)
+	}
+
 	// 部分更新：只发 {apiKey} → 其余字段不动
 	if _, err := a.SaveAIConfigPatch(json.RawMessage(`{"apiKey":"sk-new-987654"}`)); err != nil {
 		t.Fatalf("换 key 应成功: %v", err)

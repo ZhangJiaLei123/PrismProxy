@@ -392,6 +392,7 @@ func TestNormalizeAIBaseURL(t *testing.T) {
 		{"https://open.bigmodel.cn/api/paas/v4/", "https://open.bigmodel.cn/api/paas/v4"}, // 尾斜杠 + v4
 		{"https://x.com/v2", "https://x.com/v2"},                                          // 其他版本段保留
 		{"https://x.com/ver1", "https://x.com/ver1/v1"},                                   // 非版本段（字母尾）不误判
+		{"https://generativelanguage.googleapis.com/v1beta", "https://generativelanguage.googleapis.com/v1beta/v1"}, // v1beta 非纯数字版本段仍补 /v1
 	}
 	for _, c := range cases {
 		if got := NormalizeAIBaseURL(c[0]); got != c[1] {

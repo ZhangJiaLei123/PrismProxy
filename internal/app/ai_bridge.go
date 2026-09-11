@@ -103,7 +103,9 @@ func (a *App) SaveAIConfigPatch(raw json.RawMessage) (map[string]any, error) {
 			case "__clear__": // 哨兵：显式清除
 				cfg.APIKey = ""
 			default:
-				cfg.APIKey = strings.TrimSpace(s)
+				if t := strings.TrimSpace(s); t != "" { // 纯空白=未输入，保持原值（防误清，对齐前端守卫与 mock）
+					cfg.APIKey = t
+				}
 			}
 		case "temperature":
 			if err := json.Unmarshal(v, &cfg.Temperature); err != nil {
