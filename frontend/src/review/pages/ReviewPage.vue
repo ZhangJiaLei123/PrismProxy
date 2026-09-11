@@ -370,6 +370,9 @@ import { fmtDateTime } from '../../lib/format'
 import { b64ToBytes } from '../../lib/format'
 import { buildCurl } from '../../lib/curl'
 import type { CurlShell } from '../../lib/curl'
+// P4 AI 组件级样式（k-ai-* 色卡 + .ai-* 面板）：主窗内嵌与独立入口均经本组件挂载，
+// 必须在此 import 才能进两形态构建图谱（H1 审计修复；review.css 仅独立入口底座）
+import '../ai.css'
 
 // 独立浏览器入口（review.html）走 createApi（Http/Demo）；主窗内嵌时由 App.vue 注入 WailsReviewApi
 const props = defineProps<{ api?: ReviewApi }>()

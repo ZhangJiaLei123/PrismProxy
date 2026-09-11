@@ -144,7 +144,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { NButton, NCheckbox, NInput, NModal, NPopconfirm, NProgress, NTabPane, NTabs } from 'naive-ui'
 import type { AiChatEvent, AiChatMeta, AiChatMode, AIApiConfigView, ReviewApi } from '../api'
 import type { AiMatchItem, IntentResult, ReviewFlowMeta } from '../../lib/types'
@@ -208,6 +208,8 @@ const settingMsg = ref('')
 let mdBuf = ''
 let renderTimer: number | null = null
 let abortCtl: AbortController | null = null
+// 运行令牌（M1 审计修复）：重开新 run 后，旧 run 续体/迟到帧不得触碰新 run 状态
+let runSeq = 0
 
 // ===== 配置与空态 =====
 const cfgOk = computed(() => !!cfg.value && cfg.value.enabled && cfg.value.hasApiKey)
@@ -310,11 +312,13 @@ const intentPct = computed(() => {
   return t ? Math.round((intentDone.value / t) * 100) : 0
 })
 
-// locate 显示缓冲：截掉模型尾部 ```json 块（流式中半截块也不闪现）
+// locate 显示缓冲：截掉模型尾部 ```json 块（流式中半截块也不闪现）；
+// 大小写不敏感（模型可能输出 ```JSON，与 Go 侧 lastJSONBlock 同语义，L3 审计修复）
 const displayMd = computed(() => {
   if (activeTab.value !== 'locate') return rendered.value
-  const i = rendered.value.lastIndexOf('```json')
-  return i >= 0 ? rendered.value.slice(0, i) : rendered.value
+  const fences = [...rendered.value.matchAll(/```json/gi)]
+  const last = fences[fences.length - 1]
+  return last?.index != null ? rendered.value.slice(0, last.index) : rendered.value
 })
 const renderedHtml = computed(() => renderMarkdown(displayMd.value))
 
@@ -350,11 +354,16 @@ function onNoticeOk(): void {
 async function doStart(): Promise<void> {
   resetRun()
   phase.value = 'streaming'
-  abortCtl = new AbortController()
-  const signal = abortCtl.signal
+  const ctl = new AbortController()
+  abortCtl = ctl
+  const seq = ++runSeq
+  // 运行级迟到帧守卫：本 run 被停/被重开后，旧流残余帧不污染新 run 缓冲
+  const frameOf = (ev: AiChatEvent): void => {
+    if (seq === runSeq) onFrame(ev)
+  }
   try {
     if (activeTab.value === 'intent') {
-      await runIntent(props.api, intentIds.value, onFrame, signal, { includeReqBody: includeReq.value })
+      await runIntent(props.api, intentIds.value, frameOf, ctl.signal, { includeReqBody: includeReq.value })
     } else {
       await props.api.analyze(
         {
@@ -368,19 +377,21 @@ async function doStart(): Promise<void> {
             language: 'zh',
           },
         },
-        onFrame,
-        signal,
+        frameOf,
+        ctl.signal,
       )
     }
-    if (phase.value === 'streaming') phase.value = 'done'
+    // 令牌校验：仅最新 run 可迁移状态（旧 run 续体读到新 run 的 streaming 也不得误标）
+    if (seq === runSeq && phase.value === 'streaming') phase.value = 'done'
   } catch (e) {
-    // 停止（abort 静默收尾）后到达的 reject 不转 error 态
-    if (phase.value === 'streaming') {
+    // 停止（abort 静默收尾）后到达的 reject 不转 error 态；旧 run 的 reject 不覆盖新 run
+    if (seq === runSeq && phase.value === 'streaming') {
       phase.value = 'error'
       errMsg.value = String((e as Error)?.message ?? e)
     }
   } finally {
-    abortCtl = null
+    // 只回收自己的句柄：竞态下 abortCtl 可能已被新 run 换掉（M1 审计修复）
+    if (abortCtl === ctl) abortCtl = null
   }
 }
 
@@ -516,4 +527,11 @@ watch(
     }
   },
 )
+
+// 卸载清理（M2 审计修复）：主窗切走复盘视图（v-if 卸载）时停掉在跑流（隐私外发中止）、
+// 摘除 Esc 监听（该监听仅 show→false 时移除，跨挂载会泄漏）
+onBeforeUnmount(() => {
+  stop()
+  window.removeEventListener('keydown', onEsc)
+})
 </script>

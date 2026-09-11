@@ -160,6 +160,10 @@ export class WailsReviewApi implements ReviewApi {
       },
     })
     const handle = h?.handle ?? ''
+    if (!handle) {
+      // 无句柄=桥接帧永远无法匹配（防御性兜底：避免 Promise 永久挂起，L1 审计修复）
+      throw new ApiError('wails', 'AI 会话启动失败（未获得会话句柄）')
+    }
     if (signal?.aborted) {
       void AIChatStop(handle)
       return

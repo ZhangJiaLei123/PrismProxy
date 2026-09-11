@@ -159,7 +159,8 @@ export class HttpApi implements ReviewApi {
   }
 
   // SSE 流式不能走 req()（其 await resp.json()）：首响应先判 ok（400/409 同步错误段），
-  // 200 后 getReader 按 \n\n 分帧解析 event:/data: 行逐帧回调。signal 取消时 AbortError 静默收尾。
+  // 200 后 getReader 按 \n\n 分帧解析 event:/data: 行逐帧回调；error 帧 reject（与 wails 层同契约，M3 审计修复）。
+  // signal 取消时 AbortError 静默收尾。
   async analyze(req: AiChatRequest, onEvent: (ev: AiChatEvent) => void, signal?: AbortSignal): Promise<void> {
     let resp: Response
     try {
@@ -189,6 +190,15 @@ export class HttpApi implements ReviewApi {
     if (!reader) throw new ApiError('http', '响应流不可用')
     const decoder = new TextDecoder()
     let buf = ''
+    // 帧分发：error 帧向上 reject，面板/摘要条 catch 统一展示
+    const dispatch = (ev: AiChatEvent | null): void => {
+      if (!ev) return
+      onEvent(ev)
+      if (ev.event === 'error') {
+        const msg = (ev.data as { message?: string } | null)?.message ?? 'AI 分析失败'
+        throw new ApiError('http', msg)
+      }
+    }
     try {
       for (;;) {
         const { done, value } = await reader.read()
@@ -199,15 +209,11 @@ export class HttpApi implements ReviewApi {
         while ((idx = buf.indexOf('\n\n')) >= 0) {
           const frame = buf.slice(0, idx)
           buf = buf.slice(idx + 2)
-          const ev = parseSseFrame(frame)
-          if (ev) onEvent(ev)
+          dispatch(parseSseFrame(frame))
         }
       }
       buf += decoder.decode()
-      if (buf.trim()) {
-        const ev = parseSseFrame(buf)
-        if (ev) onEvent(ev)
-      }
+      if (buf.trim()) dispatch(parseSseFrame(buf))
     } catch (e) {
       if (signal?.aborted) return // 停止/关面板：静默收尾（后端 ctx 取消，无后续帧）
       throw e

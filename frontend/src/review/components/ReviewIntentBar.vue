@@ -55,13 +55,13 @@ async function onReanalyze(): Promise<void> {
 </script>
 
 <style scoped>
-/* k-ai-low / k-ai-needs-body 弱样式色卡定义在 review.css（禁止组件内联色值） */
+/* k-ai-low / k-ai-needs-body 弱样式色卡定义在 ai.css（禁止组件内联色值） */
 .intent-bar {
   display: flex; align-items: center; gap: 8px;
   flex: none; padding: 4px 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   font-size: 12px;
-  /* 文字色在此声明供 .ib-text 继承：k-ai-* 弱样式（review.css 全局类）可直接覆盖继承色 */
+  /* 文字色在此声明供 .ib-text 继承：k-ai-* 弱样式（ai.css 全局类）可直接覆盖继承色 */
   color: rgba(255, 255, 255, 0.78);
 }
 .ib-ic { flex: none; }
