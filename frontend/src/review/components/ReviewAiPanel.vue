@@ -68,9 +68,11 @@
           <n-button v-else type="primary" size="small" :disabled="startDisabled" @click="requestStart()">{{ startLabel }}</n-button>
           <n-button v-if="phase === 'streaming'" size="small" quaternary @click="stop">停止</n-button>
           <!-- 分析中状态 pill：弹跳点 + 流动渐变文字（静态线索=紫色底与点色，动画非唯一反馈） -->
-          <span v-if="phase === 'streaming'" class="ai-live" aria-live="polite">
+          <span v-if="phase === 'streaming'" class="ai-live">
             <i></i><i></i><i></i><span>AI 分析中</span>
           </span>
+          <!-- 读屏播报（R1 审计修复）：live region 必须先于消息常驻无障碍树才会被播报；sr-only 视觉隐藏不影响布局 -->
+          <span class="ai-sr-live" aria-live="polite">{{ phase === 'streaming' ? 'AI 分析中' : '' }}</span>
           <span v-if="metaText" class="ai-meta">{{ metaText }}</span>
           <span v-else-if="phase === 'done'" class="ai-state">已完成</span>
           <span v-else-if="phase === 'stopped'" class="ai-state">已停止</span>
@@ -163,8 +165,23 @@
           {{ phase === 'streaming' ? '等待模型输出…' : '暂无对话内容 · 发起一次分析后这里实时展示模型原始输出' }}
         </div>
         <template v-else>
-          <div v-if="!logs.length" class="ai-hint ai-log-empty">暂无日志 · 发起分析后逐帧记录调用过程</div>
-          <div v-for="(l, i) in logs" :key="i" class="ai-log-line">
+          <div v-if="!logs.length && !prevLogs.length" class="ai-hint ai-log-empty">暂无日志 · 发起分析后逐帧记录调用过程</div>
+          <!-- 上一轮归档（G3 审计建议）：默认收起，展开弱化展示最近一轮帧序列 -->
+          <button v-if="prevLogs.length" class="ai-log-prev" @click="prevOpen = !prevOpen">
+            <svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path v-if="prevOpen" d="M4 6.5l4 4 4-4" />
+              <path v-else d="M6 4.5l4 4-4 4" />
+            </svg>
+            <span>上一轮 · {{ prevLogs.length }} 条</span>
+          </button>
+          <template v-if="prevOpen">
+            <div v-for="l in prevLogs" :key="l.id" class="ai-log-line is-prev">
+              <span class="ai-log-t">{{ fmtT(l.t) }}</span>
+              <span class="ai-log-kind" :class="'lk-' + l.kind">{{ LOG_KIND_LABEL[l.kind] }}</span>
+              <span class="ai-log-msg" :title="l.msg">{{ l.msg }}</span>
+            </div>
+          </template>
+          <div v-for="l in logs" :key="l.id" class="ai-log-line">
             <span class="ai-log-t">{{ fmtT(l.t) }}</span>
             <span class="ai-log-kind" :class="'lk-' + l.kind">{{ LOG_KIND_LABEL[l.kind] }}</span>
             <span class="ai-log-msg" :title="l.msg">{{ l.msg }}</span>
@@ -385,6 +402,7 @@ const pendingStream = computed(() => phase.value === 'streaming' && !displayMd.v
 // 每次运行独立记录：帧级事件（meta/intent/match/error…）+ 模型原始输出（对话 tab 实时展示）
 type LogKind = 'start' | 'meta' | 'delta' | 'intent' | 'match' | 'error' | 'done' | 'stop'
 interface LogEntry {
+  id: number
   t: number
   kind: LogKind
   msg: string
@@ -400,15 +418,20 @@ const LOG_KIND_LABEL: Record<LogKind, string> = {
   stop: '停止',
 }
 const logs = ref<LogEntry[]>([])
+// 上一轮归档（G3 审计建议）：新 run 启动时保留最近一轮帧序列供回看
+const prevLogs = ref<LogEntry[]>([])
+const prevOpen = ref(false)
 const logOpen = ref(false)
 const logTab = ref<'conv' | 'log'>('log')
 const logBodyEl = ref<HTMLElement | null>(null)
-// 非响应式：本 run 起始时间与首 delta 标记（done 统计耗时用）
+// 非响应式：本 run 起始时间、首 delta 标记与日志自增 id（跨 run 单调；
+// 500 上限 shift 后长度恒定，滚底 watch 改以末条 id 驱动——A1 审计修复）
 let runStartTs = 0
 let sawDelta = false
+let logSeq = 0
 
 function log(kind: LogKind, msg: string): void {
-  logs.value.push({ t: Date.now(), kind, msg })
+  logs.value.push({ id: ++logSeq, t: Date.now(), kind, msg })
   if (logs.value.length > 500) logs.value.shift()
 }
 // 对话 tab = 模型原始输出（非 locate 截断视图，全量原始流）
@@ -424,12 +447,22 @@ function fmtT(t: number): string {
   const p = (n: number): string => String(n).padStart(2, '0')
   return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
 }
-// 日志追加/对话更新/tab 切换/开合时自动滚动到底
-watch([() => logs.value.length, convText, logTab, logOpen], () => {
+// 开合/切 tab：导航意图，无条件滚到底展示最新内容
+watch([logOpen, logTab], () => {
   if (!logOpen.value) return
   nextTick(() => {
     const el = logBodyEl.value
-    if (el) el.scrollTop = el.scrollHeight
+    if (el && logOpen.value) el.scrollTop = el.scrollHeight
+  })
+})
+// 流式追加（日志帧/对话更新）：仅当视口已近底部（40px 阈值）才跟随滚动，
+// 尊重用户上翻回看——B1 审计修复（原先无条件滚底会每 50ms 把用户拉回底部）
+watch([() => logs.value[logs.value.length - 1]?.id ?? 0, convText], () => {
+  if (!logOpen.value) return
+  nextTick(() => {
+    const el = logBodyEl.value
+    if (!el || !logOpen.value) return
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) el.scrollTop = el.scrollHeight
   })
 })
 
@@ -592,7 +625,12 @@ function resetRun(): void {
   meta.value = null
   matches.value = []
   intentDone.value = 0
-  logs.value = [] // 日志按 run 独立：新运行从零开始
+  // 日志按 run 独立：本记录档为上一轮供回看（G3 审计建议），本轮从零开始
+  if (logs.value.length) {
+    prevLogs.value = logs.value
+    prevOpen.value = false
+  }
+  logs.value = []
 }
 
 function closePanel(): void {
@@ -605,6 +643,11 @@ function onEsc(e: KeyboardEvent): void {
   if (e.key !== 'Escape' || noticeShow.value) return
   const t = e.target as HTMLElement | null
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+  // 日志抽层展开时先收抽层，再按一次 Esc 才关面板（Z1 审计修复：交互层级）
+  if (logOpen.value) {
+    logOpen.value = false
+    return
+  }
   closePanel()
 }
 

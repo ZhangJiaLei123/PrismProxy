@@ -2,6 +2,15 @@
    k-ai-* 弱样式色卡 + .ai-* 分析面板。由 ReviewPage.vue import 引入，
    主窗内嵌与独立入口两形态都经 ReviewPage 挂载；review.css 仅保留入口级底座（独立入口专属）。 */
 
+/* 组件级变量（G1/G2 审计修复；ai.css 自包含，H1 红线：不依赖入口级 css）：
+   --ai-brand 品牌紫收口（原 #b57edc 内联 ×7 处）、--ai-brand-2 渐变第二色、
+   --ai-foot-h footer 总高（26px 按钮 + 4px×2 padding + 1px border），.ai-foot 与 .ai-logsheet bottom 共用 */
+:root {
+  --ai-brand: #b57edc;
+  --ai-brand-2: #7ea2e0;
+  --ai-foot-h: 35px;
+}
+
 /* P4 AI 弱样式色卡（全组件唯一出口，组件内禁内联色值）：
    low 置信度=暗黄斜体（不确定感），needsBody=品牌紫（提示可开正文重析的 AI 动作） */
 .k-ai-low {
@@ -61,7 +70,7 @@
   gap: 6px;
   font-weight: 600;
   font-size: 13px;
-  color: #b57edc;
+  color: var(--ai-brand);
 }
 .ai-tabs {
   flex: 1;
@@ -137,6 +146,18 @@
 .ai-state {
   color: rgba(255, 255, 255, 0.65);
 }
+/* 读屏专用 live region（R1 审计修复）：sr-only 惯例——视觉隐藏、零占位，但保留在无障碍树内 */
+.ai-sr-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 .ai-progress {
   flex: none;
 }
@@ -199,7 +220,7 @@
   font-size: 11.5px;
 }
 .ai-md a {
-  color: #b57edc;
+  color: var(--ai-brand);
 }
 .ai-md table {
   border-collapse: collapse;
@@ -341,6 +362,8 @@
 /* 底部栏：外发告知常驻小字 + 右下角日志入口 */
 .ai-foot {
   flex: none;
+  box-sizing: border-box; /* 显式声明：height 含 padding+border，与 --ai-foot-h 精确耦合（G2 审计修复） */
+  height: var(--ai-foot-h);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -377,7 +400,7 @@
     transform 0.1s;
 }
 .ai-logbtn:hover {
-  color: #b57edc;
+  color: var(--ai-brand);
   background: rgba(255, 255, 255, 0.08);
 }
 .ai-logbtn:active {
@@ -391,7 +414,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #b57edc;
+  background: var(--ai-brand);
 }
 
 /* 调用日志抽层：自底部滑入（transform 可中断，visibility 延迟切换，与主抽屉同曲线） */
@@ -399,7 +422,7 @@
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 35px; /* 恰在 footer 上缘，footer 与日志按钮保持可点 */
+  bottom: var(--ai-foot-h); /* 恰在 footer 上缘（高度与 footer 经 --ai-foot-h 共用耦合），footer 与日志按钮保持可点 */
   z-index: 5;
   height: min(58%, 430px);
   min-height: 200px;
@@ -477,9 +500,33 @@
   color: rgba(255, 255, 255, 0.72);
   word-break: break-word;
 }
+/* 上一轮归档开关行（G3 审计建议）：默认收起；展开条目 is-prev 弱化区分当前轮 */
+.ai-log-prev {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 4px 0;
+  margin: 2px 0 4px;
+  border: none;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.4);
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.ai-log-prev:hover {
+  color: rgba(255, 255, 255, 0.7);
+}
+.ai-log-line.is-prev {
+  opacity: 0.55;
+}
 /* 类型色卡（同 k-ai-* 家族：紫=动作 / 绿=成果 / 黄=中止 / 红=错误 / 灰=中性） */
 .lk-start {
-  color: #b57edc;
+  color: var(--ai-brand);
 }
 .lk-meta,
 .lk-delta {
@@ -514,7 +561,7 @@
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: #b57edc;
+  background: var(--ai-brand);
   animation: ai-live-dot 1.2s ease-in-out infinite;
 }
 .ai-live i:nth-child(2) {
@@ -526,7 +573,7 @@
 .ai-live > span {
   font-size: 11px;
   font-weight: 600;
-  background: linear-gradient(90deg, #b57edc, #7ea2e0, #b57edc);
+  background: linear-gradient(90deg, var(--ai-brand), var(--ai-brand-2), var(--ai-brand));
   background-size: 200% 100%;
   -webkit-background-clip: text;
   background-clip: text;
