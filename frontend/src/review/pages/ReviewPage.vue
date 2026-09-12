@@ -349,7 +349,7 @@
         v-model:show="aiPanelShow"
         :api="api"
         :mode="aiPanelMode"
-        :flow-id="aiPanelFlowId"
+        :flow-id="selectedFlow"
         :flow-label="aiPanelLabel"
         :checked-ids="checkedIds"
         :view-flows="flows"
@@ -418,14 +418,12 @@ function onMarkIntents(): void {
   aiPanelMode.value = 'intent'
   aiPanelShow.value = true
 }
-// AI 面板 explain 目标流与展示名（详情页「AI 解读」入口设置）
-const aiPanelFlowId = ref('')
+// AI 面板 explain 目标展示名：跟随列表当前选中流（选中即目标，无需经「AI 解读」入口）
 const aiPanelLabel = computed(() => {
-  const f = flows.value.find((x) => x.ID === aiPanelFlowId.value)
-  return f ? f.Method + ' ' + (f.Path || f.URL) : aiPanelFlowId.value
+  const f = flows.value.find((x) => x.ID === selectedFlow.value)
+  return f ? f.Method + ' ' + (f.Path || f.URL) : selectedFlow.value
 })
 function onDetailExplain(): void {
-  aiPanelFlowId.value = selectedFlow.value
   aiPanelMode.value = 'explain'
   aiPanelShow.value = true
 }
@@ -446,7 +444,6 @@ function intentTitle(it: IntentResult): string {
 // 路径列意图概要点击：选中该流并打开 AI 面板 explain 模式看详细分析（M13 §7）
 function onIntentClick(f: ReviewFlowMeta): void {
   selectedFlow.value = f.ID
-  aiPanelFlowId.value = f.ID
   aiPanelMode.value = 'explain'
   aiPanelShow.value = true
 }

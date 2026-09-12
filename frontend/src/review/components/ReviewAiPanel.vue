@@ -684,7 +684,7 @@ function startLogDrag(e: PointerEvent): void {
   if (!el) return
   logDragging.value = true
   logDragStartY = e.clientY
-  logDragStartH = el.getBoundingClientRect().height
+  logDragStartH = el.clientHeight // clientWidth/Height 不含 1px border，= style 值零漂移（G-1 审计修复，rect 起点会逐会话 +1px）
   window.addEventListener('pointermove', onLogDragMove)
   window.addEventListener('pointerup', onLogDragEnd)
   window.addEventListener('pointercancel', onLogDragEnd)
@@ -711,7 +711,7 @@ function onLogDragEnd(): void {
   window.removeEventListener('pointercancel', onLogDragEnd)
   document.body.classList.remove('row-resizing')
   try {
-    localStorage.setItem(LOG_H_KEY, String(logH.value))
+    if (logH.value >= LOG_H_MIN) localStorage.setItem(LOG_H_KEY, String(logH.value)) // 未达下限（0 哨兵）不落盘，防纯点击残留 "0"（G-3 审计修复）
   } catch {
     /* 存储不可用仅本会话生效 */
   }
@@ -732,7 +732,7 @@ function resetLogH(): void {
 // 缓存值以内联 width: min(px, calc(100% - 保留)) 生效——窗口变小时 CSS 就近钳制不溢出容器，
 // 无需 JS 响应 resize（与日志抽层高度拖拽同策略）
 const AI_W_KEY = 'prismproxy:review-ai-panel-w-v1'
-const AI_W_MIN = 420 // 拖拽下限：四模式 tabs + 正文区可读的最小宽度
+const AI_W_MIN = 420 // 拖拽下限：四模式 tabs + 正文区可读的最小宽度（窄窗口下实际显示宽由下方 CSS min() 就近钳制，可低于此值，G-4 已知设计）
 const AI_W_RESERVE = 400 // 底层列表区可视保留；上限 = 容器宽 - 400
 const drawerEl = ref<HTMLElement | null>(null)
 const aiW = ref(0) // 0 = 未自定义，走 CSS 默认 560px
@@ -762,7 +762,7 @@ function startWDrag(e: PointerEvent): void {
   if (!el) return
   wDragging.value = true
   wDragStartX = e.clientX
-  wDragStartW = el.getBoundingClientRect().width
+  wDragStartW = el.clientWidth // 不含 1px border-left，= style 值零漂移（G-1 审计修复，与日志抽层同步）
   window.addEventListener('pointermove', onWDragMove)
   window.addEventListener('pointerup', onWDragEnd)
   window.addEventListener('pointercancel', onWDragEnd)
@@ -789,7 +789,7 @@ function onWDragEnd(): void {
   window.removeEventListener('pointercancel', onWDragEnd)
   document.body.classList.remove('ew-resizing')
   try {
-    localStorage.setItem(AI_W_KEY, String(aiW.value))
+    if (aiW.value >= AI_W_MIN) localStorage.setItem(AI_W_KEY, String(aiW.value)) // 未达下限（0 哨兵）不落盘，防纯点击残留 "0"（G-3 审计修复，与日志抽层同步）
   } catch {
     /* 存储不可用仅本会话生效 */
   }
@@ -1047,6 +1047,7 @@ function onEsc(e: KeyboardEvent): void {
   // 日志抽层展开时先收抽层，再按一次 Esc 才关面板（Z1 审计修复：交互层级）
   if (logOpen.value) {
     if (logDragging.value) onLogDragEnd() // 拖拽中收抽层先终止拖拽态（摘监听/落盘，I3 审计修复）
+    if (wDragging.value) onWDragEnd() // 宽度拖拽把手上部在抽层外仍可达：收抽层同时终止（与上行 I3 同构：一次 Esc = 终止拖拽 + 逐层收合，G-2 审计修复）
     logOpen.value = false
     return
   }
@@ -1095,13 +1096,15 @@ watch(
   },
 )
 
-// explain 目标流变化：重置并自动重新解读（仅 cfg 就绪时；避免与 loadCfg 路径双触发，requestStart 有 streaming 守卫）
+// explain 目标流变化：重置并自动重新解读（仅 explain 且 cfg 就绪时）。
+// flowId 现跟随列表选中流：locate「查看→」跳转 / intent 勾选浏览引起的选中变化
+// 不得 resetRun 打断在跑任务，故加 activeTab 守卫（resetRun 会 abort 在跑任务）
 watch(
   () => props.flowId,
   () => {
-    if (props.show) {
+    if (props.show && activeTab.value === 'explain') {
       resetRun()
-      if (activeTab.value === 'explain' && props.flowId && cfgOk.value) requestStart(true)
+      if (props.flowId && cfgOk.value) requestStart(true)
     }
   },
 )
