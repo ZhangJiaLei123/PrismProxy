@@ -694,6 +694,8 @@ function pushDelta(text: string): void {
   }
   // 本轮首个正文增量：思考阶段结束，自动收起本轮思考区（用户手动开合过则不打扰）
   if (curTurn && !mdBuf && !curTurn.touched && curTurn.open) curTurn.open = false
+  // 正文折叠默认收起：首个正文增量自动展开本轮直播输出，保持流式可见（用户手动收起过则不打扰）
+  if (curTurn && !mdBuf && !curTurn.txtTouched && !curTurn.txtOpen) curTurn.txtOpen = true
   mdBuf += text
   scheduleRender()
 }

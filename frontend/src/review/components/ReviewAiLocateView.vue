@@ -1,7 +1,7 @@
 <template>
   <!-- 定位模块（locate）：自然语言目标 → 模型正文（截掉 ```json 块的展示视图由父给）+ 匹配卡片列表。
        由 ReviewAiPanel 挂载：父持运行引擎与全部状态，本组件纯展示 -->
-  <div class="ai-scope">{{ scopeText }}</div>
+  <ReviewAiScopeText :text="scopeText" />
 
   <!-- 模式专属输入：自然语言目标 -->
   <n-input
@@ -62,6 +62,7 @@
 import { NButton, NCheckbox, NInput } from 'naive-ui'
 import type { AiMatchItem } from '../../lib/types'
 import ReviewAiRunActions from './ReviewAiRunActions.vue'
+import ReviewAiScopeText from './ReviewAiScopeText.vue'
 import ReviewAiMdView from './ReviewAiMdView.vue'
 
 defineProps<{

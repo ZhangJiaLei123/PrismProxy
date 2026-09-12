@@ -1,6 +1,6 @@
 // AI 会话持久化（阶段三）：模块级单例 store——对话轮次/调用日志/上一轮归档/locate 匹配。
 // 以共享 ref 常驻内存（组件卸载/切模式不丢），500ms 防抖写 IndexedDB（跨 WebView 重载恢复）。
-// 内存是单一事实源；UI 折叠态（open/sysOpen/usrOpen/touched）不入盘。
+// 内存是单一事实源；UI 折叠态（open/txtOpen/sysOpen/usrOpen/touched/txtTouched）不入盘。
 import { reactive, ref } from 'vue'
 import type { AiMatchItem } from '../lib/types'
 import type { AiUsage } from './api'
@@ -12,10 +12,13 @@ export interface ConvTurn {
   user: string
   reason: string
   text: string
-  open: boolean // 以下四项为 UI 折叠态，不入盘
+  // 以下六项为 UI 折叠态，不入盘（正文折叠独立 touched：手动收起思考不打扰正文自动展开，反之亦然）
+  open: boolean
+  txtOpen: boolean
   sysOpen: boolean
   usrOpen: boolean
   touched: boolean
+  txtTouched: boolean
   finishReason: string
   usage?: AiUsage
 }
@@ -177,9 +180,11 @@ export async function hydrateAiSession(): Promise<void> {
           reason: t.reason ?? '',
           text: t.text ?? '',
           open: false,
+          txtOpen: false,
           sysOpen: false,
           usrOpen: false,
           touched: false,
+          txtTouched: false,
           finishReason: t.finishReason ?? '',
           usage: t.usage,
         })
@@ -204,9 +209,11 @@ export function createTurn(question: string, system: string, user: string, mode?
     reason: '',
     text: '',
     open: false,
+    txtOpen: false,
     sysOpen: false,
     usrOpen: false,
     touched: false,
+    txtTouched: false,
     finishReason: '',
   })
   convTurns.value.push(t)

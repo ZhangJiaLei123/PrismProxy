@@ -1,7 +1,7 @@
 <template>
   <!-- 解读模块（explain，设计 §7.1）：单流解读，无输入项；范围说明显示 doStart 时快照的目标流。
        由 ReviewAiPanel 挂载：父持运行引擎与全部状态，本组件纯展示 -->
-  <div class="ai-scope">{{ scopeText }}</div>
+  <ReviewAiScopeText :text="scopeText" />
 
   <ReviewAiRunActions
     :phase="phase"
@@ -20,6 +20,7 @@
 
 <script setup lang="ts">
 import ReviewAiRunActions from './ReviewAiRunActions.vue'
+import ReviewAiScopeText from './ReviewAiScopeText.vue'
 import ReviewAiMdView from './ReviewAiMdView.vue'
 
 defineProps<{

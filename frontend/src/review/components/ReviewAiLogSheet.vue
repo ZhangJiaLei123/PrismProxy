@@ -71,7 +71,7 @@
                 <span class="ai-conv-count">{{ t.system.length }} 字</span>
               </button>
               <div class="ai-conv-fold" :class="{ open: t.sysOpen }">
-                <pre class="ai-log-conv">{{ t.system }}</pre>
+                <pre class="ai-log-conv ai-conv-scroll">{{ t.system }}</pre>
               </div>
               <button v-if="t.user" class="ai-conv-toggle" :class="{ open: t.usrOpen }" @click="t.usrOpen = !t.usrOpen">
                 <svg class="chev" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -81,10 +81,10 @@
                 <span class="ai-conv-count">{{ t.user.length }} 字</span>
               </button>
               <div class="ai-conv-fold" :class="{ open: t.usrOpen }">
-                <pre class="ai-log-conv">{{ t.user }}</pre>
+                <pre class="ai-log-conv ai-conv-scroll">{{ t.user }}</pre>
               </div>
             </div>
-            <!-- 模型返回（左）：思考过程（自动开合）+ 正文输出 -->
+            <!-- 模型返回（左）：思考过程与正文输出均为折叠块（默认收起，展开限高自滚动） -->
             <div class="ai-bubble ai-bubble-recv">
               <div class="ai-bubble-head">
                 <span class="ai-bubble-role">模型返回</span>
@@ -103,11 +103,27 @@
                   <span class="ai-conv-count">{{ t.reason.length }} 字</span>
                 </button>
                 <div class="ai-conv-fold" :class="{ open: t.open }">
-                  <pre class="ai-log-conv ai-conv-think">{{ t.reason }}</pre>
+                  <pre class="ai-log-conv ai-conv-think ai-conv-scroll">{{ t.reason }}</pre>
                 </div>
               </template>
-              <!-- 模型返回正文：Markdown 渲染（表格/代码块/mermaid 图），ai-md.ts 净化出口 -->
-              <div v-if="t.text" class="ai-md ai-conv-md" v-html="mdHtml(t)"></div>
+              <!-- 正文输出折叠：默认收起（父侧首个正文增量自动展开直播轮），展开后限高自滚动；
+                   Markdown 渲染（表格/代码块/mermaid 图），ai-md.ts 净化出口 -->
+              <template v-if="t.text">
+                <button
+                  class="ai-conv-toggle"
+                  :class="{ open: t.txtOpen, live: ti === convTurns.length - 1 && phase === 'streaming' && t.txtOpen }"
+                  @click="toggleTxt(t)"
+                >
+                  <svg class="chev" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6 4.5l4 4-4 4" />
+                  </svg>
+                  <span>正文输出</span>
+                  <span class="ai-conv-count">{{ t.text.length }} 字</span>
+                </button>
+                <div class="ai-conv-fold" :class="{ open: t.txtOpen }">
+                  <div class="ai-md ai-conv-md ai-conv-scroll" v-html="mdHtml(t)"></div>
+                </div>
+              </template>
               <div v-else-if="ti === convTurns.length - 1 && phase === 'streaming'" class="ai-hint">模型输出中…</div>
               <div v-else-if="!t.reason" class="ai-hint">（无输出）</div>
               <div v-if="t.finishReason === 'length'" class="ai-hint ai-conv-trunc">输出被截断（模型上下文/输出预算不足）</div>
@@ -179,6 +195,12 @@ const convEmpty = computed(() => !props.convTurns.length)
 function toggleTurn(t: ConvTurn): void {
   t.open = !t.open
   t.touched = true
+}
+
+// 正文折叠开关：与思考过程同款（手动置 touched 退出父侧自动开合）
+function toggleTxt(t: ConvTurn): void {
+  t.txtOpen = !t.txtOpen
+  t.txtTouched = true
 }
 
 // token 展示：done 帧真实 usage（include_usage 末帧）精确展示；缺失（服务商不支持/demo）
@@ -299,6 +321,19 @@ async function hydrateMermaid(): Promise<void> {
 }
 
 // ===== 滚动跟随 =====
+// 直播轮展开体跟随：展开体限高自滚动后，流式追加发生在块内而非外层——末轮各滚动体
+// 近底部（40px 阈值，未上翻回看）才钉住底缘；force 用于开层/切 tab 的无条件跟随（对齐外层滚底语义）
+function pinLiveFolds(force: boolean): void {
+  if (props.phase !== 'streaming') return
+  const root = logBodyEl.value
+  if (!root) return
+  const turns = root.querySelectorAll<HTMLElement>('.ai-turn')
+  const live = turns[turns.length - 1]
+  if (!live) return
+  for (const sc of live.querySelectorAll<HTMLElement>('.ai-conv-scroll')) {
+    if (force || sc.scrollHeight - sc.scrollTop - sc.clientHeight < 40) sc.scrollTop = sc.scrollHeight
+  }
+}
 // 开合/切 tab：导航意图，无条件滚到底展示最新内容；顺带水合 mermaid 块
 watch([() => props.open, logTab], () => {
   if (!props.open) return
@@ -306,6 +341,7 @@ watch([() => props.open, logTab], () => {
     void hydrateMermaid()
     const el = logBodyEl.value
     if (el && props.open) el.scrollTop = el.scrollHeight
+    pinLiveFolds(true)
   })
 })
 // 流式追加（日志帧/对话更新）：仅当视口已近底部（40px 阈值）才跟随滚动，
@@ -326,6 +362,7 @@ watch(
       const el = logBodyEl.value
       if (!el || !props.open) return
       if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) el.scrollTop = el.scrollHeight
+      pinLiveFolds(false)
     })
   },
 )

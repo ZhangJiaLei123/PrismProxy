@@ -1,7 +1,7 @@
 <template>
   <!-- 流程模块（flowmap）：自然语言目标 → 模型正文 Markdown，无正文开关（后端默认必带正文）。
        由 ReviewAiPanel 挂载：父持运行引擎与全部状态，本组件纯展示 -->
-  <div class="ai-scope">{{ scopeText }}</div>
+  <ReviewAiScopeText :text="scopeText" />
 
   <!-- 模式专属输入：自然语言目标 -->
   <n-input
@@ -31,6 +31,7 @@
 <script setup lang="ts">
 import { NInput } from 'naive-ui'
 import ReviewAiRunActions from './ReviewAiRunActions.vue'
+import ReviewAiScopeText from './ReviewAiScopeText.vue'
 import ReviewAiMdView from './ReviewAiMdView.vue'
 
 defineProps<{

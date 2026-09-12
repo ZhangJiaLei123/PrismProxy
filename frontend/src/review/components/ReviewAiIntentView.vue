@@ -1,7 +1,7 @@
 <template>
   <!-- 意图模块（intent，设计 §7.2）：批量/单条轮询标注，无 Markdown 区（delta 里的列表/JSON 不展示，仅收 intent 帧）。
        由 ReviewAiPanel 挂载：父持运行引擎与全部状态，本组件纯展示 -->
-  <div class="ai-scope">{{ scopeText }}</div>
+  <ReviewAiScopeText :text="scopeText" />
 
   <!-- 正文开关（对齐后端 OR 语义）+ 单条轮询：逐条独立调用模型，规避整批 prompt 过大导致的截断/首响应超时（批量标注实测红线） -->
   <div class="ai-opts">
@@ -60,6 +60,7 @@
 import { NCheckbox, NProgress } from 'naive-ui'
 import type { IntentResult } from '../../lib/types'
 import ReviewAiRunActions from './ReviewAiRunActions.vue'
+import ReviewAiScopeText from './ReviewAiScopeText.vue'
 
 defineProps<{
   scopeText: string

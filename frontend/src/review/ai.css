@@ -168,13 +168,73 @@ body.ew-resizing * {
 .ai-pad {
   padding: 8px 0;
 }
+/* 范围说明（ReviewAiScopeText，四模式共用）：默认单行省略，溢出才显示展开箭头；
+   展开换行全显、超高滚动（滚动区仅文本，箭头固定不随滚）；收起整块可点，展开点箭头收起（正文可选中复制） */
 .ai-scope {
   flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
   font-size: 12px;
+  line-height: 1.5;
   color: rgba(255, 255, 255, 0.55);
   padding: 8px 10px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.04);
+}
+.ai-scope.is-fold:not(.is-open) {
+  cursor: pointer;
+}
+.ai-scope-text {
+  flex: 1;
+  min-width: 0;
+}
+/* 收起：单行截断省略 */
+.ai-scope:not(.is-open) .ai-scope-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* 展开：pre-wrap 保排版，URL 等无空格长串任意点断行；超高滚动 */
+.ai-scope.is-open .ai-scope-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: min(40vh, 220px);
+  overflow-y: auto;
+}
+/* 展开箭头：同 .ai-close 家族（hover 反馈 + active 按压缩放），chev 旋转复用 .ai-conv-toggle 语言 */
+.ai-scope-chev {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin-top: -1px; /* 对 ~17px 首行行高光学居中（按钮 20px） */
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    background-color 0.15s,
+    transform 0.1s;
+}
+.ai-scope-chev:hover {
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.08);
+}
+.ai-scope-chev:active {
+  transform: scale(0.96);
+}
+.ai-scope-chev .chev {
+  transition: transform 0.18s cubic-bezier(0.2, 0, 0, 1);
+}
+.ai-scope.is-open .ai-scope-chev .chev {
+  transform: rotate(90deg);
 }
 .ai-opts {
   display: flex;
@@ -686,6 +746,14 @@ body.row-resizing * {
 .ai-conv-fold > * {
   overflow: hidden;
   min-height: 0;
+}
+/* 展开体限高自滚动：思考/正文/提示词可能极长，展开后钳制高度块内滚动，不撑爆抽层；
+   收起态保持 overflow:hidden（grid 0fr 折叠动画依赖），展开态才放开纵向滚动 */
+.ai-conv-fold > .ai-conv-scroll {
+  max-height: 280px;
+}
+.ai-conv-fold.open > .ai-conv-scroll {
+  overflow-y: auto;
 }
 /* 思考过程弱化展示：与正文输出区分层级 */
 .ai-conv-think {
