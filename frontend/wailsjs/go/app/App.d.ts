@@ -25,6 +25,8 @@ export function AddQuickIgnore(arg1:string,arg2:string):Promise<boolean>;
 
 export function BuildCurl(arg1:string,arg2:string):Promise<capture.CurlResult>;
 
+export function CheckUpdate():Promise<app.UpdateInfo>;
+
 export function ClearFlows():Promise<void>;
 
 export function CloseProject():Promise<void>;
@@ -68,6 +70,8 @@ export function GetReviewURL():Promise<string>;
 export function GetSettings():Promise<app.SettingsView>;
 
 export function GetSystemProxyStatus():Promise<app.SystemProxyStatus>;
+
+export function GetVersion():Promise<string>;
 
 export function ImportDomainGroupFile(arg1:string):Promise<app.DomainGroupImportResult>;
 

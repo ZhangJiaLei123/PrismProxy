@@ -60,13 +60,37 @@
     </div>
     <div v-if="caMsg" class="hint break">{{ caMsg }}</div>
   </section>
+
+  <!-- 版本与更新：完整版本号来自后端（v2.0.0-编译时间戳），检查更新走 GitHub Releases API -->
+  <section class="sec">
+    <div class="sec-title">关于</div>
+    <div style="display: flex; align-items: center; gap: 10px">
+      <n-tag size="small" :bordered="false" class="ver-tag">PrismProxy {{ version }}</n-tag>
+      <n-button size="small" secondary :loading="updBusy" @click="manualCheck">检查更新</n-button>
+      <a v-if="upd?.hasUpdate" class="release-link" @click.prevent="openRelease(upd.url)">前往下载</a>
+    </div>
+    <n-checkbox v-model:checked="form.autoCheckUpdate" size="small" style="margin-top: 8px">
+      启动自动检查更新
+    </n-checkbox>
+    <div class="hint">保存后生效；开启后每次启动静默检查一次（1 小时内不重复请求），有新版本才提示。</div>
+    <div v-if="upd && !upd.hasUpdate && manualChecked" class="hint">已是最新版本。</div>
+    <div v-if="upd?.hasUpdate" class="update-box">
+      <div>发现新版本 <b>{{ upd.latest }}</b>（当前 {{ upd.current }}）</div>
+      <div v-if="upd.notes" class="update-notes">{{ upd.notes }}</div>
+    </div>
+    <div v-if="updErr" class="hint">{{ updErr }}</div>
+  </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { NSwitch, NTag, NButton, NCheckbox, NInputNumber } from 'naive-ui'
-import { GetSystemProxyStatus, SetSystemProxy, InstallRootCA } from '../../../wailsjs/go/app/App'
+import { GetSystemProxyStatus, SetSystemProxy, InstallRootCA, GetVersion } from '../../../wailsjs/go/app/App'
 import type { app } from '../../../wailsjs/go/models'
+import { useUpdate } from '../../composables/useUpdate'
+
+// 更新检查为模块级单例：App.vue 启动时已按设置自动检查，此处只读取同一状态展示
+const { info: upd, busy: updBusy, manualChecked, error: updErr, manualCheck, openRelease } = useUpdate()
 
 defineProps<{ form: app.SettingsView }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
@@ -120,11 +144,36 @@ async function installCA() {
   }
 }
 
-onMounted(loadSysStatus)
+// ---- 版本号（完整版本 v2.0.0-编译时间戳，仅展示）----
+const version = ref('')
+
+onMounted(async () => {
+  loadSysStatus()
+  version.value = await GetVersion()
+})
 </script>
 
 <style scoped>
 .sec { font-size: 12px; }
+.ver-tag { font-variant-numeric: tabular-nums; }
+.release-link { font-size: 12px; cursor: pointer; }
+.update-box {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--n-border-color, rgba(128, 128, 128, 0.2));
+  border-radius: 4px;
+  background: rgba(128, 128, 128, 0.06);
+  font-size: 12px;
+}
+.update-notes {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 11px;
+  opacity: 0.7;
+  max-height: 120px;
+  overflow-y: auto;
+}
 .sec + .sec { margin-top: 20px; }
 .sec-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
 .form-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }

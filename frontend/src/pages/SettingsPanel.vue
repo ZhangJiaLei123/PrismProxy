@@ -92,6 +92,7 @@ const emptyForm = (): app.SettingsView =>
     maxFlows: 2000,
     maxBodyMB: 256,
     showSysProxySwitch: true,
+    autoCheckUpdate: true,
     bypassList: [],
     filterGroups: [],
     decryptRules: [],
@@ -123,6 +124,7 @@ const message = useMessage()
 async function loadSettings() {
   const s = await GetSettings()
   form.value = JSON.parse(JSON.stringify(s)) as app.SettingsView
+  form.value.autoCheckUpdate ??= true
   form.value.bypassList ??= []
   form.value.decryptRules ??= []
   form.value.filterGroups ??= []

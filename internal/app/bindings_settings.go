@@ -43,6 +43,7 @@ func (a *App) settingsViewLocked(fg []rules.FilterGroup, dr []rules.DecryptRule,
 		MaxBodyMB:          g.MaxBodyMB,
 		ShowSysProxySwitch: g.ShowSysProxySwitch,
 		AutoSysProxy:       g.AutoSysProxy,
+		AutoCheckUpdate:    g.AutoCheckUpdate,
 		BypassList:         append([]string(nil), g.BypassList...),
 		Persist:            g.Persist,
 		ADB:                g.ADB,
@@ -90,6 +91,7 @@ func (a *App) SaveSettings(nu *SettingsView) (*SaveSettingsResult, error) {
 	g.MaxBodyMB = nu.MaxBodyMB
 	g.ShowSysProxySwitch = nu.ShowSysProxySwitch
 	g.AutoSysProxy = nu.AutoSysProxy
+	g.AutoCheckUpdate = nu.AutoCheckUpdate
 	g.BypassList = append([]string(nil), nu.BypassList...)
 	g.Persist = nu.Persist
 	g.ADB = nu.ADB

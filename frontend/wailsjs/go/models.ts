@@ -404,6 +404,7 @@ export namespace app {
 	    maxBodyMB: number;
 	    showSysProxySwitch: boolean;
 	    autoSysProxy: boolean;
+	    autoCheckUpdate: boolean;
 	    bypassList: string[];
 	    persist: settings.PersistConfig;
 	    adb: settings.ADBConfig;
@@ -426,6 +427,7 @@ export namespace app {
 	        this.maxBodyMB = source["maxBodyMB"];
 	        this.showSysProxySwitch = source["showSysProxySwitch"];
 	        this.autoSysProxy = source["autoSysProxy"];
+	        this.autoCheckUpdate = source["autoCheckUpdate"];
 	        this.bypassList = source["bypassList"];
 	        this.persist = this.convertValues(source["persist"], settings.PersistConfig);
 	        this.adb = this.convertValues(source["adb"], settings.ADBConfig);
@@ -557,6 +559,26 @@ export namespace app {
 		    }
 		    return a;
 		}
+	}
+	export class UpdateInfo {
+	    hasUpdate: boolean;
+	    current: string;
+	    latest: string;
+	    url: string;
+	    notes: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hasUpdate = source["hasUpdate"];
+	        this.current = source["current"];
+	        this.latest = source["latest"];
+	        this.url = source["url"];
+	        this.notes = source["notes"];
+	    }
 	}
 	export class WailsAddIgnoreResult {
 	    ignore: persist.ReviewIgnore;

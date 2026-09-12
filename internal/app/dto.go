@@ -90,6 +90,7 @@ type SettingsView struct {
 	MaxBodyMB          int    `json:"maxBodyMB"`
 	ShowSysProxySwitch bool   `json:"showSysProxySwitch"`
 	AutoSysProxy       bool   `json:"autoSysProxy"`
+	AutoCheckUpdate    bool   `json:"autoCheckUpdate"`
 	// BypassList 系统代理 ProxyOverride 绕过列表（本机环境属性，全局唯一，见 §3.2）
 	BypassList []string               `json:"bypassList"`
 	Persist    settings.PersistConfig `json:"persist"`

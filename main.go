@@ -41,7 +41,7 @@ func main() {
 
 	a := app.NewApp(*addr, *noMITM, assets)
 	err := wails.Run(&options.App{
-		Title:     "PrismProxy",
+		Title:     "PrismProxy v" + app.Version,
 		Width:     1280,
 		Height:    800,
 		MinWidth:  960,

@@ -77,6 +77,10 @@ type GlobalSettings struct {
 	// AutoSysProxy 启动程序时自动接管系统代理（默认关闭）。
 	AutoSysProxy bool `json:"autoSysProxy"`
 
+	// AutoCheckUpdate 启动程序时自动检查 GitHub Release 更新（默认开启）。
+	// 旧 settings.json 无此字段反序列化为 false，读取侧显式按已加载默认值兜底（见 LoadGlobal）。
+	AutoCheckUpdate bool `json:"autoCheckUpdate"`
+
 	// BypassList 系统代理 ProxyOverride 绕过列表（本机网络环境属性，全局唯一，
 	// 不随项目切换变化；项目配置设计 §3.2）。
 	// 语义：裸域名匹配自身+全部子域；代理崩溃残留时这些域名仍直连（方案 §4.6）。
@@ -394,6 +398,7 @@ func DefaultGlobal() *GlobalSettings {
 		MaxFlows:           2000,
 		MaxBodyMB:          256,
 		ShowSysProxySwitch: true,
+		AutoCheckUpdate:    true,
 		BypassList:         append([]string(nil), BuiltinBypass...),
 		Persist: PersistConfig{
 			Enabled:    false,
@@ -429,6 +434,14 @@ func LoadGlobal(dir string) (*GlobalSettings, error) {
 	g := DefaultGlobal() // 以默认值兜底，兼容旧版缺字段
 	if err := json.Unmarshal(data, g); err != nil {
 		return nil, fmt.Errorf("解析 %s: %w", fileName, err)
+	}
+	// bool 字段缺失与显式 false 反序列化不可区分：旧 settings.json 无 autoCheckUpdate
+	// 时会把默认 true 覆盖成 false。用 RawMessage 检测字段是否存在，缺失则保持默认开启。
+	var probe struct {
+		AutoCheckUpdate *json.RawMessage `json:"autoCheckUpdate"`
+	}
+	if err := json.Unmarshal(data, &probe); err == nil && probe.AutoCheckUpdate == nil {
+		g.AutoCheckUpdate = true
 	}
 	g.Persist.DBPath = ""
 	if g.Projects == nil {

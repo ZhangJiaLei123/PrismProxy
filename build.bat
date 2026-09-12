@@ -18,7 +18,8 @@ set "MODE=release"
 set "DO_NSIS=0"
 set "DO_UPX=0"
 set "DO_CLEAN=0"
-set "VERSION=1.2.1"
+rem VERSION 只决定 zip 文件名；程序内版本号以 internal/app/version.go 的 baseVersion 为准（发版两处同步 bump）
+set "VERSION=2.0.0"
 
 rem ---------- parse arguments ----------
 if "%~1"=="" goto :args_done
@@ -118,9 +119,15 @@ rem ---------- build ----------
 echo.
 echo [3/5] Building (wails build - this also builds the frontend)...
 
-set "BUILD_CMD=wails build -trimpath -webview2 embed -ldflags "-s -w""
+rem 编译时间戳 yyyyMMddHHmmss（本地时区），ldflags -X 注入 internal/app.buildTime；
+rem 设置面板显示完整版本 v%VERSION%-<时间戳>，窗口标题只显示 v%VERSION%
+for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMddHHmmss"') do set "BUILD_TS=%%i"
+set "LDFLAGS=-s -w -X prismproxy/internal/app.buildTime=%BUILD_TS%"
 
-if "%MODE%"=="debug" set "BUILD_CMD=wails build -debug -devtools -webview2 embed"
+set "BUILD_CMD=wails build -trimpath -webview2 embed -ldflags "%LDFLAGS%""
+
+if "%MODE%"=="debug" set "BUILD_CMD=wails build -debug -devtools -webview2 embed -ldflags "-X prismproxy/internal/app.buildTime=%BUILD_TS%""
+echo   v%VERSION%-%BUILD_TS%
 if "%DO_NSIS%"=="1"  set "BUILD_CMD=%BUILD_CMD% -nsis"
 if "%DO_UPX%"=="1"   set "BUILD_CMD=%BUILD_CMD% -upx"
 

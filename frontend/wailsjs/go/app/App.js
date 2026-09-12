@@ -38,6 +38,10 @@ export function BuildCurl(arg1, arg2) {
   return window['go']['app']['App']['BuildCurl'](arg1, arg2);
 }
 
+export function CheckUpdate() {
+  return window['go']['app']['App']['CheckUpdate']();
+}
+
 export function ClearFlows() {
   return window['go']['app']['App']['ClearFlows']();
 }
@@ -124,6 +128,10 @@ export function GetSettings() {
 
 export function GetSystemProxyStatus() {
   return window['go']['app']['App']['GetSystemProxyStatus']();
+}
+
+export function GetVersion() {
+  return window['go']['app']['App']['GetVersion']();
 }
 
 export function ImportDomainGroupFile(arg1) {

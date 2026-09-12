@@ -480,6 +480,7 @@ func (s *ctlService) SaveSettings(project string, raw json.RawMessage) ([]string
 	env.MaxBodyMB = nu.MaxBodyMB
 	env.ShowSysProxySwitch = nu.ShowSysProxySwitch
 	env.AutoSysProxy = nu.AutoSysProxy
+	env.AutoCheckUpdate = nu.AutoCheckUpdate
 	env.BypassList = nu.BypassList
 	env.Persist = nu.Persist
 	env.ADB = nu.ADB
@@ -543,8 +544,8 @@ func (s *ctlService) UISettings(tab string) bool {
 // ---------- 代理生命周期 / CA（M10 补面） ----------
 
 func (s *ctlService) StartProxy() error { return s.app.StartProxy("") }
-func (s *ctlService) StopProxy() error   { return s.app.StopProxy() }
-func (s *ctlService) InstallCA() error   { return s.app.InstallRootCA() }
+func (s *ctlService) StopProxy() error  { return s.app.StopProxy() }
+func (s *ctlService) InstallCA() error  { return s.app.InstallRootCA() }
 
 // ---------- ADB 设备代理（M10 补面） ----------
 

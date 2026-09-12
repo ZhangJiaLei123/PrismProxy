@@ -210,6 +210,7 @@ function buildSettings(): any {
     maxBodyMB: 256,
     showSysProxySwitch: true,
     autoSysProxy: false,
+    autoCheckUpdate: true,
     bypassList: ['localhost', '127.0.0.1', '*.local'],
     persist: { enabled: false, dbPath: '', retainDays: 7, maxMB: 500 },
     adb: {
@@ -246,6 +247,7 @@ function buildSettings(): any {
     maxBodyMB: saved.maxBodyMB ?? base.maxBodyMB,
     showSysProxySwitch: saved.showSysProxySwitch ?? base.showSysProxySwitch,
     autoSysProxy: saved.autoSysProxy ?? base.autoSysProxy,
+    autoCheckUpdate: saved.autoCheckUpdate ?? base.autoCheckUpdate,
     bypassList: saved.bypassList ?? base.bypassList,
     persist: saved.persist ?? base.persist,
     adb: saved.adb ?? base.adb,

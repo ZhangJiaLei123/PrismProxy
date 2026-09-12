@@ -60,6 +60,8 @@ import { useProjects } from './composables/useProjects'
 import { useAppView } from './composables/useAppView'
 import { WailsReviewApi } from './review/api/wails'
 import { EventsOn, WindowUnminimise } from '../wailsjs/runtime/runtime'
+import { GetSettings } from '../wailsjs/go/app/App'
+import { useUpdate } from './composables/useUpdate'
 
 const store = useFlowsStore()
 // M11：无打开项目（currentId 为空）时主界面替换为欢迎页
@@ -67,6 +69,7 @@ const { hasOpenProject } = useProjects()
 // M12.3：抓包/复盘视图切换；内嵌复盘直接用 Wails 绑定适配器
 const { view } = useAppView()
 const reviewApi = new WailsReviewApi()
+const { startAutoCheck } = useUpdate()
 const showSettings = ref(false)
 // 设置抽屉初始标签：状态标签入口定位到「网络」（代理服务），底部按钮默认「常规」
 const settingsTab = ref('general')
@@ -124,5 +127,12 @@ onMounted(async () => {
   EventsOn('proxy:ready', () => refreshFooter())
   EventsOn('ui:open-settings', (tab?: string) => onUIOpenSettings(tab))
   await store.init()
+  // 启动自动检查更新（默认开启，可在设置「常规-关于」关闭）：读设置失败不打扰
+  try {
+    const s = await GetSettings()
+    startAutoCheck(s.autoCheckUpdate !== false)
+  } catch {
+    // 离线/后端异常：跳过本次自动检查
+  }
 })
 </script>
