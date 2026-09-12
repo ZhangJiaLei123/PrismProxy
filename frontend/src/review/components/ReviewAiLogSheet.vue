@@ -322,9 +322,11 @@ async function hydrateMermaid(): Promise<void> {
 
 // ===== 滚动跟随 =====
 // 直播轮展开体跟随：展开体限高自滚动后，流式追加发生在块内而非外层——末轮各滚动体
-// 近底部（40px 阈值，未上翻回看）才钉住底缘；force 用于开层/切 tab 的无条件跟随（对齐外层滚底语义）
+// 近底部（40px 阈值，未上翻回看）才钉住底缘；force 无条件钉底：开层/切 tab 的导航意图，
+// 以及 phase 收尾定稿的一次性定格（M-1 审计修复：末批 delta 与 done/stop 间隔 <50ms 时
+// 定稿帧 phase 已离开 streaming，早退不放宽会让尾部增量滞留滚动位上方，与外层滚底不一致）
 function pinLiveFolds(force: boolean): void {
-  if (props.phase !== 'streaming') return
+  if (!force && props.phase !== 'streaming') return
   const root = logBodyEl.value
   if (!root) return
   const turns = root.querySelectorAll<HTMLElement>('.ai-turn')
@@ -366,12 +368,14 @@ watch(
     })
   },
 )
-// phase 收尾（streaming→done/stopped/error）：末帧图源此时才完整，补一次水合
+// phase 收尾（streaming→done/stopped/error）：末帧图源此时才完整，补一次水合；
+// 并对末轮展开体无条件钉底一次（M-1：收尾定稿对齐外层「done 后末帧滚底」语义，一次性无持续拉扯）
 watch(
   () => props.phase,
   () => {
     nextTick(() => {
       void hydrateMermaid()
+      pinLiveFolds(true)
     })
   },
 )

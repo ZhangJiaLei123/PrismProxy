@@ -754,6 +754,9 @@ body.row-resizing * {
 }
 .ai-conv-fold.open > .ai-conv-scroll {
   overflow-y: auto;
+  /* M-2 审计修复：展开态恒预留滚动条 gutter——内容增长越过 280px 瞬间占位滚动条
+     出现（~10px 参与 fit-content 气泡布局）不再重排文本；收起态不预留、无空白 */
+  scrollbar-gutter: stable;
 }
 /* 思考过程弱化展示：与正文输出区分层级 */
 .ai-conv-think {
