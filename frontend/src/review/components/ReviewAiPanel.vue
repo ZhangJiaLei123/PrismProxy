@@ -48,7 +48,8 @@
         <ReviewAiExplainView
           v-if="activeTab === 'explain'"
           :scope-text="scopeText"
-          :phase="phase"
+          :phase="viewPhase"
+          :running="running"
           :start-disabled="startDisabled"
           :need-confirm="needConfirm"
           :meta-text="metaText"
@@ -61,7 +62,8 @@
         <ReviewAiIntentView
           v-else-if="activeTab === 'intent'"
           :scope-text="scopeText"
-          :phase="phase"
+          :phase="viewPhase"
+          :running="running"
           :start-disabled="startDisabled"
           :need-confirm="needConfirm"
           :meta-text="metaText"
@@ -78,7 +80,8 @@
         <ReviewAiLocateView
           v-else-if="activeTab === 'locate'"
           :scope-text="scopeText"
-          :phase="phase"
+          :phase="viewPhase"
+          :running="running"
           :start-disabled="startDisabled"
           :need-confirm="needConfirm"
           :meta-text="metaText"
@@ -98,7 +101,8 @@
         <ReviewAiFlowmapView
           v-else
           :scope-text="scopeText"
-          :phase="phase"
+          :phase="viewPhase"
+          :running="running"
           :start-disabled="startDisabled"
           :need-confirm="needConfirm"
           :meta-text="metaText"
@@ -133,6 +137,7 @@
       v-model:open="logOpen"
       v-model:prev-open="prevOpen"
       :phase="phase"
+      :live-turn="liveTurn"
       :conv-turns="convTurns"
       :logs="logs"
       :prev-logs="prevLogs"
@@ -175,6 +180,7 @@ import {
   convTurns,
   createTurn,
   hydrateAiSession,
+  lastResults,
   logs,
   matches,
   prevLogs,
@@ -183,7 +189,7 @@ import {
 import type { ConvTurn } from '../useAiSession'
 
 // 面板状态机（设计 §7.3）：idle → streaming(meta→delta/intent/match*) → done|stopped|error；
-// 切模式/换流重置，同面板同时只跑一个任务
+// 切 tab 后台续跑（状态跨 tab 记忆，视图级派生见 viewPhase），同面板同时只跑一个任务
 type Phase = 'idle' | 'streaming' | 'done' | 'stopped' | 'error'
 
 const props = defineProps<{
@@ -228,6 +234,11 @@ const phase = ref<Phase>('idle')
 // explain 本次 run 的目标流（doStart 时快照）：头部目标名以此为准——
 // flowId 跟随列表选中流后，浏览点行/翻页引起的变化不得让旧结果错挂新标签
 const runTarget = ref('')
+// run 级快照（doStart 时一次性定格）：切 tab 后台续跑期间，运行逻辑/进度文案/开轮标记
+// 读发起时的模式与选项，不随 activeTab/实时 props 漂移（qAsked/scopeText/singleMode 均依赖 activeTab）
+const runMode = ref<AiChatMode>('explain')
+const runSingle = ref(false)
+const runAsked = ref('')
 const errMsg = ref('')
 const meta = ref<AiChatMeta | null>(null)
 const intentDone = ref(0)
@@ -237,6 +248,9 @@ const intentDone = ref(0)
 // convTurns/logs/prevLogs/matches 为模块级 store（useAiSession）：常驻内存 + IndexedDB
 // 持久化，切模式/组件卸载不丢（阶段三）
 let curTurn: ConvTurn | null = null
+// 进行中轮次引用（curTurn 的响应式镜像，供 LogSheet live 高亮判定）：closeTurn 即熄灭——
+// 单条轮询条目间隙期（上条已关轮、下条未开轮）已完成轮不再误亮直播态
+const liveTurn = ref<ConvTurn | null>(null)
 const question = ref('')
 const includeReq = ref(false)
 const includeResp = ref(false)
@@ -358,8 +372,11 @@ const startDisabled = computed(() => {
   return !question.value.trim()
 })
 const metaText = computed(() => {
+  // 外模式守卫：终态 meta 属于发起模式的历史，不外溢到其他 tab；流式中则保留——
+  // 外模式 tab 上「送审 X/Y 条」是唯一的运行进度全局提示（配合停止按钮）
+  if (phase.value !== 'streaming' && runMode.value !== activeTab.value) return ''
   // 单条轮询：meta 逐条变化（total 恒为 1），改为展示整轮进度（成功数；分母用循环快照）
-  if (activeTab.value === 'intent' && singleMode.value && phase.value !== 'idle') {
+  if (runMode.value === 'intent' && runSingle.value && phase.value !== 'idle') {
     return `单条轮询 ${intentDone.value}/${singleTotal.value || intentIds.value.length} 条`
   }
   const m = meta.value
@@ -370,7 +387,7 @@ const metaText = computed(() => {
 })
 const intentPct = computed(() => {
   // 单条轮询：每次调用 meta.total=1，分母改用循环开始时的快照数
-  const t = activeTab.value === 'intent' && singleMode.value ? singleTotal.value || intentIds.value.length : (meta.value?.total ?? intentIds.value.length)
+  const t = runMode.value === 'intent' && runSingle.value ? singleTotal.value || intentIds.value.length : (meta.value?.total ?? intentIds.value.length)
   return t ? Math.round((intentDone.value / t) * 100) : 0
 })
 
@@ -383,8 +400,12 @@ const displayMd = computed(() => {
   const last = fences[fences.length - 1]
   return last?.index != null ? text.slice(0, last.index) : text
 })
-// 首 token 前的骨架占位：流式进行中且尚无任何输出
-const pendingStream = computed(() => phase.value === 'streaming' && !displayMd.value)
+// 首 token 前的骨架占位：流式进行中且尚无任何输出（仅发起模式 tab 显示，外模式不闪骨架）
+const pendingStream = computed(() => phase.value === 'streaming' && runMode.value === activeTab.value && !displayMd.value)
+// 视图级 phase：终态/流式只挂发起模式 tab——外模式 tab 视为 idle（无错误条/进度条/骨架，
+// 输入可编辑），运行中的全局提示由 running 驱动（RunActions 停止按钮与「AI 分析中」pill）
+const viewPhase = computed<Phase>(() => (runMode.value === activeTab.value ? phase.value : 'idle'))
+const running = computed(() => phase.value === 'streaming')
 
 // ===== 调用日志与对话（右下角抽层，UI 见子组件 ReviewAiLogSheet）=====
 // 数据源（logs/prevLogs/convTurns/matches）在模块级 store useAiSession，本组件仅持有开合态
@@ -395,7 +416,10 @@ const logSheetRef = ref<InstanceType<typeof ReviewAiLogSheet> | null>(null)
 // meta 帧=开轮；done/error/stop=关轮（幂等，覆盖 done/error/abort/卸载全路径）。
 // 关轮先把缓冲落盘本轮，再清 in-flight 缓冲；同时清残余 50ms 合帧定时器（防悬空回调）
 function beginTurn(system: string, user: string): void {
-  curTurn = createTurn(qAsked.value, system, user, activeTab.value)
+  // 开轮标记用 doStart 快照（runAsked/runMode）：切 tab 后台续跑时不再读实时 activeTab，
+  // 避免运行中途的 meta 帧把本轮错标为切换后的模式（lastText 按模式反查会串显）
+  curTurn = createTurn(runAsked.value, system, user, runMode.value)
+  liveTurn.value = curTurn
 }
 function closeTurn(fr?: string, usage?: AiUsage): void {
   if (renderTimer !== null) {
@@ -407,10 +431,17 @@ function closeTurn(fr?: string, usage?: AiUsage): void {
     curTurn.text = mdBuf
     curTurn.finishReason = fr ?? ''
     curTurn.usage = usage
+    // 末次结果记录（解读/定位/流程的「上次记录」数据源）：正文非空才覆盖——
+    // 开轮即停/无输出的失败轮不抹掉上次可用结果；intent 轮次也写入但视图不消费
+    const m = curTurn.mode
+    if (m && curTurn.text) {
+      lastResults.value[m] = { question: curTurn.question, text: curTurn.text, ts: Date.now() }
+    }
   }
   mdBuf = ''
   reasonBuf = ''
   curTurn = null
+  liveTurn.value = null
   scheduleSave() // 关轮=内容定稿点，落盘防抖
 }
 // 非响应式：本 run 起始时间与首 delta 标记
@@ -423,7 +454,10 @@ const lastText = computed(() => {
   for (let i = convTurns.value.length - 1; i >= 0; i--) {
     if (convTurns.value[i].mode === activeTab.value) return convTurns.value[i].text
   }
-  return ''
+  // 会话内无该模式轮次（旧盘轮次无 mode、被 MAX_TURNS prune 挤出、清空会话后）：
+  // 回退持久化的末次结果（intent 单条轮询会挤占轮次上限，独立记录保证始终可回显）。
+  // 反查命中末轮但文本为空时不兜底——保留「新 run 开轮清屏」语义
+  return lastResults.value[activeTab.value]?.text ?? ''
 })
 
 function toggleLog(): void {
@@ -541,12 +575,18 @@ function onNoticeOk(): void {
 
 async function doStart(): Promise<void> {
   resetRun()
+  // run 级快照（在 resetRun 之后）：切 tab 后台续跑期间读发起时的模式/选项，不随 tab 漂移；
+  // 单条轮询循环逐条读实时值会被外模式 tab 上的改动影响，includeReq 一并定格
+  runMode.value = activeTab.value
+  runSingle.value = singleMode.value
+  runAsked.value = qAsked.value
+  const includeReqAt = includeReq.value
   // explain 目标快照（在 resetRun 之后：stopRun 已清 runTarget）
-  if (activeTab.value === 'explain') runTarget.value = props.flowId || ''
+  if (runMode.value === 'explain') runTarget.value = props.flowId || ''
   phase.value = 'streaming'
   runStartTs = Date.now()
   sawDelta = false
-  addLog('start', TABS.find((t) => t.key === activeTab.value)?.label + ' · ' + scopeText.value)
+  addLog('start', TABS.find((t) => t.key === runMode.value)?.label + ' · ' + scopeText.value)
   const ctl = new AbortController()
   abortCtl = ctl
   const seq = ++runSeq
@@ -555,7 +595,7 @@ async function doStart(): Promise<void> {
     if (seq === runSeq) onFrame(ev)
   }
   try {
-    if (activeTab.value === 'intent' && singleMode.value) {
+    if (runMode.value === 'intent' && runSingle.value) {
       // 单条轮询：逐条独立调用模型（每条一次完整往返），规避整批 prompt 过大导致的
       // 输出截断/首响应超时。单条失败不中断后续；停止或 run 被重开立即退出循环。
       // 候选列表开始时快照：AI 抽屉无遮罩，运行中翻页会清空 checkedIds（intentIds
@@ -582,7 +622,7 @@ async function doStart(): Promise<void> {
           onFrame(ev)
         }
         try {
-          await runIntent(props.api, [id], itemFrame, ctl.signal, { includeReqBody: includeReq.value })
+          await runIntent(props.api, [id], itemFrame, ctl.signal, { includeReqBody: includeReqAt })
         } catch (e) {
           if (ctl.signal.aborted || seq !== runSeq) break
           closeTurn() // 本条中途失败（error 帧被 itemFrame 拦截或网络异常）：关闭进行中轮次再继续下一条
@@ -599,18 +639,18 @@ async function doStart(): Promise<void> {
           addLog('error', `轮询结束 · 成功 ${total - failed}/${total} · 失败 ${failed} 条`)
         }
       }
-    } else if (activeTab.value === 'intent') {
-      await runIntent(props.api, intentIds.value, frameOf, ctl.signal, { includeReqBody: includeReq.value })
+    } else if (runMode.value === 'intent') {
+      await runIntent(props.api, intentIds.value, frameOf, ctl.signal, { includeReqBody: includeReqAt })
     } else {
       await props.api.analyze(
         {
-          mode: activeTab.value,
-          flowId: activeTab.value === 'explain' ? props.flowId : undefined,
-          ids: activeTab.value === 'explain' ? undefined : byStartedDesc.value,
-          question: activeTab.value === 'locate' || activeTab.value === 'flowmap' ? question.value.trim() : undefined,
+          mode: runMode.value,
+          flowId: runMode.value === 'explain' ? props.flowId : undefined,
+          ids: runMode.value === 'explain' ? undefined : byStartedDesc.value,
+          question: runMode.value === 'locate' || runMode.value === 'flowmap' ? question.value.trim() : undefined,
           options: {
-            includeReqBody: includeReq.value,
-            includeRespBody: activeTab.value === 'locate' ? includeResp.value : undefined,
+            includeReqBody: includeReqAt,
+            includeRespBody: runMode.value === 'locate' ? includeResp.value : undefined,
             language: 'zh',
           },
         },
@@ -688,6 +728,9 @@ function scheduleRender(): void {
   }, 50)
 }
 function pushDelta(text: string): void {
+  // 孤儿 delta 守卫：无进行中轮次（关轮后残余帧/服务端违反 meta 先行的违约顺序）直接丢弃——
+  // 否则污染下一轮缓冲，且抢先置 sawDelta 抑制下一轮「模型开始输出」日志
+  if (!curTurn) return
   if (!sawDelta) {
     sawDelta = true
     addLog('delta', '模型开始输出')
@@ -722,7 +765,7 @@ function stop(): void {
   addLog('stop', '已手动停止')
 }
 
-// 停流清 in-flight（切模式/收面板/卸载路径）：保留对话轮次、日志与匹配（阶段三持久化语义）
+// 停流清 in-flight（仅经 resetRun 在新 run 发起前调用；收面板/卸载走 stop()）：保留对话轮次、日志与匹配（阶段三持久化语义）
 function stopRun(): void {
   stop()
   phase.value = 'idle'
@@ -779,14 +822,16 @@ watch(
     activeTab.value = m
   },
 )
-// 切模式停流并清运行态；对话/日志/匹配保留（阶段三持久化语义，同面板单任务）
-watch(activeTab, () => stopRun())
+// 切 tab 不停流（状态记忆）：后台续跑，任务不因浏览其他模式而中断——
+// 运行态经 running 跨 tab 可见，结果/终态归属发起模式（viewPhase/lastText 按 mode 反查）
 
 watch(
   () => props.show,
   (s) => {
     if (s) {
       activeTab.value = props.mode
+      // 关面板 stop() 留下的 stopped 终态在重开时归位：上次结果以干净态回显（done/error 保留）
+      if (phase.value === 'stopped') phase.value = 'idle'
       void loadCfg()
       window.addEventListener('keydown', onEsc)
       // explain 自动开始统一由 explainAutoTick watch 驱动；cfg 未就绪时由 loadCfg 完成回调兜底

@@ -31,6 +31,16 @@ export interface LogEntry {
   msg: string
 }
 
+// 每模式末次会话结果（解读/定位/流程的「上次记录」）：关轮定稿时覆盖写入。
+// 与 convTurns 末轮反查并存的原因：intent 单条轮询每条流一个轮次，大量标注会把其他
+// 模式的轮次挤出 MAX_TURNS 上限（prune 丢弃）；早期落盘轮次也无 mode 字段——两类场景
+// 下「按 mode 反查 convTurns 末轮」都会落空，此处独立记录保证各模式上次结果始终可回显
+export interface ModeResult {
+  question: string // 本轮提问快照（开轮时的 runAsked：locate/flowmap 为自然语言，explain 为范围说明）
+  text: string // 模型正文全文（locate 含 ```json 块原文，展示层负责截块）
+  ts: number // 关轮定稿时间戳
+}
+
 const MAX_TURNS = 200
 const MAX_CHARS = 3_000_000
 const MAX_LOGS = 500
@@ -44,6 +54,7 @@ export const convTurns = ref<ConvTurn[]>([])
 export const logs = ref<LogEntry[]>([])
 export const prevLogs = ref<LogEntry[]>([])
 export const matches = ref<AiMatchItem[]>([])
+export const lastResults = ref<Record<string, ModeResult>>({})
 
 let logSeq = 0
 let saveTimer: number | null = null
@@ -112,6 +123,8 @@ interface PersistState {
   logs: LogEntry[]
   prevLogs: LogEntry[]
   matches: AiMatchItem[]
+  // 可选字段：v 不升级以兼容旧盘数据（缺失时按空恢复）
+  lastResults?: Record<string, ModeResult>
 }
 
 function toPersistTurn(t: ConvTurn): PersistTurn {
@@ -153,6 +166,7 @@ function persist(): void {
     logs: logs.value,
     prevLogs: prevLogs.value,
     matches: matches.value,
+    lastResults: lastResults.value,
   }
   void kvPut(KEY, state).catch(() => {})
 }
@@ -193,6 +207,7 @@ export async function hydrateAiSession(): Promise<void> {
     if (!logs.value.length && raw.logs?.length) logs.value = raw.logs
     if (!prevLogs.value.length && raw.prevLogs?.length) prevLogs.value = raw.prevLogs
     if (!matches.value.length && raw.matches?.length) matches.value = raw.matches
+    lastResults.value = raw.lastResults ?? {}
     logSeq = Math.max(logSeq, raw.logSeq ?? 0)
     scheduleSave()
   } catch {
@@ -242,6 +257,7 @@ export function clearSession(): void {
   logs.value = []
   prevLogs.value = []
   matches.value = []
+  lastResults.value = {}
   logSeq = 0
   if (saveTimer !== null) {
     clearTimeout(saveTimer)

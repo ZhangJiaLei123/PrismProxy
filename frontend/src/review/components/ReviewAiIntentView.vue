@@ -20,6 +20,7 @@
 
   <ReviewAiRunActions
     :phase="phase"
+    :running="running"
     label="开始标注"
     :start-disabled="startDisabled"
     :need-confirm="needConfirm"
@@ -65,6 +66,8 @@ import ReviewAiScopeText from './ReviewAiScopeText.vue'
 defineProps<{
   scopeText: string
   phase: 'idle' | 'streaming' | 'done' | 'stopped' | 'error'
+  /** 全局运行中（面板 phase==='streaming'）：透传 RunActions，跨 tab 驱动停止按钮/运行 pill */
+  running: boolean
   startDisabled: boolean
   needConfirm: boolean
   metaText: string

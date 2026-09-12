@@ -15,13 +15,14 @@
       当前未开启脱敏，请求头将原样发送给 AI 服务，确定继续？
     </n-popconfirm>
     <n-button v-else type="primary" size="small" :disabled="startDisabled" @click="emit('start')">{{ label }}</n-button>
-    <n-button v-if="phase === 'streaming'" size="small" quaternary @click="emit('stop')">停止</n-button>
+    <!-- 停止按钮/pill 由全局 running 驱动：任务在后台续跑时，任何 tab 上都能停止并看到运行态 -->
+    <n-button v-if="running" size="small" quaternary @click="emit('stop')">停止</n-button>
     <!-- 分析中状态 pill：弹跳点 + 流动渐变文字（静态线索=紫色底与点色，动画非唯一反馈） -->
-    <span v-if="phase === 'streaming'" class="ai-live">
+    <span v-if="running" class="ai-live">
       <i></i><i></i><i></i><span>AI 分析中</span>
     </span>
     <!-- 读屏播报（R1 审计修复）：live region 必须先于消息常驻无障碍树才会被播报；sr-only 视觉隐藏不影响布局 -->
-    <span class="ai-sr-live" aria-live="polite">{{ phase === 'streaming' ? 'AI 分析中' : '' }}</span>
+    <span class="ai-sr-live" aria-live="polite">{{ running ? 'AI 分析中' : '' }}</span>
     <span v-if="metaText" class="ai-meta">{{ metaText }}</span>
     <span v-else-if="phase === 'done'" class="ai-state">已完成</span>
     <span v-else-if="phase === 'stopped'" class="ai-state">已停止</span>
@@ -32,8 +33,10 @@
 import { NButton, NPopconfirm } from 'naive-ui'
 
 defineProps<{
-  /** 面板状态机（设计 §7.3）：idle → streaming → done|stopped|error */
+  /** 视图级状态机（设计 §7.3）：idle → streaming → done|stopped|error；外模式 tab 恒为 idle */
   phase: 'idle' | 'streaming' | 'done' | 'stopped' | 'error'
+  /** 全局运行中（面板 phase==='streaming'）：驱动停止按钮与「AI 分析中」pill，跨 tab 可见 */
+  running: boolean
   /** 开始按钮文案（各模式自定：开始解读/开始标注/开始分析） */
   label: string
   startDisabled: boolean

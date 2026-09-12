@@ -93,7 +93,7 @@
               <template v-if="t.reason">
                 <button
                   class="ai-conv-toggle"
-                  :class="{ open: t.open, live: ti === convTurns.length - 1 && phase === 'streaming' && t.open }"
+                  :class="{ open: t.open, live: t === liveTurn && phase === 'streaming' && t.open }"
                   @click="toggleTurn(t)"
                 >
                   <svg class="chev" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -111,7 +111,7 @@
               <template v-if="t.text">
                 <button
                   class="ai-conv-toggle"
-                  :class="{ open: t.txtOpen, live: ti === convTurns.length - 1 && phase === 'streaming' && t.txtOpen }"
+                  :class="{ open: t.txtOpen, live: t === liveTurn && phase === 'streaming' && t.txtOpen }"
                   @click="toggleTxt(t)"
                 >
                   <svg class="chev" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -171,6 +171,9 @@ const props = defineProps<{
   open: boolean
   /** 分析状态机（驱动空态文案 / 思考区 live 高亮 / 「模型输出中…」提示） */
   phase: 'idle' | 'streaming' | 'done' | 'stopped' | 'error'
+  /** 当前进行中轮次（父侧 beginTurn/closeTurn 同步）：live 直播高亮只认它——
+      单条轮询条目间隙期（上条已关轮、下条未开轮）已完成轮保持展开可读但不再误亮 */
+  liveTurn: ConvTurn | null
   /** 对话轮次（父流式引擎实时写入，本组件只读展示 + 折叠交互） */
   convTurns: ConvTurn[]
   /** 本轮帧级日志（父侧 >500 自截断） */
