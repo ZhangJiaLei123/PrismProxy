@@ -127,6 +127,8 @@
               <div v-else-if="ti === convTurns.length - 1 && phase === 'streaming'" class="ai-hint">模型输出中…</div>
               <div v-else-if="!t.reason" class="ai-hint">（无输出）</div>
               <div v-if="t.finishReason === 'length'" class="ai-hint ai-conv-trunc">输出被截断（模型上下文/输出预算不足）</div>
+              <!-- 截断自动续写状态条：仅直播轮流式中挂在断流处（压缩/续写/失败），定稿消失 -->
+              <ReviewAiContinueBar v-if="t === liveTurn && phase === 'streaming'" :state="continueState" />
             </div>
           </div>
         </template>
@@ -164,6 +166,8 @@ import { NPopconfirm, NTab, NTabs } from 'naive-ui'
 import { renderMarkdown } from '../ai-md'
 import { hydrateMermaidIn } from '../aiMermaid'
 import { clearSession } from '../useAiSession'
+import type { AiChatNotice } from '../api'
+import ReviewAiContinueBar from './ReviewAiContinueBar.vue'
 import type { ConvTurn, LogEntry, LogKind } from '../useAiSession'
 
 const props = defineProps<{
@@ -182,6 +186,8 @@ const props = defineProps<{
   prevLogs: LogEntry[]
   /** 上一轮归档展开态（父持有：新 run 开跑归档时强制收起） */
   prevOpen: boolean
+  /** 截断自动续写状态（父级 notice 帧驱动）：直播轮流式中展示在正文断流处 */
+  continueState?: AiChatNotice | null
 }>()
 
 const emit = defineEmits<{
@@ -224,6 +230,7 @@ const LOG_KIND_LABEL: Record<LogKind, string> = {
   delta: '输出',
   intent: '意图',
   match: '匹配',
+  notice: '续写',
   error: '错误',
   done: '完成',
   stop: '停止',

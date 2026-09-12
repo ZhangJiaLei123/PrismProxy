@@ -475,6 +475,44 @@ func (a *App) runAIChatOnce(ctx context.Context, req ctlapi.AIChatRequest, emit 
 		return nil // 停止/断连恰在完成边界：静默收尾，不发残余 intent/match/done 帧
 	}
 
+	// 9.5) 输出截断自动续写（finish_reason=length）：开临时压缩会话把历史对话
+	//（原 system+user+截断稿）压成结构化记忆，再以「原系统+续写规则+记忆」开新会话
+	// 续写，delta 走同一通道无缝拼到首轮正文之后；最多 2 轮。压缩/续写失败非致命——
+	// 已流出的截断稿保留，failed notice 告知，done 仍按 length 上报告警。
+	continued := 0
+	if fin == ai.FinishReasonLength && sb.Len() > 0 {
+		res := ai.AutoContinue(sctx, client, mode, br.System, br.User, sb.String(),
+			func(stage string, round int) {
+				emitSafe(ctlapi.AIEventNotice, map[string]any{"stage": stage, "round": round})
+			},
+			func(d ai.Delta) {
+				sb.WriteString(d.Text) // 续写正文进同一缓冲：文末 JSON 解析作用于拼接后的完整稿
+				if d.Text != "" {
+					emitSafe(ctlapi.AIEventDelta, map[string]any{"text": d.Text})
+				}
+				if d.Reason != "" {
+					emitSafe(ctlapi.AIEventDelta, map[string]any{"reason": d.Reason})
+				}
+			})
+		if ctx.Err() != nil || sctx.Err() != nil {
+			return nil // 续写期间用户停止/断连：静默收尾
+		}
+		switch {
+		case res.FailedStage != "":
+			msg := "自动续写失败，已保留截断稿"
+			if res.FailError != nil {
+				msg += "：" + res.FailError.Error()
+			}
+			log.Printf("ai: 截断自动续写失败（mode=%s stage=%s）: %v", mode, res.FailedStage, res.FailError)
+			emitSafe(ctlapi.AIEventNotice, map[string]any{"stage": "failed", "round": res.Rounds, "message": msg})
+		case res.Rounds > 0:
+			continued = res.Rounds
+			fin = res.FinishReason
+			usage.PromptTokens += res.Usage.PromptTokens
+			usage.CompletionTokens += res.Usage.CompletionTokens
+		}
+	}
+
 	// 10) 文末 JSON 块解析 → intent/match 事件（解析失败仅展示 Markdown，不报错）
 	md := sb.String()
 	switch mode {
@@ -507,6 +545,9 @@ func (a *App) runAIChatOnce(ctx context.Context, req ctlapi.AIChatRequest, emit 
 		fin = "stop" // 上游未给 finish_reason（不发 [DONE] 直接关连接等）：维持旧行为兜底
 	}
 	doneData := map[string]any{"finishReason": fin, "truncated": br.Truncated}
+	if continued > 0 {
+		doneData["continued"] = continued // 发生过自动续写的轮数（前端日志「经 N 次续写完成」）
+	}
 	if usage.PromptTokens > 0 || usage.CompletionTokens > 0 {
 		// usage：include_usage 末帧带回的真实 token 统计；服务商不支持时缺省，前端按字数估算兜底
 		doneData["usage"] = map[string]int{"promptTokens": usage.PromptTokens, "completionTokens": usage.CompletionTokens}

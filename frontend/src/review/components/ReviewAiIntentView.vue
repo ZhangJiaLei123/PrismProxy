@@ -38,6 +38,9 @@
     class="ai-progress"
   />
 
+  <!-- 截断自动续写状态条（批量/单条轮询某条触发时在此提示；单条 done 后父级清空） -->
+  <ReviewAiContinueBar :state="continueState" />
+
   <div v-if="phase === 'error'" class="ai-error">{{ errMsg }}</div>
 
   <!-- 结果列表：候选池里有结果的，按模型输出序号排（排序/过滤在父级 intentResults） -->
@@ -60,8 +63,10 @@
 <script setup lang="ts">
 import { NCheckbox, NProgress } from 'naive-ui'
 import type { IntentResult } from '../../lib/types'
+import type { AiChatNotice } from '../api'
 import ReviewAiRunActions from './ReviewAiRunActions.vue'
 import ReviewAiScopeText from './ReviewAiScopeText.vue'
+import ReviewAiContinueBar from './ReviewAiContinueBar.vue'
 
 defineProps<{
   scopeText: string
@@ -72,6 +77,8 @@ defineProps<{
   needConfirm: boolean
   metaText: string
   errMsg: string
+  /** 截断自动续写状态条（父级视图门控：仅发起模式 tab 可见；单条轮询逐条清空） */
+  continueState?: AiChatNotice | null
   /** 进度百分比（父级按单条轮询快照/批量 total 计算） */
   pct: number
   /** 结果行（父级 intentResults：候选池有结果者按 seq 排） */

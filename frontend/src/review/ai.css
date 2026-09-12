@@ -910,6 +910,10 @@ body.row-resizing * {
 .lk-done {
   color: rgba(126, 200, 181, 0.9);
 }
+/* 截断自动续写：自动恢复动作，复用品牌紫（同 lk-start） */
+.lk-notice {
+  color: var(--ai-brand);
+}
 .lk-stop {
   color: rgba(229, 192, 123, 0.9);
 }

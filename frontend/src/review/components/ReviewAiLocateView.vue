@@ -40,7 +40,7 @@
 
   <div v-if="phase === 'error'" class="ai-error">{{ errMsg }}</div>
 
-  <ReviewAiMdView :md="md" :pending="pending" />
+  <ReviewAiMdView :md="md" :pending="pending" :continue-state="continueState" />
 
   <!-- 匹配卡片：rank/method/url/置信度/理由/[查看→] -->
   <div v-if="matches.length" class="ai-matches">
@@ -62,6 +62,7 @@
 <script setup lang="ts">
 import { NButton, NCheckbox, NInput } from 'naive-ui'
 import type { AiMatchItem } from '../../lib/types'
+import type { AiChatNotice } from '../api'
 import ReviewAiRunActions from './ReviewAiRunActions.vue'
 import ReviewAiScopeText from './ReviewAiScopeText.vue'
 import ReviewAiMdView from './ReviewAiMdView.vue'
@@ -82,6 +83,8 @@ defineProps<{
   md: string
   /** 首 token 前骨架占位 */
   pending: boolean
+  /** 截断自动续写状态条（父级视图门控：仅发起模式 tab 可见） */
+  continueState?: AiChatNotice | null
   /** 匹配卡片（父级 upsertMatch 按 rank 排） */
   matches: AiMatchItem[]
   /** 置信度色卡/文案（父级 helper：onFrame 日志同用） */

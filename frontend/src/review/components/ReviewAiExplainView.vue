@@ -16,10 +16,11 @@
 
   <div v-if="phase === 'error'" class="ai-error">{{ errMsg }}</div>
 
-  <ReviewAiMdView :md="md" :pending="pending" />
+  <ReviewAiMdView :md="md" :pending="pending" :continue-state="continueState" />
 </template>
 
 <script setup lang="ts">
+import type { AiChatNotice } from '../api'
 import ReviewAiRunActions from './ReviewAiRunActions.vue'
 import ReviewAiScopeText from './ReviewAiScopeText.vue'
 import ReviewAiMdView from './ReviewAiMdView.vue'
@@ -37,6 +38,8 @@ defineProps<{
   md: string
   /** 首 token 前骨架占位 */
   pending: boolean
+  /** 截断自动续写状态条（父级视图门控：仅发起模式 tab 可见） */
+  continueState?: AiChatNotice | null
 }>()
 
 const emit = defineEmits<{

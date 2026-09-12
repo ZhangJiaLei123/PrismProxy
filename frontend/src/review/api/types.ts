@@ -82,14 +82,25 @@ export interface AiUsage {
   completionTokens: number
 }
 
+/** notice 事件：输出被 length 截断后，后端自动「压缩历史 → 新会话续写」的进度告知。
+ *  compressing=临时压缩会话进行中；continuing=压缩完成、续写会话输出中；failed=续写链路失败（非致命，保留截断稿）。 */
+export type AiContinueStage = 'compressing' | 'continuing' | 'failed'
+export interface AiChatNotice {
+  stage: AiContinueStage
+  round: number
+  /** failed 阶段携带的人话原因（其余阶段可缺省）。 */
+  message?: string
+}
+
 /** SSE 事件判别联合（{event, data} 帧形态；三实现零转换上抛，面板统一消费）。 */
 export type AiChatEvent =
   | { event: 'meta'; data: AiChatMeta }
   | { event: 'delta'; data: { text?: string; reason?: string } }
   | { event: 'intent'; data: IntentResult }
   | { event: 'match'; data: AiMatchItem }
+  | { event: 'notice'; data: AiChatNotice }
   | { event: 'error'; data: { message: string } }
-  | { event: 'done'; data: { finishReason: string; truncated: boolean; usage?: AiUsage } }
+  | { event: 'done'; data: { finishReason: string; truncated: boolean; continued?: number; usage?: AiUsage } }
 
 /** 模型条目（settings.AIModelEntry 脱敏投影）：每条为独立供应商配置；hasKey 表示已存密钥。 */
 export interface AIEntryView {

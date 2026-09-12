@@ -6,6 +6,7 @@ import type { AiMatchItem } from '../lib/types'
 import type { AiUsage } from './api'
 
 export interface ConvTurn {
+  id: number // 稳定自增 id（createTurn 分配、随盘持久化，旧盘缺失 hydrate 时补发）：历史抽层 v-for 键与勾选/展开集键，杜绝 index 键错位与对象引用孤儿
   mode?: string // 开轮时所在 AI 模式（explain/intent/locate/flowmap）：主 md 区按模式取末轮，防跨模式串显/误截断（审计修复）
   ts?: number // 开轮时间戳（历史记录列表展示/导出排序用；旧盘数据缺失按空处理，UI 隐藏时间、导出跳过该行）
   question: string // 本轮提问快照（开轮时快照：locate/flowmap 为自然语言，explain/intent 回显范围说明）
@@ -24,7 +25,7 @@ export interface ConvTurn {
   usage?: AiUsage
 }
 
-export type LogKind = 'start' | 'meta' | 'delta' | 'intent' | 'match' | 'error' | 'done' | 'stop'
+export type LogKind = 'start' | 'meta' | 'delta' | 'intent' | 'match' | 'notice' | 'error' | 'done' | 'stop'
 export interface LogEntry {
   id: number
   t: number
@@ -58,6 +59,9 @@ export const matches = ref<AiMatchItem[]>([])
 export const lastResults = ref<Record<string, ModeResult>>({})
 
 let logSeq = 0
+// 轮次 id 发号器：模块生命周期内单调递增，clearSession 不清零（历史抽层勾选/展开集以 id 为键，
+// 清空后立即复用小号会让残留勾选错挂到新轮上）；hydrate 恢复旧盘 id 时推进到最大值
+let turnSeq = 0
 let saveTimer: number | null = null
 let hydrated = false
 let epoch = 0 // 递增代数：clearSession 后使在途 hydrate 失效，防止已清数据复活
@@ -116,7 +120,7 @@ function kvDel(key: string): Promise<void> {
 type PersistTurn = Pick<
   ConvTurn,
   'mode' | 'ts' | 'question' | 'system' | 'user' | 'reason' | 'text' | 'finishReason'
-> & { usage?: AiUsage }
+> & { id?: number; usage?: AiUsage } // id 可选：旧盘数据缺失，hydrate 时补发新号
 interface PersistState {
   v: 1
   logSeq: number
@@ -130,6 +134,7 @@ interface PersistState {
 
 function toPersistTurn(t: ConvTurn): PersistTurn {
   const p: PersistTurn = {
+    id: t.id,
     mode: t.mode,
     ts: t.ts,
     question: t.question,
@@ -186,26 +191,33 @@ export async function hydrateAiSession(): Promise<void> {
   try {
     const raw = await kvGet<PersistState>(KEY)
     if (!raw || raw.v !== 1 || myEpoch !== epoch) return
-    const restored = raw.turns.map(
-      (t): ConvTurn =>
-        reactive<ConvTurn>({
-          mode: t.mode,
-          ts: t.ts,
-          question: t.question ?? '',
-          system: t.system ?? '',
-          user: t.user ?? '',
-          reason: t.reason ?? '',
-          text: t.text ?? '',
-          open: false,
-          txtOpen: false,
-          sysOpen: false,
-          usrOpen: false,
-          touched: false,
-          txtTouched: false,
-          finishReason: t.finishReason ?? '',
-          usage: t.usage,
-        })
-    )
+    // 稳定 id 恢复：旧盘缺 id 补发新号；与内存现存轮（hydrate 在途期间新建）撞号也改发新号——
+    // 发号器单调推进，保证整表 id 唯一（历史抽层以 id 为键的前提）
+    const usedIds = new Set(convTurns.value.map((t) => t.id))
+    const restored = raw.turns.map((t): ConvTurn => {
+      let id = t.id
+      if (id == null || usedIds.has(id)) id = ++turnSeq
+      usedIds.add(id)
+      if (id > turnSeq) turnSeq = id
+      return reactive<ConvTurn>({
+        id,
+        mode: t.mode,
+        ts: t.ts,
+        question: t.question ?? '',
+        system: t.system ?? '',
+        user: t.user ?? '',
+        reason: t.reason ?? '',
+        text: t.text ?? '',
+        open: false,
+        txtOpen: false,
+        sysOpen: false,
+        usrOpen: false,
+        touched: false,
+        txtTouched: false,
+        finishReason: t.finishReason ?? '',
+        usage: t.usage,
+      })
+    })
     convTurns.value = restored.concat(convTurns.value)
     if (!logs.value.length && raw.logs?.length) logs.value = raw.logs
     if (!prevLogs.value.length && raw.prevLogs?.length) prevLogs.value = raw.prevLogs
@@ -222,6 +234,7 @@ export async function hydrateAiSession(): Promise<void> {
 
 export function createTurn(question: string, system: string, user: string, mode?: string): ConvTurn {
   const t = reactive<ConvTurn>({
+    id: ++turnSeq,
     mode,
     ts: Date.now(),
     question,

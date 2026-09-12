@@ -2,7 +2,8 @@
 //   - GET  /api/v1/ai/config → 掩码视图（apiKey 永不回原值，仅 hasApiKey/apiKeyMasked）
 //   - POST /api/v1/ai/config → 部分更新（出现的字段才覆盖；apiKey 空串=保持、"__clear__"=清空）
 //   - POST /api/v1/ai/test   → 连通探测（非流式 max_tokens:8、10s，不落盘）
-//   - POST /api/v1/ai/chat   → SSE 分析流（帧序 meta → (delta|intent|match)* → done）
+//   - POST /api/v1/ai/chat   → SSE 分析流（帧序 meta → (delta|intent|match|notice)* → done；
+//     notice=输出 length 截断后「压缩历史→新会话续写」的自动续写进度帧）
 //
 // 流程约定（handler 与实现层的错误分界）：StreamAIChat 实现层在首次 emit 前返回的
 // error 视为同步错误（handler 据 sentinel 映射 400/409/500 JSON 响应）；
@@ -44,8 +45,9 @@ const (
 	AIEventDelta  = "delta"  // {text} 或 {reason}（reason=推理模型思考增量）
 	AIEventIntent = "intent" // {flowId,seq,intent,confidence,needsBody}
 	AIEventMatch  = "match"  // {flowId,rank,method,url,reason,confidence}
+	AIEventNotice = "notice" // {stage,round,message?} 截断自动续写进度：stage=compressing（临时压缩会话）/continuing（新会话续写）/failed（续写非致命失败，保留截断稿）
 	AIEventError  = "error"  // {message}
-	AIEventDone   = "done"   // {finishReason,truncated,usage?}（usage={promptTokens,completionTokens}，include_usage 真实统计；服务商不支持时缺省）
+	AIEventDone   = "done"   // {finishReason,truncated,continued?,usage?}（continued=自动续写轮数；usage={promptTokens,completionTokens}，include_usage 真实统计；服务商不支持时缺省）
 )
 
 // 同步错误 sentinel：StreamAIChat 实现层在首次 emit 前 return（可 fmt.Errorf("%w: …") 包装），

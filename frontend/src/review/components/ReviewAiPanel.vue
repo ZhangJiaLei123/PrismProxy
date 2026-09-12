@@ -56,6 +56,7 @@
           :err-msg="errMsg"
           :md="displayMd"
           :pending="pendingStream"
+          :continue-state="continueStateView"
           @start="requestStart()"
           @stop="stop"
         />
@@ -68,6 +69,7 @@
           :need-confirm="needConfirm"
           :meta-text="metaText"
           :err-msg="errMsg"
+          :continue-state="continueStateView"
           :pct="intentPct"
           :results="intentResults"
           :label-of="flowLabelOf"
@@ -91,6 +93,7 @@
           v-model:include-resp="includeResp"
           :md="displayMd"
           :pending="pendingStream"
+          :continue-state="continueStateView"
           :matches="matches"
           :conf-cls="confCls"
           :conf-label="confLabel"
@@ -110,6 +113,7 @@
           v-model:question="question"
           :md="displayMd"
           :pending="pendingStream"
+          :continue-state="continueStateView"
           @start="requestStart()"
           @stop="stop"
         />
@@ -159,11 +163,12 @@
       :conv-turns="convTurns"
       :logs="logs"
       :prev-logs="prevLogs"
+      :continue-state="continueState"
     />
 
     <!-- 历史记录抽层（独立组件 ReviewAiHistorySheet）：解读/定位/流程历次输出回看 + 跨模块多选导出；
-         与日志抽层同位互斥（开一个关另一个），开合态由本面板持有 -->
-    <ReviewAiHistorySheet v-model:open="histOpen" :conv-turns="convTurns" />
+         与日志抽层同位互斥（开一个关另一个），开合态由本面板持有；live-turn 供剔除流式进行中轮次（未定稿不入册） -->
+    <ReviewAiHistorySheet v-model:open="histOpen" :conv-turns="convTurns" :live-turn="liveTurn" />
 
     <!-- 首次分析告知（设计 §8-1）：localStorage 记忆，确认后才真正开始 -->
     <n-modal
@@ -188,7 +193,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { NButton, NModal, NTab, NTabs } from 'naive-ui'
-import type { AiChatEvent, AiChatMeta, AiChatMode, AiUsage, AIApiConfigView, ReviewApi } from '../api'
+import type { AiChatEvent, AiChatMeta, AiChatMode, AiChatNotice, AiUsage, AIApiConfigView, ReviewApi } from '../api'
 import type { AiMatchItem, IntentResult, ReviewFlowMeta } from '../../lib/types'
 import { useIntents } from '../useIntents'
 import ReviewAiLogSheet from './ReviewAiLogSheet.vue'
@@ -265,6 +270,21 @@ const runSingle = ref(false)
 const runAsked = ref('')
 const errMsg = ref('')
 const meta = ref<AiChatMeta | null>(null)
+// 截断自动续写状态（notice 帧驱动）：compressing=临时会话压缩历史 / continuing=新会话续写 /
+// failed=失败保留截断稿；主区渲染 Trae 风格内联状态条（ReviewAiContinueBar），done/新 run/切条清除
+const continueState = ref<AiChatNotice | null>(null)
+// metaText 用短状态（续写期间数十秒无 delta，RunActions 小字也要可见进度）
+const noticeMsg = computed(() => {
+  const s = continueState.value
+  if (!s) return ''
+  if (s.stage === 'compressing') return '续写中：压缩历史对话…'
+  if (s.stage === 'continuing') return '续写中：新会话输出…'
+  return '续写失败'
+})
+// 视图门控：续写状态只挂发起模式 tab（外模式 tab 视图为 idle，不展示别模式的续写条）
+const continueStateView = computed<AiChatNotice | null>(() =>
+  viewPhase.value === 'streaming' ? continueState.value : null,
+)
 const intentDone = ref(0)
 // 对话 tab 聊天模型：每条流一对「消息发送 → 模型返回」气泡。单条轮询每条独立成对
 // （每次 meta 开新轮），批量/explain 等单次调用=单轮。curTurn 为 in-flight 轮的
@@ -406,12 +426,16 @@ const metaText = computed(() => {
   if (phase.value !== 'streaming' && runMode.value !== activeTab.value) return ''
   // 单条轮询：meta 逐条变化（total 恒为 1），改为展示整轮进度（成功数；分母用循环快照）
   if (runMode.value === 'intent' && runSingle.value && phase.value !== 'idle') {
-    return `单条轮询 ${intentDone.value}/${singleTotal.value || intentIds.value.length} 条`
+    let s = `单条轮询 ${intentDone.value}/${singleTotal.value || intentIds.value.length} 条`
+    if (phase.value === 'streaming' && noticeMsg.value) s += ' · ' + noticeMsg.value
+    return s
   }
   const m = meta.value
   if (!m) return ''
   let s = `送审 ${m.sent}/${m.total} 条 · 预算 ${m.budget.flows} 流 / ${m.budget.kb}KB`
   if (m.truncated) s += ' · 候选超限已截断'
+  // length 截断后的自动续写进度（压缩会话/新会话续写可能静默数十秒，必须可见）
+  if (phase.value === 'streaming' && noticeMsg.value) s += ' · ' + noticeMsg.value
   return s
 })
 const intentPct = computed(() => {
@@ -682,9 +706,14 @@ async function doStart(): Promise<void> {
           if (seq !== runSeq) return
           if (ev.event === 'done') {
             const len = mdBuf.length // closeTurn 会清缓冲，字数先取
+            const cont = ev.data?.continued ?? 0
             closeTurn(ev.data?.finishReason, ev.data?.usage)
+            noticeMsg.value = '' // 本条续写状态不带到下一条
             const fr = ev.data?.finishReason
-            addLog('done', `第 ${i + 1}/${total} 条完成 · ${len} 字` + (fr === 'length' ? ' · 输出被截断（模型上下文不足）' : ''))
+            let tail = ''
+            if (fr === 'length') tail = ' · 输出被截断（模型上下文不足）'
+            else if (cont > 0) tail = ` · 经 ${cont} 次自动续写完成`
+            addLog('done', `第 ${i + 1}/${total} 条完成 · ${len} 字` + tail)
             return
           }
           if (ev.event === 'error') return
@@ -766,6 +795,21 @@ function onFrame(ev: AiChatEvent): void {
       upsertMatch(ev.data)
       addLog('match', `#${ev.data.rank} ${ev.data.method} ${ev.data.url} · ${confLabel(ev.data.confidence)}`)
       break
+    case 'notice': {
+      // length 截断 → 后端自动开「临时压缩会话 + 新会话续写」：日志留痕 + metaText 短进度
+      const round = ev.data.round ?? 1
+      if (ev.data.stage === 'compressing') {
+        noticeMsg.value = '续写中：压缩历史对话…'
+        addLog('notice', `检测到输出截断 · 第 ${round} 轮自动续写：临时会话正在压缩历史对话…`)
+      } else if (ev.data.stage === 'continuing') {
+        noticeMsg.value = '续写中：新会话输出…'
+        addLog('notice', `第 ${round} 轮历史压缩完成 · 已开启新会话续写`)
+      } else {
+        noticeMsg.value = '续写失败'
+        addLog('error', ev.data.message || '自动续写失败，已保留截断稿')
+      }
+      break
+    }
     case 'error':
       closeTurn() // 本轮就此终止，缓冲落盘后不再累积
       phase.value = 'error'
@@ -774,12 +818,19 @@ function onFrame(ev: AiChatEvent): void {
       break
     case 'done': {
       const len = mdBuf.length // closeTurn 会清缓冲，字数先取
+      const cont = ev.data?.continued ?? 0
       closeTurn(ev.data?.finishReason, ev.data?.usage)
       phase.value = 'done'
-      // finishReason 如实来自上游（length=输出预算耗尽被截断），截断时附加操作提示
+      noticeMsg.value = ''
+      // finishReason 如实来自上游（length=输出预算耗尽被截断）；continued>0=经自动续写后收尾
       const fr = ev.data?.finishReason
-      addLog('done', `共 ${len} 字` + (runStartTs ? ` · 耗时 ${((Date.now() - runStartTs) / 1000).toFixed(1)}s` : '') +
-        (fr === 'length' ? ' · 输出被截断（模型上下文/输出预算不足），建议减小批量流数或精简正文' : ''))
+      let tail = ''
+      if (fr === 'length') {
+        tail = ' · 输出被截断（模型上下文/输出预算不足），建议减小批量流数或精简正文'
+      } else if (cont > 0) {
+        tail = ` · 经 ${cont} 次自动续写完成`
+      }
+      addLog('done', `共 ${len} 字` + (runStartTs ? ` · 耗时 ${((Date.now() - runStartTs) / 1000).toFixed(1)}s` : '') + tail)
       break
     }
   }
@@ -845,6 +896,7 @@ function stopRun(): void {
   curTurn = null
   meta.value = null
   runTarget.value = ''
+  noticeMsg.value = ''
 }
 // 仅 doStart 前的全量清场：新 run 独占界面态，日志归档为上一轮供回看（G3 审计建议）
 function resetRun(): void {

@@ -102,7 +102,7 @@ var aiChatSeq atomic.Uint64
 
 // AIChatStart 发起一次 AI 分析会话：与 ctlapi chat 共用 runAIChatOnce 编排与
 // aiBusy 闸门（并发冲突返回与 409 同文案的 error）；事件经 "ai:chat" 频道逐帧
-// 下发，每帧 {handle, event, data}，event ∈ meta|delta|intent|match|error|done。
+// 下发，每帧 {handle, event, data}，event ∈ meta|delta|intent|match|notice|error|done。
 // 同步错误段（meta 帧前，如未配置 400 类）在事件桥无 HTTP 状态码，转 error 帧。
 func (a *App) AIChatStart(req ctlapi.AIChatRequest) (AIChatHandle, error) {
 	if err := a.aiGateAcquire(); err != nil {

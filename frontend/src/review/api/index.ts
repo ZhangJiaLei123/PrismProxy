@@ -11,6 +11,7 @@ export type {
   AIApiConfigView,
   AiChatEvent,
   AiChatMeta,
+  AiChatNotice,
   AiChatMode,
   AiChatOptions,
   AiChatRequest,
