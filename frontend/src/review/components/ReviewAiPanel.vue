@@ -1,7 +1,15 @@
 <template>
   <!-- AI 分析面板（设计 §7）：自绘右侧滑入抽屉（非 n-drawer、无遮罩，可边看列表边读）；
-       absolute 定位于 .review-root 内——主窗内嵌时只覆盖复盘页区域，独立窗口等效 fixed -->
-  <aside class="ai-drawer" :class="{ open: show }">
+       absolute 定位于 .review-root 内——主窗内嵌时只覆盖复盘页区域，独立窗口等效 fixed；
+       宽度可拖拽（左缘把手）并经 localStorage 缓存 -->
+  <aside
+    ref="drawerEl"
+    class="ai-drawer"
+    :class="{ open: show, 'w-dragging': wDragging }"
+    :style="aiWStyle"
+  >
+    <!-- 左缘宽度拖拽把手：左右拖动调整面板宽度，双击恢复默认 -->
+    <div class="ai-grip-x" title="拖拽调整宽度 · 双击恢复默认" @pointerdown="startWDrag" @dblclick="resetW"></div>
     <header class="ai-head">
       <span class="ai-title">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
@@ -52,6 +60,13 @@
         <div v-if="activeTab === 'intent' || activeTab === 'locate'" class="ai-opts">
           <n-checkbox v-model:checked="includeReq" :disabled="phase === 'streaming'">包含请求正文</n-checkbox>
           <n-checkbox v-if="activeTab === 'locate'" v-model:checked="includeResp" :disabled="phase === 'streaming'">包含响应正文</n-checkbox>
+          <!-- 单条轮询：逐条独立调用模型，规避整批 prompt 过大导致的截断/首响应超时（批量标注实测红线） -->
+          <n-checkbox
+            v-if="activeTab === 'intent'"
+            v-model:checked="singleMode"
+            :disabled="phase === 'streaming'"
+            title="每条流单独调用一次模型，慢但稳，可规避批量 prompt 过大导致的输出截断或超时"
+          >单条轮询处理</n-checkbox>
         </div>
 
         <!-- 动作行：开始（redact 关闭时每次需确认）/停止互斥 + 运行状态 -->
@@ -172,7 +187,7 @@
         </button>
       </header>
       <div ref="logBodyEl" class="ai-log-body">
-        <!-- 对话 tab：提问 → 提示词（折叠）→ 思考过程（推理流自动展开、答案开始自动收起）→ 模型输出 -->
+        <!-- 对话 tab：提问 → 对话轮次（每条流一对「消息发送→模型返回」气泡；单条轮询逐条成对） -->
         <template v-if="logTab === 'conv'">
           <div v-if="convEmpty" class="ai-hint ai-log-empty">
             {{ phase === 'streaming' ? '等待模型输出…' : '暂无对话内容 · 发起一次分析后这里实时展示模型原始输出' }}
@@ -183,40 +198,63 @@
               <div class="ai-conv-q">{{ qAsked }}</div>
               <div v-if="hasQuestion" class="ai-conv-scope">{{ scopeText }}</div>
             </section>
-            <section v-if="promptSystem || promptUser" class="ai-conv-sec">
-              <button class="ai-conv-toggle" :class="{ open: promptOpen }" @click="promptOpen = !promptOpen">
-                <svg class="chev" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M6 4.5l4 4-4 4" />
-                </svg>
-                <span>提示词（实际送审）</span>
-                <span class="ai-conv-count">{{ promptLen }} 字</span>
-              </button>
-              <div class="ai-conv-fold" :class="{ open: promptOpen }">
-                <div class="ai-conv-fold-in">
-                  <div class="ai-conv-label-sub">System</div>
-                  <pre class="ai-log-conv">{{ promptSystem }}</pre>
-                  <div class="ai-conv-label-sub">User</div>
-                  <pre class="ai-log-conv">{{ promptUser }}</pre>
+            <!-- 轮次仅追加不重排（resetRun 整体清空），index 作 key 安全 -->
+            <div v-for="(t, ti) in convTurns" :key="ti" class="ai-turn">
+              <!-- 消息发送（右）：head 显示字数 + token（done 帧真实 usage 精确，缺失估算带 ≈） -->
+              <div class="ai-bubble ai-bubble-send">
+                <div class="ai-bubble-head">
+                  <span class="ai-bubble-role">消息发送</span>
+                  <span class="ai-conv-count">{{ t.system.length + t.user.length }} 字 · {{ tokText(t.usage?.promptTokens, t.system + t.user) }}</span>
+                </div>
+                <button v-if="t.system" class="ai-conv-toggle" :class="{ open: t.sysOpen }" @click="t.sysOpen = !t.sysOpen">
+                  <svg class="chev" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6 4.5l4 4-4 4" />
+                  </svg>
+                  <span>System 提示词</span>
+                  <span class="ai-conv-count">{{ t.system.length }} 字</span>
+                </button>
+                <div class="ai-conv-fold" :class="{ open: t.sysOpen }">
+                  <pre class="ai-log-conv">{{ t.system }}</pre>
+                </div>
+                <button v-if="t.user" class="ai-conv-toggle" :class="{ open: t.usrOpen }" @click="t.usrOpen = !t.usrOpen">
+                  <svg class="chev" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6 4.5l4 4-4 4" />
+                  </svg>
+                  <span>User 提示词</span>
+                  <span class="ai-conv-count">{{ t.user.length }} 字</span>
+                </button>
+                <div class="ai-conv-fold" :class="{ open: t.usrOpen }">
+                  <pre class="ai-log-conv">{{ t.user }}</pre>
                 </div>
               </div>
-            </section>
-            <section v-if="reasonText" class="ai-conv-sec">
-              <button
-                class="ai-conv-toggle"
-                :class="{ open: reasonOpen, live: phase === 'streaming' && reasonOpen }"
-                @click="toggleReason"
-              >
-                <svg class="chev" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M6 4.5l4 4-4 4" />
-                </svg>
-                <span>思考过程</span>
-                <span class="ai-conv-count">{{ reasonText.length }} 字</span>
-              </button>
-              <div class="ai-conv-fold" :class="{ open: reasonOpen }">
-                <pre class="ai-log-conv ai-conv-think">{{ reasonText }}</pre>
+              <!-- 模型返回（左）：思考过程（自动开合）+ 正文输出 -->
+              <div class="ai-bubble ai-bubble-recv">
+                <div class="ai-bubble-head">
+                  <span class="ai-bubble-role">模型返回</span>
+                  <span class="ai-conv-count">{{ t.reason.length + t.text.length }} 字 · {{ tokText(t.usage?.completionTokens, t.reason + t.text) }}</span>
+                </div>
+                <template v-if="t.reason">
+                  <button
+                    class="ai-conv-toggle"
+                    :class="{ open: t.open, live: ti === convTurns.length - 1 && phase === 'streaming' && t.open }"
+                    @click="toggleTurn(t)"
+                  >
+                    <svg class="chev" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M6 4.5l4 4-4 4" />
+                    </svg>
+                    <span>思考过程</span>
+                    <span class="ai-conv-count">{{ t.reason.length }} 字</span>
+                  </button>
+                  <div class="ai-conv-fold" :class="{ open: t.open }">
+                    <pre class="ai-log-conv ai-conv-think">{{ t.reason }}</pre>
+                  </div>
+                </template>
+                <pre v-if="t.text" class="ai-log-conv">{{ t.text }}</pre>
+                <div v-else-if="ti === convTurns.length - 1 && phase === 'streaming'" class="ai-hint">模型输出中…</div>
+                <div v-else-if="!t.reason" class="ai-hint">（无输出）</div>
+                <div v-if="t.finishReason === 'length'" class="ai-hint ai-conv-trunc">输出被截断（模型上下文/输出预算不足）</div>
               </div>
-            </section>
-            <pre v-if="convText" class="ai-log-conv">{{ convText }}</pre>
+            </div>
           </template>
         </template>
         <template v-else>
@@ -266,9 +304,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { NButton, NCheckbox, NInput, NModal, NPopconfirm, NProgress, NTab, NTabs } from 'naive-ui'
-import type { AiChatEvent, AiChatMeta, AiChatMode, AIApiConfigView, ReviewApi } from '../api'
+import type { AiChatEvent, AiChatMeta, AiChatMode, AiUsage, AIApiConfigView, ReviewApi } from '../api'
 import type { AiMatchItem, IntentResult, ReviewFlowMeta } from '../../lib/types'
 import { renderMarkdown } from '../ai-md'
 import { useIntents } from '../useIntents'
@@ -317,10 +355,30 @@ const errMsg = ref('')
 const meta = ref<AiChatMeta | null>(null)
 const matches = ref<AiMatchItem[]>([])
 const intentDone = ref(0)
-const rendered = ref('')
+// 对话 tab 聊天模型：每条流一对「消息发送 → 模型返回」气泡。单条轮询每条独立成对
+// （每次 meta 开新轮），批量/explain 等单次调用=单轮。curTurn 为 in-flight 轮的
+// reactive 代理：推入数组后代理身份不变，50ms 合帧直接写代理属性即触发更新
+interface ConvTurn {
+  system: string // meta 帧 system（实际送审 System 提示词）
+  user: string // meta 帧 user（实际送审 User 提示词）
+  reason: string // 推理增量（delta 帧 reason 字段；普通模型/demo 无此流）
+  text: string // 正文增量
+  open: boolean // 思考过程折叠开合
+  sysOpen: boolean // System 提示词折叠开合
+  usrOpen: boolean // User 提示词折叠开合
+  touched: boolean // 思考区被用户手动开合过：本轮流式自动开合逻辑退出
+  finishReason: string // done 帧 finishReason（length=输出截断）
+  usage?: AiUsage // done 帧真实 token 统计（服务商不支持时缺省，前端按字数估算兜底）
+}
+const convTurns = ref<ConvTurn[]>([])
+let curTurn: ConvTurn | null = null
 const question = ref('')
 const includeReq = ref(false)
 const includeResp = ref(false)
+// intent 单条轮询：逐条独立调用模型（勾选后批量红线问题不再出现，代价是总耗时变长）
+const singleMode = ref(false)
+// 单条轮询整轮候选数（循环开始时快照）：进度分母不随运行中勾选变化漂移
+const singleTotal = ref(0)
 const cfg = ref<AIApiConfigView | null>(null)
 const cfgLoading = ref(false)
 const noticeShow = ref(false)
@@ -328,6 +386,7 @@ const settingMsg = ref('')
 
 // 非响应式：delta 原始缓冲与渲染节流句柄（50ms 合帧，避免逐 token 重排）
 let mdBuf = ''
+let reasonBuf = '' // 推理模型思考增量缓冲（delta 帧 reason 字段）
 let renderTimer: number | null = null
 let abortCtl: AbortController | null = null
 // 运行令牌（M1 审计修复）：重开新 run 后，旧 run 续体/迟到帧不得触碰新 run 状态
@@ -410,9 +469,10 @@ const intentResults = computed<IntentResult[]>(() =>
 const scopeText = computed(() => {
   if (activeTab.value === 'explain') return `解读目标：${props.flowLabel || props.flowId || '—'}`
   if (activeTab.value === 'intent') {
+    const verb = singleMode.value ? '逐条分析' : '批量分析'
     return props.checkedIds.length
-      ? `将批量分析已勾选的 ${props.checkedIds.length} 条流`
-      : `未勾选，将分析当前视图 ${byStartedDesc.value.length} 条流（共 ${props.viewTotal} 条）`
+      ? `将${verb}已勾选的 ${props.checkedIds.length} 条流`
+      : `未勾选，将${verb}当前视图 ${byStartedDesc.value.length} 条流（共 ${props.viewTotal} 条）`
   }
   const kw = props.keyword ? `，关键词「${props.keyword}」` : ''
   return `将分析当前视图 ${byStartedDesc.value.length} 条流（${props.tagName}${kw}）`
@@ -430,6 +490,10 @@ const startDisabled = computed(() => {
   return !question.value.trim()
 })
 const metaText = computed(() => {
+  // 单条轮询：meta 逐条变化（total 恒为 1），改为展示整轮进度（成功数；分母用循环快照）
+  if (activeTab.value === 'intent' && singleMode.value && phase.value !== 'idle') {
+    return `单条轮询 ${intentDone.value}/${singleTotal.value || intentIds.value.length} 条`
+  }
   const m = meta.value
   if (!m) return ''
   let s = `送审 ${m.sent}/${m.total} 条 · 预算 ${m.budget.flows} 流 / ${m.budget.kb}KB`
@@ -437,17 +501,18 @@ const metaText = computed(() => {
   return s
 })
 const intentPct = computed(() => {
-  const t = meta.value?.total ?? intentIds.value.length
+  // 单条轮询：每次调用 meta.total=1，分母改用循环开始时的快照数
+  const t = activeTab.value === 'intent' && singleMode.value ? singleTotal.value || intentIds.value.length : (meta.value?.total ?? intentIds.value.length)
   return t ? Math.round((intentDone.value / t) * 100) : 0
 })
 
 // locate 显示缓冲：截掉模型尾部 ```json 块（流式中半截块也不闪现）；
 // 大小写不敏感（模型可能输出 ```JSON，与 Go 侧 lastJSONBlock 同语义，L3 审计修复）
 const displayMd = computed(() => {
-  if (activeTab.value !== 'locate') return rendered.value
-  const fences = [...rendered.value.matchAll(/```json/gi)]
+  if (activeTab.value !== 'locate') return fullText.value
+  const fences = [...fullText.value.matchAll(/```json/gi)]
   const last = fences[fences.length - 1]
-  return last?.index != null ? rendered.value.slice(0, last.index) : rendered.value
+  return last?.index != null ? fullText.value.slice(0, last.index) : fullText.value
 })
 const renderedHtml = computed(() => renderMarkdown(displayMd.value))
 // 首 token 前的骨架占位：流式进行中且尚无任何输出
@@ -478,19 +543,72 @@ const prevLogs = ref<LogEntry[]>([])
 const prevOpen = ref(false)
 const logOpen = ref(false)
 const logTab = ref<'conv' | 'log'>('log')
+// ===== 对话轮次生命周期 =====
+// meta 帧=开轮；done/error/stop=关轮（幂等，覆盖 done/error/abort/卸载全路径）。
+// 关轮先把缓冲落盘本轮，再清 in-flight 缓冲；同时清残余 50ms 合帧定时器（防悬空回调）
+function beginTurn(system: string, user: string): void {
+  curTurn = reactive<ConvTurn>({
+    system,
+    user,
+    reason: '',
+    text: '',
+    open: false,
+    sysOpen: false,
+    usrOpen: false,
+    touched: false,
+    finishReason: '',
+    usage: undefined,
+  })
+  convTurns.value.push(curTurn)
+}
+function closeTurn(fr?: string, usage?: AiUsage): void {
+  if (renderTimer !== null) {
+    window.clearTimeout(renderTimer)
+    renderTimer = null
+  }
+  if (curTurn) {
+    curTurn.reason = reasonBuf
+    curTurn.text = mdBuf
+    curTurn.finishReason = fr ?? ''
+    curTurn.usage = usage
+  }
+  mdBuf = ''
+  reasonBuf = ''
+  curTurn = null
+}
+function toggleTurn(t: ConvTurn): void {
+  t.open = !t.open
+  t.touched = true
+}
 const logBodyEl = ref<HTMLElement | null>(null)
 // 非响应式：本 run 起始时间、首 delta 标记与日志自增 id（跨 run 单调；
 // 500 上限 shift 后长度恒定，滚底 watch 改以末条 id 驱动——A1 审计修复）
 let runStartTs = 0
-let sawDelta = false
+let sawDelta = false // run 级首 delta 标记：仅驱动「模型开始输出」日志
 let logSeq = 0
 
 function log(kind: LogKind, msg: string): void {
   logs.value.push({ id: ++logSeq, t: Date.now(), kind, msg })
   if (logs.value.length > 500) logs.value.shift()
 }
-// 对话 tab = 模型原始输出（非 locate 截断视图，全量原始流）
-const convText = computed(() => rendered.value)
+// 全量模型输出聚合（批量单轮=原 convText 行为不变；locate 的 ```json 截断视图作用于它）
+const fullText = computed(() => convTurns.value.map((t) => t.text).join('\n\n'))
+// 提问区：locate/flowmap 显示自然语言问题；explain/intent 无输入问题，回显范围说明
+const hasQuestion = computed(() => !!question.value.trim())
+const qAsked = computed(() => (hasQuestion.value ? question.value.trim() : scopeText.value))
+// 空态判定：尚无任何对话轮次
+const convEmpty = computed(() => !convTurns.value.length)
+// token 展示：done 帧真实 usage（include_usage 末帧）精确展示；缺失（服务商不支持/demo）
+// 时按字数估算并带 ≈ 前缀（CJK ≈0.7 tok/字、其他 ≈0.25 tok/字符，向上取整）
+function estTokens(s: string): number {
+  let cjk = 0
+  for (const ch of s) if ((ch.codePointAt(0) ?? 0) >= 0x2e80) cjk++
+  return Math.ceil(cjk * 0.7 + (s.length - cjk) * 0.25)
+}
+function tokText(tok: number | undefined, s: string): string {
+  const real = tok != null && tok > 0
+  return (real ? '' : '≈') + (real ? tok : estTokens(s)).toLocaleString('en-US') + ' tok'
+}
 
 function toggleLog(): void {
   logOpen.value = !logOpen.value
@@ -512,14 +630,22 @@ watch([logOpen, logTab], () => {
 })
 // 流式追加（日志帧/对话更新）：仅当视口已近底部（40px 阈值）才跟随滚动，
 // 尊重用户上翻回看——B1 审计修复（原先无条件滚底会每 50ms 把用户拉回底部）
-watch([() => logs.value[logs.value.length - 1]?.id ?? 0, convText], () => {
-  if (!logOpen.value) return
-  nextTick(() => {
-    const el = logBodyEl.value
-    if (!el || !logOpen.value) return
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) el.scrollTop = el.scrollHeight
-  })
-})
+watch(
+  [
+    () => logs.value[logs.value.length - 1]?.id ?? 0,
+    fullText,
+    () => convTurns.value.length,
+    () => convTurns.value[convTurns.value.length - 1]?.reason.length ?? 0,
+  ],
+  () => {
+    if (!logOpen.value) return
+    nextTick(() => {
+      const el = logBodyEl.value
+      if (!el || !logOpen.value) return
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) el.scrollTop = el.scrollHeight
+    })
+  },
+)
 
 // ===== 抽层高度拖拽 + 缓存 =====
 // 顶部把手上下拖动调高，pointerup 落盘 localStorage；双击恢复 CSS 默认。
@@ -601,6 +727,84 @@ function resetLogH(): void {
   }
 }
 
+// ===== 面板宽度拖拽 + 缓存 =====
+// 左缘把手左右拖动调宽，pointerup 落盘 localStorage；双击恢复 CSS 默认 560px。
+// 缓存值以内联 width: min(px, calc(100% - 保留)) 生效——窗口变小时 CSS 就近钳制不溢出容器，
+// 无需 JS 响应 resize（与日志抽层高度拖拽同策略）
+const AI_W_KEY = 'prismproxy:review-ai-panel-w-v1'
+const AI_W_MIN = 420 // 拖拽下限：四模式 tabs + 正文区可读的最小宽度
+const AI_W_RESERVE = 400 // 底层列表区可视保留；上限 = 容器宽 - 400
+const drawerEl = ref<HTMLElement | null>(null)
+const aiW = ref(0) // 0 = 未自定义，走 CSS 默认 560px
+const wDragging = ref(false)
+let wDragStartX = 0
+let wDragStartW = 0
+
+try {
+  const v = Number(localStorage.getItem(AI_W_KEY))
+  if (v >= AI_W_MIN) aiW.value = v
+} catch {
+  /* 存储不可用仅本会话生效 */
+}
+
+const aiWStyle = computed<{ width: string } | undefined>(() =>
+  aiW.value > 0 ? { width: `min(${aiW.value}px, calc(100% - ${AI_W_RESERVE}px))` } : undefined,
+)
+
+function aiMaxW(): number {
+  const cw = drawerEl.value?.parentElement?.clientWidth ?? 0
+  return Math.max(AI_W_MIN, cw - AI_W_RESERVE)
+}
+
+function startWDrag(e: PointerEvent): void {
+  if (e.button !== 0) return // 仅左键拖拽（对齐 I1 审计修复）
+  const el = drawerEl.value
+  if (!el) return
+  wDragging.value = true
+  wDragStartX = e.clientX
+  wDragStartW = el.getBoundingClientRect().width
+  window.addEventListener('pointermove', onWDragMove)
+  window.addEventListener('pointerup', onWDragEnd)
+  window.addEventListener('pointercancel', onWDragEnd)
+  document.body.classList.add('ew-resizing')
+  try {
+    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+  } catch {
+    /* 合成事件无活动指针，捕获失败不影响拖拽逻辑 */
+  }
+  e.preventDefault() // 防触发文本选择
+}
+
+function onWDragMove(e: PointerEvent): void {
+  if (!wDragging.value) return
+  // 向左拖（clientX 减小）增宽
+  aiW.value = Math.min(Math.max(wDragStartW + (wDragStartX - e.clientX), AI_W_MIN), aiMaxW())
+}
+
+function onWDragEnd(): void {
+  if (!wDragging.value) return
+  wDragging.value = false
+  window.removeEventListener('pointermove', onWDragMove)
+  window.removeEventListener('pointerup', onWDragEnd)
+  window.removeEventListener('pointercancel', onWDragEnd)
+  document.body.classList.remove('ew-resizing')
+  try {
+    localStorage.setItem(AI_W_KEY, String(aiW.value))
+  } catch {
+    /* 存储不可用仅本会话生效 */
+  }
+}
+
+// 双击把手恢复默认宽度
+function resetW(): void {
+  aiW.value = 0
+  try {
+    localStorage.removeItem(AI_W_KEY)
+  } catch {
+    /* 忽略 */
+  }
+}
+
 // ===== 运行控制 =====
 function requestStart(auto = false): void {
   if (phase.value === 'streaming') return
@@ -644,7 +848,51 @@ async function doStart(): Promise<void> {
     if (seq === runSeq) onFrame(ev)
   }
   try {
-    if (activeTab.value === 'intent') {
+    if (activeTab.value === 'intent' && singleMode.value) {
+      // 单条轮询：逐条独立调用模型（每条一次完整往返），规避整批 prompt 过大导致的
+      // 输出截断/首响应超时。单条失败不中断后续；停止或 run 被重开立即退出循环。
+      // 候选列表开始时快照：AI 抽屉无遮罩，运行中翻页会清空 checkedIds（intentIds
+      // 静默膨胀为全视图）、筛选重置会产生 undefined id——实时读 computed 会错标/伪失败。
+      let failed = 0
+      const ids = [...intentIds.value]
+      const total = ids.length
+      singleTotal.value = total // 进度分母同步快照，防运行中分母漂移
+      for (let i = 0; i < total; i++) {
+        if (seq !== runSeq || ctl.signal.aborted) break
+        const id = ids[i]
+        // 单条轮询帧守卫：done/error 帧只代表单条结束——done 记录后继续下一条；
+        // error 不置 error 态，由 analyze 的 reject 交循环 catch 统一计数（http/wails 实现均帧后抛出）
+        const itemFrame = (ev: AiChatEvent): void => {
+          if (seq !== runSeq) return
+          if (ev.event === 'done') {
+            const len = mdBuf.length // closeTurn 会清缓冲，字数先取
+            closeTurn(ev.data?.finishReason, ev.data?.usage)
+            const fr = ev.data?.finishReason
+            log('done', `第 ${i + 1}/${total} 条完成 · ${len} 字` + (fr === 'length' ? ' · 输出被截断（模型上下文不足）' : ''))
+            return
+          }
+          if (ev.event === 'error') return
+          onFrame(ev)
+        }
+        try {
+          await runIntent(props.api, [id], itemFrame, ctl.signal, { includeReqBody: includeReq.value })
+        } catch (e) {
+          if (ctl.signal.aborted || seq !== runSeq) break
+          closeTurn() // 本条中途失败（error 帧被 itemFrame 拦截或网络异常）：关闭进行中轮次再继续下一条
+          failed++
+          log('error', `第 ${i + 1}/${total} 条失败：${flowLabelOf(id)} · ${String((e as Error)?.message ?? e)}`)
+        }
+      }
+      if (seq === runSeq && phase.value === 'streaming' && total > 0) {
+        if (failed >= total) {
+          // 全部失败（系统性故障典型场景）：对齐批量失败语义，置 error 态让主界面红条可见
+          phase.value = 'error'
+          errMsg.value = `单条轮询全部失败（0/${total}），详见日志抽层`
+        } else if (failed > 0) {
+          log('error', `轮询结束 · 成功 ${total - failed}/${total} · 失败 ${failed} 条`)
+        }
+      }
+    } else if (activeTab.value === 'intent') {
       await runIntent(props.api, intentIds.value, frameOf, ctl.signal, { includeReqBody: includeReq.value })
     } else {
       await props.api.analyze(
@@ -666,6 +914,7 @@ async function doStart(): Promise<void> {
     // 令牌校验：仅最新 run 可迁移状态（旧 run 续体读到新 run 的 streaming 也不得误标）
     if (seq === runSeq && phase.value === 'streaming') phase.value = 'done'
   } catch (e) {
+    closeTurn() // 无 error 帧直接 reject（网络中断等）：关闭进行中轮次（幂等）
     // 停止（abort 静默收尾）后到达的 reject 不转 error 态；旧 run 的 reject 不覆盖新 run
     if (seq === runSeq && phase.value === 'streaming') {
       phase.value = 'error'
@@ -684,17 +933,13 @@ function onFrame(ev: AiChatEvent): void {
     case 'meta': {
       meta.value = ev.data
       const m = ev.data
+      beginTurn(m.system ?? '', m.user ?? '') // 每次送审开新轮：单条轮询每条流独立成对气泡
       log('meta', `送审 ${m.sent}/${m.total} 条 · 预算 ${m.budget.flows} 流 / ${m.budget.kb}KB` + (m.truncated ? ' · 已截断' : ''))
       break
     }
     case 'delta':
-      if (ev.data.text) {
-        if (!sawDelta) {
-          sawDelta = true
-          log('delta', '模型开始输出')
-        }
-        pushDelta(ev.data.text)
-      }
+      if (ev.data.reason) pushReason(ev.data.reason)
+      if (ev.data.text) pushDelta(ev.data.text)
       break
     case 'intent':
       intentDone.value++
@@ -706,32 +951,50 @@ function onFrame(ev: AiChatEvent): void {
       log('match', `#${ev.data.rank} ${ev.data.method} ${ev.data.url} · ${confLabel(ev.data.confidence)}`)
       break
     case 'error':
+      closeTurn() // 本轮就此终止，缓冲落盘后不再累积
       phase.value = 'error'
       errMsg.value = ev.data.message
       log('error', ev.data.message)
       break
-    case 'done':
-      flushRender()
+    case 'done': {
+      const len = mdBuf.length // closeTurn 会清缓冲，字数先取
+      closeTurn(ev.data?.finishReason, ev.data?.usage)
       phase.value = 'done'
-      log('done', `共 ${mdBuf.length} 字` + (runStartTs ? ` · 耗时 ${((Date.now() - runStartTs) / 1000).toFixed(1)}s` : ''))
+      // finishReason 如实来自上游（length=输出预算耗尽被截断），截断时附加操作提示
+      const fr = ev.data?.finishReason
+      log('done', `共 ${len} 字` + (runStartTs ? ` · 耗时 ${((Date.now() - runStartTs) / 1000).toFixed(1)}s` : '') +
+        (fr === 'length' ? ' · 输出被截断（模型上下文/输出预算不足），建议减小批量流数或精简正文' : ''))
       break
+    }
   }
 }
 
-function pushDelta(text: string): void {
-  mdBuf += text
+// 50ms 合帧统一出口：正文与思考增量共用同一 timer，同时写入当前 in-flight 轮
+function scheduleRender(): void {
   if (renderTimer !== null) return
   renderTimer = window.setTimeout(() => {
     renderTimer = null
-    rendered.value = mdBuf
+    if (curTurn) {
+      curTurn.text = mdBuf
+      curTurn.reason = reasonBuf
+    }
   }, 50)
 }
-function flushRender(): void {
-  if (renderTimer !== null) {
-    window.clearTimeout(renderTimer)
-    renderTimer = null
+function pushDelta(text: string): void {
+  if (!sawDelta) {
+    sawDelta = true
+    log('delta', '模型开始输出')
   }
-  rendered.value = mdBuf
+  // 本轮首个正文增量：思考阶段结束，自动收起本轮思考区（用户手动开合过则不打扰）
+  if (curTurn && !mdBuf && !curTurn.touched && curTurn.open) curTurn.open = false
+  mdBuf += text
+  scheduleRender()
+}
+function pushReason(reason: string): void {
+  // 思考增量先于正文到达：自动展开本轮思考区（正文开始后不再打扰；touched 已由 toggleTurn 置位）
+  if (curTurn && !reasonBuf && !curTurn.touched && !curTurn.open) curTurn.open = true
+  reasonBuf += reason
+  scheduleRender()
 }
 
 function upsertMatch(m: AiMatchItem): void {
@@ -746,7 +1009,7 @@ function stop(): void {
   phase.value = 'stopped'
   abortCtl?.abort()
   abortCtl = null
-  flushRender() // P2 审计修复：清残余 50ms 合帧定时器并落盘最后一批 delta（防悬空回调）
+  closeTurn() // P2 审计修复：清残余 50ms 合帧定时器并把最后一批 delta 落盘本轮（防悬空回调）
   log('stop', '已手动停止')
 }
 
@@ -756,10 +1019,13 @@ function resetRun(): void {
   phase.value = 'idle'
   errMsg.value = ''
   mdBuf = ''
-  rendered.value = ''
+  reasonBuf = ''
+  curTurn = null
+  convTurns.value = []
   meta.value = null
   matches.value = []
   intentDone.value = 0
+  singleTotal.value = 0
   // 日志按 run 独立：本记录档为上一轮供回看（G3 审计建议），本轮从零开始
   if (logs.value.length) {
     prevLogs.value = logs.value
@@ -784,6 +1050,8 @@ function onEsc(e: KeyboardEvent): void {
     logOpen.value = false
     return
   }
+  // 宽度拖拽中先终止拖拽态（摘监听/落盘，对齐 I3），Esc 语义继续走层级收合
+  if (wDragging.value) onWDragEnd()
   closePanel()
 }
 
@@ -842,9 +1110,11 @@ watch(
 // 摘除 Esc 监听（该监听仅 show→false 时移除，跨挂载会泄漏）
 onBeforeUnmount(() => {
   stop()
-  flushRender() // P2 审计修复：非 streaming 卸载（如 error 态）时合帧定时器可能仍挂，兜底清掉
+  closeTurn() // P2 审计修复：非 streaming 卸载（如 error 态）时合帧定时器可能仍挂，兜底清掉
   window.removeEventListener('keydown', onEsc)
   // 高度拖拽中卸载：摘除 window 级监听并还原 body 光标
   if (logDragging.value) onLogDragEnd()
+  // 宽度拖拽中卸载：同上兜底（摘监听/还原光标/落盘）
+  if (wDragging.value) onWDragEnd()
 })
 </script>

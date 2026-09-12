@@ -143,7 +143,15 @@ func (c *Client) endpoint() string {
 	return normalizeBaseURL(c.cfg.BaseURL) + "/chat/completions"
 }
 
-// streamOptions OpenAI 流式选项；include_usage=false 不要求最后 usage 帧。
+// Usage 上游 token 统计（stream_options.include_usage 末帧带回；部分服务商不支持则零值，
+// 前端按字数估算兜底）。
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+}
+
+// streamOptions OpenAI 流式选项；include_usage=true 要求上游在流末下发 usage 帧
+//（token 统计；不支持的服务商缺省该帧，前端估算兜底）。
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
@@ -158,13 +166,22 @@ type chatRequest struct {
 }
 
 // SSE 帧：取 choices[0].delta；上游把错误也以 200 + error 帧下发时在此识别。
+// delta 思考增量双字段兼容：reasoning_content（deepseek-reasoner/OpenRouter 等）与
+// reasoning（Ollama ≥0.5 OpenAI 兼容端点实际下发字段，实测 qwen3.5 思考模型仅此字段，
+// 只认前者会把思考模型的增量全丢）。
 type sseChunk struct {
 	Choices []struct {
 		Delta struct {
 			Content          string `json:"content"`
 			ReasoningContent string `json:"reasoning_content"`
+			Reasoning        string `json:"reasoning"`
 		} `json:"delta"`
+		// FinishReason 该帧给出的结束原因（通常仅流末帧非空）：stop/length/tool_calls…
+		// length=输出预算耗尽（思考挤占或上下文不足），须如实透传供前端截断告警。
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	// Usage token 统计帧（include_usage 请求时的流末帧；choices 为空、仅带 usage）。
+	Usage *Usage `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -174,19 +191,23 @@ type sseChunk struct {
 // Stream 发起一次流式对话。onDelta 在收到增量块时回调（同 goroutine 顺序调用）；
 // ctx 取消即关闭 HTTP 连接并返回 ctx.Err()。
 //
+// 返回值 finishReason 为流内收集到的上游结束原因（stop/length/…；未出现时为空串，
+// 由调用方按需兜底）——不再由编排层硬编码 stop，输出截断（length）须如实上报。
+// 返回值 usage 为流内收集到的 token 统计（include_usage 末帧；上游不支持时零值）。
+//
 // 超时模型（设计稿 §5.2 v2.3）：不设 http.Client.Timeout；启动「首块超时」定时器
 // （云端 min(30s, Timeout/4)、自托管 Timeout 全额），收到首个 data 帧后撤销，
 // 整体由外层 ctx 兜底——长回答不再被整体超时掐断。
-func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(Delta)) error {
+func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(Delta)) (finishReason string, usage Usage, err error) {
 	reqBody, err := json.Marshal(chatRequest{
 		Model:         c.cfg.Model,
 		Messages:      messages,
 		Temperature:   c.cfg.Temperature,
 		Stream:        true,
-		StreamOptions: &streamOptions{IncludeUsage: false},
+		StreamOptions: &streamOptions{IncludeUsage: true},
 	})
 	if err != nil {
-		return fmt.Errorf("构造请求失败：%w", err)
+		return "", Usage{}, fmt.Errorf("构造请求失败：%w", err)
 	}
 
 	// 看门狗 ctx：首块超时取消，父 ctx 取消也联动取消
@@ -206,7 +227,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(De
 
 	req, err := http.NewRequestWithContext(watchCtx, http.MethodPost, c.endpoint(), strings.NewReader(string(reqBody)))
 	if err != nil {
-		return fmt.Errorf("构造请求失败：%w", err)
+		return "", Usage{}, fmt.Errorf("构造请求失败：%w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.cfg.APIKey != "" {
@@ -217,17 +238,17 @@ func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(De
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if timedOut.Load() {
-			return c.firstChunkTimeoutErr(ft)
+			return "", Usage{}, c.firstChunkTimeoutErr(ft)
 		}
 		if ctx.Err() != nil {
-			return ctx.Err() // 用户主动停止：正常关闭路径，由编排层转为「已停止」
+			return "", Usage{}, ctx.Err() // 用户主动停止：正常关闭路径，由编排层转为「已停止」
 		}
-		return fmt.Errorf("连接服务商失败：%v，请检查网络或代理设置", err)
+		return "", Usage{}, fmt.Errorf("连接服务商失败：%v，请检查网络或代理设置", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return wrapHTTPError(resp)
+		return "", Usage{}, wrapHTTPError(resp)
 	}
 
 	// 逐行扫 SSE：只关心 data: 行；event:/注释/空行跳过
@@ -243,7 +264,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(De
 			continue
 		}
 		if data == "[DONE]" {
-			return nil
+			return finishReason, usage, nil
 		}
 		// 收到首个数据帧：撤销看门狗（先 CAS 标记再 Stop，避免与定时器竞态漏判）
 		if !firstSeen.Load() {
@@ -255,26 +276,39 @@ func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(De
 			continue // 容错：跳过无法解析的杂帧（部分网关会夹心跳/日志）
 		}
 		if chunk.Error != nil && chunk.Error.Message != "" {
-			return fmt.Errorf("服务商返回错误：%s", chunk.Error.Message)
+			return finishReason, usage, fmt.Errorf("服务商返回错误：%s", chunk.Error.Message)
+		}
+		if chunk.Usage != nil {
+			// usage 帧（末帧 choices 为空仅带 usage；部分服务商附带在末帧上）：流内收集生效
+			usage.PromptTokens = chunk.Usage.PromptTokens
+			usage.CompletionTokens = chunk.Usage.CompletionTokens
 		}
 		if len(chunk.Choices) > 0 {
-			d := chunk.Choices[0].Delta
-			if d.Content != "" || d.ReasoningContent != "" {
-				onDelta(Delta{Text: d.Content, Reason: d.ReasoningContent})
+			ch := chunk.Choices[0]
+			if ch.FinishReason != "" {
+				finishReason = ch.FinishReason // 流内末帧生效（stop/length/…）
+			}
+			d := ch.Delta
+			reason := d.ReasoningContent
+			if reason == "" {
+				reason = d.Reasoning // Ollama OpenAI 兼容端点格式（qwen3.5 等思考模型实测）
+			}
+			if d.Content != "" || reason != "" {
+				onDelta(Delta{Text: d.Content, Reason: reason})
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		if timedOut.Load() {
-			return c.firstChunkTimeoutErr(ft)
+			return "", Usage{}, c.firstChunkTimeoutErr(ft)
 		}
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return "", Usage{}, ctx.Err()
 		}
-		return fmt.Errorf("读取响应流失败：%w", err)
+		return "", Usage{}, fmt.Errorf("读取响应流失败：%w", err)
 	}
 	// 流正常结束（部分服务商不发 [DONE] 直接关连接，视为完成）
-	return nil
+	return finishReason, usage, nil
 }
 
 // wrapHTTPError 非 200：读体（截 2KB）解析 error.message，包装为可读错误（设计稿 §5.2）。

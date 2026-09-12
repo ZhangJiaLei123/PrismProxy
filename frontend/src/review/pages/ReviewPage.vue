@@ -234,7 +234,8 @@
                   @buckets="onBuckets"
                 />
 
-                <div v-if="!flows.length && !loading" class="list-empty">
+                <!-- 仅 wails 桌面端显示富空态引导；浏览器（http/demo，UI 调试用）空数据也渲染 FlowTable 保留表头 -->
+                <div v-if="!flows.length && !loading && api.mode === 'wails'" class="list-empty">
                   <template v-if="winStart">
                     <div class="le-icon">⏱️</div>
                     <div>选定时间范围内暂无流</div>
@@ -282,6 +283,7 @@
                   v-else
                   ref="tableRef"
                   :rows="flows"
+                  :empty-text="!loading && api.mode !== 'wails' ? '暂无数据' : ''"
                   :columns="columns"
                   :sort-key="sortKey"
                   :sort-dir="sortDir"

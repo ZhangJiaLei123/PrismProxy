@@ -14,6 +14,7 @@ export type {
   AiChatMode,
   AiChatOptions,
   AiChatRequest,
+  AiUsage,
   ApiMode,
   ListFlowsOpts,
   ReviewApi,

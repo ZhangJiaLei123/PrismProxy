@@ -229,10 +229,13 @@ AIChat(raw json.RawMessage, w http.ResponseWriter, r *http.Request) error // SSE
 
 ```text
 event: meta
-data: {"mode":"locate","total":12,"sent":10,"budget":{"flows":50,"kb":64},"truncated":false}
+data: {"mode":"locate","total":12,"sent":10,"budget":{"flows":50,"kb":64},"truncated":false,"system":"…实际送审 System 提示词…","user":"…实际送审 User 提示词…"}
 
 event: delta
 data: {"text":"根据描述，最可能的"}
+
+event: delta
+data: {"reason":"先按方法与路径分组…"}
 
 event: intent
 data: {"flowId":"f_12","seq":3,"intent":"提交订单","confidence":"high","needsBody":false}
@@ -247,8 +250,8 @@ event: done
 data: {"finishReason":"stop","truncated":false}
 ```
 
-- `meta` 在组完 Prompt、调用上游前下发（前端先看到「已选取 N 条、发送约 X KB」）。
-- `delta` 为正文增量，前端追加到 Markdown 渲染缓冲（**节流渲染**：rAF 或 50ms 合并，避免逐块重排）。
+- `meta` 在组完 Prompt、调用上游前下发（前端先看到「已选取 N 条、发送约 X KB」）。`system`/`user` 同帧带回**实际送审提示词**（BuildResult，已按配置脱敏），供「对话内容」tab 展示提问→提示词→思考→输出的完整过程；旧前端忽略不报错。
+- `delta` 为正文增量，前端追加到 Markdown 渲染缓冲（**节流渲染**：rAF 或 50ms 合并，避免逐块重排）。`reason` 为推理模型思考增量（上游 `reasoning_content`，deepseek-reasoner 等；普通模型无此字段），前端思考区弱化展示、正文开始后自动收起。
 - `match` 仅 locate 模式：定位结论以**结构化卡片**为主、Markdown 为辅。两种实现路线（§十一 7 拍板，**建议路线 A**）：
   - **路线 A（一期，稳）**：单轮调用，Prompt 要求模型先输出 Markdown 分析，再在文末输出严格 JSON 代码块（```json {"matches":[{...}]}```）；后端解析该代码块，逐条发 `match` 事件并从正文中剥离该块。解析失败则仅展示 Markdown（降级，不报错）。
   - 路线 B（二期）：tool-calling/function-calling（各兼容厂商支持参差，DeepSeek 支持、部分小厂/Ollama 模型不支持）。

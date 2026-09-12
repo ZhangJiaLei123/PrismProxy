@@ -448,13 +448,14 @@ func (a *App) runAIChatOnce(ctx context.Context, req ctlapi.AIChatRequest, emit 
 		return nil
 	}
 
-	// 9) 流式转发：delta 帧（text/reason 分列），同时累积全文供文后解析
+	// 9) 流式转发：delta 帧（text/reason 分列），同时累积全文供文后解析；
+	// fin=上游真实结束原因（stop/length/…），done 帧如实透传（截断不再被硬编码 stop 掩盖）
 	messages := []ai.Message{
 		{Role: ai.RoleSystem, Content: br.System},
 		{Role: ai.RoleUser, Content: br.User},
 	}
 	var sb strings.Builder
-	streamErr := client.Stream(sctx, messages, func(d ai.Delta) {
+	fin, usage, streamErr := client.Stream(sctx, messages, func(d ai.Delta) {
 		sb.WriteString(d.Text)
 		if d.Text != "" {
 			emitSafe(ctlapi.AIEventDelta, map[string]any{"text": d.Text})
@@ -502,7 +503,15 @@ func (a *App) runAIChatOnce(ctx context.Context, req ctlapi.AIChatRequest, emit 
 			}
 		}
 	}
-	emitSafe(ctlapi.AIEventDone, map[string]any{"finishReason": "stop", "truncated": br.Truncated})
+	if fin == "" {
+		fin = "stop" // 上游未给 finish_reason（不发 [DONE] 直接关连接等）：维持旧行为兜底
+	}
+	doneData := map[string]any{"finishReason": fin, "truncated": br.Truncated}
+	if usage.PromptTokens > 0 || usage.CompletionTokens > 0 {
+		// usage：include_usage 末帧带回的真实 token 统计；服务商不支持时缺省，前端按字数估算兜底
+		doneData["usage"] = map[string]int{"promptTokens": usage.PromptTokens, "completionTokens": usage.CompletionTokens}
+	}
+	emitSafe(ctlapi.AIEventDone, doneData)
 	return nil
 }
 

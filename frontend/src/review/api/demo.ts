@@ -533,13 +533,24 @@ export class DemoApi implements ReviewApi {
         { once: true },
       )
 
-      // meta：送审规模先回显（demo 全量送审，无截断）
+      // meta：送审规模先回显（demo 全量送审，无截断）；system/user 提示词桩（对话 tab 展示，形态对齐真实 BuildPrompt）
+      // 计数与列表对齐：qhead 声称的条数用截断后的 shown.length，避免桩内自相矛盾
+      const shown = flows.slice(0, 20)
+      const list = shown.map((f, i) => `[#${i + 1}] ${f.Method} ${f.URL}`).join('\n')
+      const qhead =
+        mode === 'explain'
+          ? '请解读以下流量：'
+          : mode === 'intent'
+            ? `请为以下 ${shown.length} 条流量标注业务意图：`
+            : `目标：${req.question?.trim() ?? ''}\n请分析以下 ${shown.length} 条流量：`
       const meta: AiChatMeta = {
         mode,
         total: flows.length,
         sent: flows.length,
         budget: { flows: 20, kb: 512 },
         truncated: false,
+        system: '你是 HTTP 抓包分析助手。基于给定流量列表回答，输出 Markdown；敏感信息已按配置脱敏。',
+        user: qhead + '\n' + list,
       }
       onEvent({ event: 'meta', data: meta })
       const finish = (): void => {

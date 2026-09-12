@@ -41,15 +41,20 @@ func sseHandler(frames []string, gotReq *chatRequest, gotAuth, gotAccept *string
 	}
 }
 
-// TestStreamFrames 帧序解析：reasoning 增量 + 正文增量 + 杂帧跳过 + [DONE] 收尾；请求体契约断言。
+// TestStreamFrames 帧序解析：reasoning_content 与 reasoning（Ollama OpenAI 端点格式）双字段
+// 增量 + 正文增量 + 杂帧跳过 + finish_reason 收集 + usage 帧（include_usage 末帧）+ [DONE] 收尾；
+// 请求体契约断言（stream_options.include_usage=true）。
 func TestStreamFrames(t *testing.T) {
 	var gotReq chatRequest
 	var gotAuth, gotAccept string
 	frames := []string{
 		`{"choices":[{"delta":{"reasoning_content":"思考中"}}]}`,
+		`{"choices":[{"delta":{"reasoning":"Ollama思考"},"finish_reason":null}]}`,
 		`{"choices":[{"delta":{"content":"你好"}}]}`,
 		`{"choices":[{"delta":{"content":"，世界"}}]}`,
 		`{"event":"ping"}`, // 无法按 SSE 帧解析的杂帧应跳过
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`{"usage":{"prompt_tokens":12,"completion_tokens":34}}`, // include_usage 末帧（choices 空）
 		doneFrame,
 	}
 	srv := httptest.NewServer(sseHandler(frames, &gotReq, &gotAuth, &gotAccept))
@@ -57,13 +62,19 @@ func TestStreamFrames(t *testing.T) {
 
 	var deltas []Delta
 	c := NewClient(Config{BaseURL: srv.URL, APIKey: "sk-test", Model: "m1", Temperature: 0.1})
-	err := c.Stream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, func(d Delta) {
+	fin, usage, err := c.Stream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, func(d Delta) {
 		deltas = append(deltas, d)
 	})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	want := []Delta{{Reason: "思考中"}, {Text: "你好"}, {Text: "，世界"}}
+	if fin != "stop" {
+		t.Fatalf("finishReason=%q want stop", fin)
+	}
+	if usage.PromptTokens != 12 || usage.CompletionTokens != 34 {
+		t.Fatalf("usage=%+v want {12 34}", usage)
+	}
+	want := []Delta{{Reason: "思考中"}, {Reason: "Ollama思考"}, {Text: "你好"}, {Text: "，世界"}}
 	if !reflect.DeepEqual(deltas, want) {
 		t.Fatalf("deltas=%v want %v", deltas, want)
 	}
@@ -76,7 +87,7 @@ func TestStreamFrames(t *testing.T) {
 	if !gotReq.Stream || gotReq.Model != "m1" || gotReq.Temperature != 0.1 {
 		t.Fatalf("req=%+v", gotReq)
 	}
-	if gotReq.StreamOptions == nil || gotReq.StreamOptions.IncludeUsage {
+	if gotReq.StreamOptions == nil || !gotReq.StreamOptions.IncludeUsage {
 		t.Fatalf("stream_options=%+v", gotReq.StreamOptions)
 	}
 	if len(gotReq.Messages) != 1 || gotReq.Messages[0].Role != RoleUser || gotReq.Messages[0].Content != "hi" {
@@ -92,10 +103,36 @@ func TestStreamNoDone(t *testing.T) {
 
 	var deltas []Delta
 	c := NewClient(Config{BaseURL: srv.URL, Model: "m"})
-	if err := c.Stream(context.Background(), nil, func(d Delta) { deltas = append(deltas, d) }); err != nil {
+	if _, _, err := c.Stream(context.Background(), nil, func(d Delta) { deltas = append(deltas, d) }); err != nil {
 		t.Fatalf("无 [DONE] 应正常完成，got %v", err)
 	}
 	if len(deltas) != 1 || deltas[0].Text != "尾帧" {
+		t.Fatalf("deltas=%v", deltas)
+	}
+}
+
+// TestStreamFinishReasonLength 输出截断透传：上游 finish_reason=length（思考挤占
+// 上下文预算的典型场景）须原样返回，供编排层 done 帧如实上报、前端截断告警。
+func TestStreamFinishReasonLength(t *testing.T) {
+	frames := []string{
+		`{"choices":[{"delta":{"reasoning":"长思考…"},"finish_reason":null}]}`,
+		`{"choices":[{"delta":{"content":"开头"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"length"}]}`,
+		doneFrame,
+	}
+	srv := httptest.NewServer(sseHandler(frames, nil, nil, nil))
+	defer srv.Close()
+
+	var deltas []Delta
+	c := NewClient(Config{BaseURL: srv.URL, Model: "m"})
+	fin, _, err := c.Stream(context.Background(), nil, func(d Delta) { deltas = append(deltas, d) })
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if fin != "length" {
+		t.Fatalf("finishReason=%q want length", fin)
+	}
+	if len(deltas) != 2 || deltas[0].Reason != "长思考…" || deltas[1].Text != "开头" {
 		t.Fatalf("deltas=%v", deltas)
 	}
 }
@@ -112,7 +149,7 @@ func TestStreamHTTPError(t *testing.T) {
 	srv := mk(`{"error":{"message":"Invalid API key"}}`)
 	defer srv.Close()
 	c := NewClient(Config{BaseURL: srv.URL, Model: "m"})
-	err := c.Stream(context.Background(), nil, func(Delta) {})
+	_, _, err := c.Stream(context.Background(), nil, func(Delta) {})
 	if err == nil || !strings.Contains(err.Error(), "服务商返回 401") || !strings.Contains(err.Error(), "Invalid API key") {
 		t.Fatalf("got %v", err)
 	}
@@ -120,7 +157,7 @@ func TestStreamHTTPError(t *testing.T) {
 	srv2 := mk("plain upstream failure")
 	defer srv2.Close()
 	c2 := NewClient(Config{BaseURL: srv2.URL, Model: "m"})
-	err2 := c2.Stream(context.Background(), nil, func(Delta) {})
+	_, _, err2 := c2.Stream(context.Background(), nil, func(Delta) {})
 	if err2 == nil || !strings.Contains(err2.Error(), "服务商返回 401：plain upstream failure") {
 		t.Fatalf("got %v", err2)
 	}
@@ -133,7 +170,7 @@ func TestStreamErrorFrame(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(Config{BaseURL: srv.URL, Model: "m"})
-	err := c.Stream(context.Background(), nil, func(Delta) {})
+	_, _, err := c.Stream(context.Background(), nil, func(Delta) {})
 	if err == nil || !strings.Contains(err.Error(), "服务商返回错误：配额不足") {
 		t.Fatalf("got %v", err)
 	}
@@ -154,7 +191,7 @@ func TestStreamFirstChunkTimeout(t *testing.T) {
 
 	c := NewClient(Config{BaseURL: srv.URL, APIKey: "k", Model: "m", Timeout: 4 * time.Second})
 	start := time.Now()
-	err := c.Stream(context.Background(), nil, func(Delta) {})
+	_, _, err := c.Stream(context.Background(), nil, func(Delta) {})
 	elapsed := time.Since(start)
 	if err == nil || !strings.Contains(err.Error(), "连接服务商超时") || !strings.Contains(err.Error(), "1 秒内未收到首个响应") {
 		t.Fatalf("got %v", err)
@@ -183,7 +220,7 @@ func TestStreamFirstChunkTimeoutSelfHosted(t *testing.T) {
 
 	c := NewClient(Config{BaseURL: srv.URL, Model: "m", Timeout: 1 * time.Second})
 	start := time.Now()
-	err := c.Stream(context.Background(), nil, func(Delta) {})
+	_, _, err := c.Stream(context.Background(), nil, func(Delta) {})
 	elapsed := time.Since(start)
 	if err == nil || !strings.Contains(err.Error(), "连接服务商超时") || !strings.Contains(err.Error(), "1 秒内未收到首个响应") {
 		t.Fatalf("got %v", err)
@@ -214,7 +251,7 @@ func TestStreamCtxCancel(t *testing.T) {
 		cancel()
 	}()
 	c := NewClient(Config{BaseURL: srv.URL, Model: "m"}) // 默认 ft=30s，不会先触发
-	err := c.Stream(ctx, nil, func(Delta) {})
+	_, _, err := c.Stream(ctx, nil, func(Delta) {})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled，got %v", err)
 	}

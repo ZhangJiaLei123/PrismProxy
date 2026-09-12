@@ -56,6 +56,39 @@
   transform: translateX(0);
   visibility: visible;
 }
+/* 左缘宽度拖拽把手：全高窄条（8px 命中区），hover/拖拽中品牌紫竖线示意（对齐 .ai-log-grip / 复盘页 .splitter）；
+   竖线上下内缩避开 24px 圆角；左缘 8px 在 header/body 的 ≥16px 左 padding 内，不挡内容点击 */
+.ai-grip-x {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  touch-action: none; /* 触屏拖动不触发滚动 */
+  z-index: 5;
+}
+.ai-grip-x::after {
+  content: '';
+  position: absolute;
+  top: 26px;
+  bottom: 26px;
+  left: 2px;
+  width: 3px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.ai-grip-x:hover::after,
+.ai-drawer.w-dragging .ai-grip-x::after {
+  background: rgba(181, 126, 220, 0.65);
+}
+/* 水平拖拽中：全局光标 + 禁选（对齐 row-resizing；ai.css 为全局样式无需 :global） */
+body.ew-resizing,
+body.ew-resizing * {
+  cursor: ew-resize !important;
+  user-select: none;
+}
 .ai-head {
   flex: none;
   display: flex;
@@ -518,6 +551,151 @@ body.row-resizing * {
   color: rgba(255, 255, 255, 0.8);
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* 对话 tab 四区：提问 → 提示词（折叠）→ 思考过程（折叠/自动开合）→ 模型输出 */
+.ai-conv-sec {
+  margin-bottom: 12px;
+}
+.ai-conv-label {
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--ai-brand);
+}
+.ai-conv-q {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ai-conv-scope {
+  margin-top: 4px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+/* 折叠开关行：chevron 旋转过渡（transform 可中断，不重排） */
+.ai-conv-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.ai-conv-toggle:hover {
+  color: rgba(255, 255, 255, 0.85);
+}
+.ai-conv-toggle .chev {
+  flex: none;
+  transition: transform 0.18s cubic-bezier(0.2, 0, 0, 1);
+}
+.ai-conv-toggle.open .chev {
+  transform: rotate(90deg);
+}
+/* 思考流进行中：品牌色提示仍在思考（静态色底 + 动画非唯一反馈） */
+.ai-conv-toggle.live {
+  color: var(--ai-brand);
+}
+.ai-conv-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.35);
+}
+/* 折叠体：grid 0fr→1fr 过渡（可中断、无 JS 测高），子层 overflow hidden 收内容 */
+.ai-conv-fold {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+.ai-conv-fold.open {
+  grid-template-rows: 1fr;
+}
+.ai-conv-fold > * {
+  overflow: hidden;
+  min-height: 0;
+}
+.ai-conv-label-sub {
+  margin: 6px 0 2px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.4);
+}
+.ai-conv-label-sub:first-child {
+  margin-top: 4px;
+}
+/* 思考过程弱化展示：与正文输出区分层级 */
+.ai-conv-think {
+  color: rgba(255, 255, 255, 0.55);
+}
+/* 对话轮次（聊天样式）：每条流一对「消息发送→模型返回」气泡；轮次间 hairline 分隔 */
+.ai-turn + .ai-turn {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+/* 气泡：fit-content 收缩到内容宽（块级默认满宽会失去聊天感），上限 92% 留出左右归属；
+   radius 12px ≈ 内 padding 10px + 内容无底色，无嵌套圆角失配 */
+.ai-bubble {
+  width: fit-content;
+  max-width: 92%;
+  padding: 8px 10px;
+  border-radius: 12px;
+}
+/* 发送（右）：品牌紫低透明染色，与模型返回的从属方向一眼可辨 */
+.ai-bubble-send {
+  margin-left: auto;
+  background: rgba(181, 126, 220, 0.08);
+  border: 1px solid rgba(181, 126, 220, 0.18);
+}
+/* 返回（左）：中性白叠加，退居内容本身 */
+.ai-bubble-recv {
+  margin-top: 8px;
+  margin-right: auto;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+/* 气泡头：角色名 + 字数/token（count 已有 tabular-nums，流式刷新数字不抖动） */
+.ai-bubble-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.ai-bubble-role {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+.ai-bubble-send .ai-bubble-role {
+  color: rgba(181, 126, 220, 0.9);
+}
+.ai-bubble-recv .ai-bubble-role {
+  color: rgba(255, 255, 255, 0.45);
+}
+/* 气泡内折叠开关行：上下 padding 收半（气泡自身已有 8px 呼吸，避免内距叠加过松） */
+.ai-bubble .ai-conv-toggle {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+/* 输出截断提示（finishReason=length）：与 low 置信度同族暗黄警示 */
+.ai-conv-trunc {
+  margin-top: 4px;
+  color: rgba(229, 192, 123, 0.85);
 }
 /* 日志 tab：时间 / 类型 / 消息 三列（等宽数字防抖动） */
 .ai-log-line {

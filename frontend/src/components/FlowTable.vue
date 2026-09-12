@@ -8,7 +8,10 @@
     排序方向状态在父级（@sort），本组件只呈现并上抛。
   -->
   <div class="flow-table">
-    <div class="list-head row" :style="gridStyle" @contextmenu.prevent="onHeaderMenu($event)">
+    <!-- 表头双层：外层只做 overflow:hidden 裁剪壳（宽度恒为父容器宽），grid/min-width 挂内层。
+         overflow:hidden 裁剪不了盒子自身——若 min-width 挂本层，列总宽超出容器时表头盒子会自己伸进相邻容器 -->
+    <div ref="headEl" class="list-head" @contextmenu.prevent="onHeaderMenu($event)">
+      <div class="list-head-row row" :style="gridStyle">
       <!-- 勾选列独立于 columns 渲染：不进 colOrder/显隐菜单/布局持久化（M13 P4-9） -->
       <span v-if="selectable" class="c-check" @contextmenu.stop>
         <n-checkbox
@@ -39,6 +42,7 @@
           @pointerdown.prevent.stop="startResize($event, col.wi)"
         ></i>
       </span>
+      </div>
     </div>
     <div v-bind="containerProps" class="list-body" @scroll="onScroll">
       <div v-bind="wrapperProps">
@@ -245,10 +249,24 @@ watch(
   },
 )
 
+// 表头/行的最小总宽（内容盒）：固定列取当前宽、弹性列取最小宽，加列间距 6px（.row gap）。
+// 容器窄于该值时数据区出横向滚动条，表头溢出隐藏并跟随滚动（见 onScroll），不再溢出到相邻容器
+const minRowWidth = computed(() => {
+  let total = 0
+  for (const w of colOrder.value) total += colWidths.value[w] ?? props.colMins[w]
+  if (props.selectable) total += 22 // 勾选列固定 22px
+  return total + (colOrder.value.length + (props.selectable ? 1 : 0) - 1) * 6
+})
+
 const gridStyle = computed(() => {
-  const cols = colOrder.value.map((w) => (colWidths.value[w] === null ? '1fr' : colWidths.value[w] + 'px'))
+  // 弹性列用 minmax(min,1fr)：多列 1fr 均分剩余空间可能低于各自 colMins（审计发现），
+  // minmax 保证溢出场景每条弹性列仍不低于声明最小宽，与 minRowWidth 口径一致
+  const cols = colOrder.value.map((w) => (colWidths.value[w] === null ? `minmax(${props.colMins[w]}px, 1fr)` : colWidths.value[w] + 'px'))
   // 勾选列固定 22px 前缀（不参与拖宽/重排/持久化）
-  return { gridTemplateColumns: props.selectable ? '22px ' + cols.join(' ') : cols.join(' ') }
+  return {
+    gridTemplateColumns: props.selectable ? '22px ' + cols.join(' ') : cols.join(' '),
+    minWidth: minRowWidth.value + 'px',
+  }
 })
 
 // ---- 行勾选（M13 P4-9：仅 selectable 开启时；集合由父级持有，组件只上抛变更） ----
@@ -309,9 +327,13 @@ const wrapperProps = virtual.wrapperProps
 // 复盘页码切换后须回到顶部（useVirtualList 不重置 scrollTop）
 function onScroll(e: Event) {
   // 仅作为容器 ref 透传占位；翻页归零由父级通过 expose 的 scrollToTop 调用
-  scrollEl.value = e.target as HTMLElement
+  const el = e.target as HTMLElement
+  scrollEl.value = el
+  // 横向滚动同步：表头 overflow:hidden，滚动位置跟随数据区（列最小总宽超出容器时）
+  if (headEl.value) headEl.value.scrollLeft = el.scrollLeft
 }
 const scrollEl = ref<HTMLElement | null>(null)
+const headEl = ref<HTMLElement | null>(null)
 function scrollToTop() {
   scrollEl.value?.scrollTo({ top: 0 })
 }
@@ -604,7 +626,11 @@ function onHeadCtxSelect(key: string) {
   height: 28px; line-height: 28px; flex: none;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   color: rgba(255, 255, 255, 0.55); user-select: none;
+  /* overflow:hidden 只裁剪元素内部内容、管不住盒子自身宽度——grid/min-width 在内层 .list-head-row，
+     本层宽度恒等于父容器宽；列总宽超出时内容被裁剪，滚动位置由数据区 onScroll 同步 scrollLeft */
+  overflow: hidden;
 }
+.list-head-row { height: 100%; }
 .list-head .th { position: relative; height: 100%; padding-right: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list-head .th:hover { color: rgba(255, 255, 255, 0.85); }
 .list-head .th.active { color: #70c0e8; }
@@ -653,7 +679,7 @@ function onHeadCtxSelect(key: string) {
 }
 .th:hover .col-resizer::after { background: rgba(255, 255, 255, 0.25); }
 .col-resizer:hover::after, .col-resizer.active::after { background: #70c0e8; }
-.list-body { flex: 1; overflow-y: auto; }
+.list-body { flex: 1; overflow-y: auto; overflow-x: auto; }
 .item { cursor: pointer; border-bottom: 1px solid rgba(255, 255, 255, 0.04); }
 .item:hover { background: rgba(255, 255, 255, 0.06); }
 .item.selected { background: rgba(32, 128, 240, 0.25); }

@@ -45,7 +45,7 @@ const (
 	AIEventIntent = "intent" // {flowId,seq,intent,confidence,needsBody}
 	AIEventMatch  = "match"  // {flowId,rank,method,url,reason,confidence}
 	AIEventError  = "error"  // {message}
-	AIEventDone   = "done"   // {finishReason,truncated}
+	AIEventDone   = "done"   // {finishReason,truncated,usage?}（usage={promptTokens,completionTokens}，include_usage 真实统计；服务商不支持时缺省）
 )
 
 // 同步错误 sentinel：StreamAIChat 实现层在首次 emit 前 return（可 fmt.Errorf("%w: …") 包装），

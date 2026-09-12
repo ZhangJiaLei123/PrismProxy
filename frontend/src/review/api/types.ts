@@ -76,6 +76,12 @@ export interface AiChatMeta {
   user?: string
 }
 
+/** done 事件附带的真实 token 统计（stream_options.include_usage 末帧；服务商不支持时缺省，前端按字数估算兜底）。 */
+export interface AiUsage {
+  promptTokens: number
+  completionTokens: number
+}
+
 /** SSE 事件判别联合（{event, data} 帧形态；三实现零转换上抛，面板统一消费）。 */
 export type AiChatEvent =
   | { event: 'meta'; data: AiChatMeta }
@@ -83,7 +89,7 @@ export type AiChatEvent =
   | { event: 'intent'; data: IntentResult }
   | { event: 'match'; data: AiMatchItem }
   | { event: 'error'; data: { message: string } }
-  | { event: 'done'; data: { finishReason: string; truncated: boolean } }
+  | { event: 'done'; data: { finishReason: string; truncated: boolean; usage?: AiUsage } }
 
 /** 模型条目（settings.AIModelEntry 脱敏投影）：每条为独立供应商配置；hasKey 表示已存密钥。 */
 export interface AIEntryView {
