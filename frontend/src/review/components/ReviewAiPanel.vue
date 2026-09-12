@@ -116,11 +116,29 @@
       </template>
     </div>
 
-    <!-- 底部：外发告知常驻小字（设计 §8-5）+ 右下角日志入口 -->
+    <!-- 底部：外发告知常驻小字（设计 §8-5）+ 右下角 导出/历史/日志 三入口 -->
     <footer class="ai-foot">
       <span v-if="cfgOk" class="ai-foot-text">
         分析数据将发送至 {{ hostLabel }}<template v-if="modelLabel"> · 模型 {{ modelLabel }}</template>
       </span>
+      <button class="ai-logbtn" title="历史记录（解读/定位/流程）" @click="toggleHist">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="8" cy="8" r="5.5" />
+          <path d="M8 5.2V8l2 1.4" />
+        </svg>
+      </button>
+      <button
+        class="ai-logbtn"
+        title="导出当前模块最新结果为 Markdown 文件"
+        :disabled="!canExportCur"
+        @click="exportCurrent"
+      >
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 2.5v7" />
+          <path d="M5 6.5l3 3 3-3" />
+          <path d="M3 10.5v1.5A1.5 1.5 0 0 0 4.5 13.5h7a1.5 1.5 0 0 0 1.5-1.5v-1.5" />
+        </svg>
+      </button>
       <button class="ai-logbtn" title="AI 调用日志与对话" @click="toggleLog">
         <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M2.5 4l3.5 3.5L2.5 11" />
@@ -142,6 +160,10 @@
       :logs="logs"
       :prev-logs="prevLogs"
     />
+
+    <!-- 历史记录抽层（独立组件 ReviewAiHistorySheet）：解读/定位/流程历次输出回看 + 跨模块多选导出；
+         与日志抽层同位互斥（开一个关另一个），开合态由本面板持有 -->
+    <ReviewAiHistorySheet v-model:open="histOpen" :conv-turns="convTurns" />
 
     <!-- 首次分析告知（设计 §8-1）：localStorage 记忆，确认后才真正开始 -->
     <n-modal
@@ -170,10 +192,12 @@ import type { AiChatEvent, AiChatMeta, AiChatMode, AiUsage, AIApiConfigView, Rev
 import type { AiMatchItem, IntentResult, ReviewFlowMeta } from '../../lib/types'
 import { useIntents } from '../useIntents'
 import ReviewAiLogSheet from './ReviewAiLogSheet.vue'
+import ReviewAiHistorySheet from './ReviewAiHistorySheet.vue'
 import ReviewAiExplainView from './ReviewAiExplainView.vue'
 import ReviewAiIntentView from './ReviewAiIntentView.vue'
 import ReviewAiLocateView from './ReviewAiLocateView.vue'
 import ReviewAiFlowmapView from './ReviewAiFlowmapView.vue'
+import { MODE_LABEL, downloadMd } from '../aiExport'
 import {
   addLog,
   archiveLogs,
@@ -268,6 +292,11 @@ let mdBuf = ''
 let reasonBuf = '' // 推理模型思考增量缓冲（delta 帧 reason 字段）
 let renderTimer: number | null = null
 let abortCtl: AbortController | null = null
+// 本 run 前身最近一次 abort 时刻：doStart 起跑前据此补足「后端 aiBusy 释放宽限」——
+// 换目标重置/关面板续跑场景下 abort 与新请求同 tick 发出，后端要等旧 handler 返回（ctx 取消
+// →上游断开→栈展开→defer Store(false)）才释放闸门，紧随的请求可能撞 409（审计修复）
+let lastAbortAt = 0
+const AI_RELEASE_GRACE_MS = 350
 // 运行令牌（M1 审计修复）：重开新 run 后，旧 run 续体/迟到帧不得触碰新 run 状态
 let runSeq = 0
 
@@ -407,10 +436,11 @@ const pendingStream = computed(() => phase.value === 'streaming' && runMode.valu
 const viewPhase = computed<Phase>(() => (runMode.value === activeTab.value ? phase.value : 'idle'))
 const running = computed(() => phase.value === 'streaming')
 
-// ===== 调用日志与对话（右下角抽层，UI 见子组件 ReviewAiLogSheet）=====
+// ===== 调用日志与历史记录（右下角抽层，UI 见子组件 ReviewAiLogSheet / ReviewAiHistorySheet）=====
 // 数据源（logs/prevLogs/convTurns/matches）在模块级 store useAiSession，本组件仅持有开合态
 const prevOpen = ref(false)
 const logOpen = ref(false)
+const histOpen = ref(false)
 const logSheetRef = ref<InstanceType<typeof ReviewAiLogSheet> | null>(null)
 // ===== 对话轮次生命周期 =====
 // meta 帧=开轮；done/error/stop=关轮（幂等，覆盖 done/error/abort/卸载全路径）。
@@ -452,18 +482,50 @@ let sawDelta = false // run 级首 delta 标记：仅驱动「模型开始输出
 // （审计修复：原全局末轮实现会在 explain 跑完切 locate 时串显并误截断）
 const lastText = computed(() => {
   for (let i = convTurns.value.length - 1; i >= 0; i--) {
-    if (convTurns.value[i].mode === activeTab.value) return convTurns.value[i].text
+    const t = convTurns.value[i]
+    if (t.mode !== activeTab.value) continue
+    if (t.text) return t.text
+    break // 命中末轮但为空（error 无输出/开轮即停的无输出轮）：不短路，落入下方分流
   }
-  // 会话内无该模式轮次（旧盘轮次无 mode、被 MAX_TURNS prune 挤出、清空会话后）：
-  // 回退持久化的末次结果（intent 单条轮询会挤占轮次上限，独立记录保证始终可回显）。
-  // 反查命中末轮但文本为空时不兜底——保留「新 run 开轮清屏」语义
+  // 新 run 流式中的 meta 空轮维持「开轮清屏」骨架；其余情况（含终态空轮）回退持久化的
+  // 末次结果——失败/无输出不遮蔽上次记录（intent 单条轮询挤占 MAX_TURNS、旧盘轮次无
+  // mode、清空会话后反查落空，均靠此兜底）
+  if (phase.value === 'streaming' && runMode.value === activeTab.value) return ''
   return lastResults.value[activeTab.value]?.text ?? ''
 })
 
 function toggleLog(): void {
   logOpen.value = !logOpen.value
-  // 流式中打开优先展示实时对话
-  if (logOpen.value && phase.value === 'streaming') logSheetRef.value?.openConv()
+  if (logOpen.value) {
+    histOpen.value = false // 两抽层同位互斥
+    if (phase.value === 'streaming') logSheetRef.value?.openConv() // 流式中打开优先展示实时对话
+  }
+}
+
+function toggleHist(): void {
+  histOpen.value = !histOpen.value
+  if (histOpen.value) logOpen.value = false
+}
+
+// ===== 导出当前模块最新结果 =====
+// 数据源与主区显示同源兜底：lastResults（关轮定稿）优先，缺失时反查 convTurns 本模式末轮；
+// locate 导出含 ```json 块原文（结构化匹配数据随文带走，与历史记录册口径一致）
+const HIST_MODES: readonly AiChatMode[] = ['explain', 'locate', 'flowmap']
+const curModeResult = computed<{ mode: string; question: string; text: string; ts: number } | null>(() => {
+  const m = activeTab.value
+  if (!HIST_MODES.includes(m)) return null // intent 结果在意图列表自管理，无 md 输出可导
+  const lr = lastResults.value[m]
+  if (lr?.text) return { mode: m, question: lr.question, text: lr.text, ts: lr.ts }
+  for (let i = convTurns.value.length - 1; i >= 0; i--) {
+    const t = convTurns.value[i]
+    if (t.mode === m && t.text) return { mode: m, question: t.question, text: t.text, ts: t.ts ?? 0 }
+  }
+  return null
+})
+const canExportCur = computed(() => viewPhase.value !== 'streaming' && !!curModeResult.value)
+function exportCurrent(): void {
+  const r = curModeResult.value
+  if (r) downloadMd([r], MODE_LABEL[r.mode] ?? r.mode)
 }
 
 // ===== 面板宽度拖拽 + 缓存 =====
@@ -593,6 +655,13 @@ async function doStart(): Promise<void> {
   // 运行级迟到帧守卫：本 run 被停/被重开后，旧流残余帧不污染新 run 缓冲
   const frameOf = (ev: AiChatEvent): void => {
     if (seq === runSeq) onFrame(ev)
+  }
+  // 释放宽限（审计修复）：本 run 前身刚被 abort 时，后端 aiBusy 闸门要等旧 handler 返回才
+  // 释放（异步毫秒级），与新请求存在竞态 → 409「已有 AI 分析任务在进行」红条。补足宽限再
+  // 发请求；冷启动（lastAbortAt 久远）零等待直过。等待期间 UI 已入 streaming 骨架
+  const sinceAbort = Date.now() - lastAbortAt
+  if (sinceAbort < AI_RELEASE_GRACE_MS) {
+    await new Promise((r) => setTimeout(r, AI_RELEASE_GRACE_MS - sinceAbort))
   }
   try {
     if (runMode.value === 'intent' && runSingle.value) {
@@ -760,12 +829,13 @@ function stop(): void {
   if (phase.value !== 'streaming') return
   phase.value = 'stopped'
   abortCtl?.abort()
+  lastAbortAt = Date.now()
   abortCtl = null
   closeTurn() // P2 审计修复：清残余 50ms 合帧定时器并把最后一批 delta 落盘本轮（防悬空回调）
   addLog('stop', '已手动停止')
 }
 
-// 停流清 in-flight（仅经 resetRun 在新 run 发起前调用；收面板/卸载走 stop()）：保留对话轮次、日志与匹配（阶段三持久化语义）
+// 停流清 in-flight（仅经 resetRun 在新 run 发起前调用）：保留对话轮次、日志与匹配（阶段三持久化语义）
 function stopRun(): void {
   stop()
   phase.value = 'idle'
@@ -785,17 +855,24 @@ function resetRun(): void {
   if (archiveLogs()) prevOpen.value = false
 }
 
+// 关面板不停流（后台续跑，与切 tab 同构）：重开面板经 viewPhase 派生自动恢复显示进行中
+// 任务（进度/骨架/停止按钮跨 tab 可见），跑完重开直接回显结果。停止唯一入口=停止按钮；
+// 外发知情已在发起时确认（redact 提示），续跑是该次同意的延续
 function closePanel(): void {
-  stop()
   emit('update:show', false)
 }
 
-// Esc 关闭（streaming 先停止）；输入框聚焦时不拦截
+// Esc 关闭面板（streaming 后台续跑不停流）；输入框聚焦时不拦截
 function onEsc(e: KeyboardEvent): void {
   if (e.key !== 'Escape' || noticeShow.value) return
   const t = e.target as HTMLElement | null
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
-  // 日志抽层展开时先收抽层，再按一次 Esc 才关面板（Z1 审计修复：交互层级）
+  // 抽层展开时先收抽层，再按一次 Esc 才关面板（Z1 审计修复：交互层级）；
+  // 两抽层同位互斥不会同时展开，历史记录无拖拽态，直接收合
+  if (histOpen.value) {
+    histOpen.value = false
+    return
+  }
   if (logOpen.value) {
     logSheetRef.value?.endDrag() // 拖拽中收抽层先终止拖拽态（摘监听/落盘，I3 审计修复；拖拽态已迁入子组件，经 expose 命令式收尾）
     if (wDragging.value) onWDragEnd() // 宽度拖拽把手上部在抽层外仍可达：收抽层同时终止（与上行 I3 同构：一次 Esc = 终止拖拽 + 逐层收合，G-2 审计修复）
@@ -830,13 +907,14 @@ watch(
   (s) => {
     if (s) {
       activeTab.value = props.mode
-      // 关面板 stop() 留下的 stopped 终态在重开时归位：上次结果以干净态回显（done/error 保留）
+      // 停止按钮留下的 stopped 终态在重开时归位：上次结果以干净态回显（done/error 保留）
       if (phase.value === 'stopped') phase.value = 'idle'
       void loadCfg()
       window.addEventListener('keydown', onEsc)
       // explain 自动开始统一由 explainAutoTick watch 驱动；cfg 未就绪时由 loadCfg 完成回调兜底
     } else {
-      stop()
+      // 关面板不停流（后台续跑）：重开面板自动恢复显示进行中任务/已完成结果；
+      // 停止唯一入口=停止按钮（或离开复盘视图触发卸载 stop）
       window.removeEventListener('keydown', onEsc)
     }
   },

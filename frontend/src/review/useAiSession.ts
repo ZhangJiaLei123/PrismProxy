@@ -7,6 +7,7 @@ import type { AiUsage } from './api'
 
 export interface ConvTurn {
   mode?: string // 开轮时所在 AI 模式（explain/intent/locate/flowmap）：主 md 区按模式取末轮，防跨模式串显/误截断（审计修复）
+  ts?: number // 开轮时间戳（历史记录列表展示/导出排序用；旧盘数据缺失按空处理，UI 隐藏时间、导出跳过该行）
   question: string // 本轮提问快照（开轮时快照：locate/flowmap 为自然语言，explain/intent 回显范围说明）
   system: string
   user: string
@@ -114,7 +115,7 @@ function kvDel(key: string): Promise<void> {
 
 type PersistTurn = Pick<
   ConvTurn,
-  'mode' | 'question' | 'system' | 'user' | 'reason' | 'text' | 'finishReason'
+  'mode' | 'ts' | 'question' | 'system' | 'user' | 'reason' | 'text' | 'finishReason'
 > & { usage?: AiUsage }
 interface PersistState {
   v: 1
@@ -130,6 +131,7 @@ interface PersistState {
 function toPersistTurn(t: ConvTurn): PersistTurn {
   const p: PersistTurn = {
     mode: t.mode,
+    ts: t.ts,
     question: t.question,
     system: t.system,
     user: t.user,
@@ -188,6 +190,7 @@ export async function hydrateAiSession(): Promise<void> {
       (t): ConvTurn =>
         reactive<ConvTurn>({
           mode: t.mode,
+          ts: t.ts,
           question: t.question ?? '',
           system: t.system ?? '',
           user: t.user ?? '',
@@ -207,7 +210,9 @@ export async function hydrateAiSession(): Promise<void> {
     if (!logs.value.length && raw.logs?.length) logs.value = raw.logs
     if (!prevLogs.value.length && raw.prevLogs?.length) prevLogs.value = raw.prevLogs
     if (!matches.value.length && raw.matches?.length) matches.value = raw.matches
-    lastResults.value = raw.lastResults ?? {}
+    // 键级合并（内存优先）：kvGet 在途期间 closeTurn 可能已写入新结果，不得被旧盘覆盖——
+    // 与 logs/matches 的内存优先恢复语义对齐（...undefined 安全兼容旧盘缺字段）
+    lastResults.value = { ...raw.lastResults, ...lastResults.value }
     logSeq = Math.max(logSeq, raw.logSeq ?? 0)
     scheduleSave()
   } catch {
@@ -218,6 +223,7 @@ export async function hydrateAiSession(): Promise<void> {
 export function createTurn(question: string, system: string, user: string, mode?: string): ConvTurn {
   const t = reactive<ConvTurn>({
     mode,
+    ts: Date.now(),
     question,
     system,
     user,

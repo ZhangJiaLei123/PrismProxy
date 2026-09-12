@@ -571,7 +571,6 @@ pre.mmd-loading::before {
 }
 .ai-logbtn {
   flex: none;
-  margin-left: auto;
   position: relative;
   width: 26px;
   height: 26px;
@@ -589,12 +588,21 @@ pre.mmd-loading::before {
     background-color 0.15s,
     transform 0.1s;
 }
-.ai-logbtn:hover {
+/* 首个图标按钮吃掉剩余空间实现右对齐（footer 现有三入口：历史/导出/日志，后两者紧随） */
+.ai-logbtn:first-of-type {
+  margin-left: auto;
+}
+.ai-logbtn:hover:not(:disabled) {
   color: var(--ai-brand);
   background: rgba(255, 255, 255, 0.08);
 }
-.ai-logbtn:active {
+.ai-logbtn:active:not(:disabled) {
   transform: scale(0.96);
+}
+/* 导出当前无可用结果（intent 模式/尚无输出/流式中）置灰 */
+.ai-logbtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 /* 流式中静态提示点（颜色线索，不做动画） */
 .ai-logbtn-dot {
@@ -1011,4 +1019,166 @@ body.row-resizing * {
   margin: 6px 0;
   font-size: 12.5px;
   line-height: 1.6;
+}
+
+/* ===== 历史记录抽层（ReviewAiHistorySheet）=====
+   底座复用 .ai-logsheet（同位底部滑入/同曲线/同底色，与日志抽层互斥展开），此处仅补条目差异：
+   列表 = 模块徽标 + 提问快照 + 时间 + 单行预览；勾选跨模块多选合并导出 */
+/* 抽层头部小按钮（全选/导出所选）：hairline 描边幽灵钮，主操作品牌紫 */
+.ai-mini-btn {
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.65);
+  font-family: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    background-color 0.15s,
+    border-color 0.15s,
+    transform 0.1s;
+}
+.ai-mini-btn:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.ai-mini-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.ai-mini-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ai-mini-btn.is-primary {
+  color: var(--ai-brand);
+  border-color: rgba(181, 126, 220, 0.35);
+}
+.ai-mini-btn.is-primary:hover:not(:disabled) {
+  color: #cda0e8;
+  background: rgba(181, 126, 220, 0.12);
+  border-color: rgba(181, 126, 220, 0.5);
+}
+/* 条目：hairline 分隔（对齐 .ai-turn），行内 hover 仅提亮提问文字（背景不变防整行闪） */
+.ai-hist-item + .ai-hist-item {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.ai-hist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+}
+.ai-hist-row:hover .ai-hist-q {
+  color: rgba(255, 255, 255, 0.9);
+}
+/* 模块徽标：解读=品牌紫 / 定位=绿（置信度 high 同族）/ 流程=蓝（渐变第二色） */
+.ai-hist-badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: rgba(181, 126, 220, 0.9);
+  background: rgba(181, 126, 220, 0.12);
+}
+.ai-hist-badge.m-locate {
+  color: rgba(126, 200, 181, 0.9);
+  background: rgba(126, 200, 181, 0.1);
+}
+.ai-hist-badge.m-flowmap {
+  color: rgba(126, 162, 224, 0.95);
+  background: rgba(126, 162, 224, 0.12);
+}
+.ai-hist-q {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.75);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.15s;
+}
+.ai-hist-t {
+  flex: none;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.35);
+  font-variant-numeric: tabular-nums;
+}
+.ai-hist-chev {
+  flex: none;
+  color: rgba(255, 255, 255, 0.35);
+  transition: transform 0.18s cubic-bezier(0.2, 0, 0, 1);
+}
+.ai-hist-item.is-open .ai-hist-chev {
+  transform: rotate(90deg);
+}
+/* 收起态预览：正文首个非空行（单行省略） */
+.ai-hist-prev {
+  margin: 3px 0 0 30px; /* 与徽标后文字起点近似对齐（勾选框 14 + gap 8 + 徽标余量） */
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.4);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* 自绘勾选框：隐藏原生 input，i 为视觉盒；padding/margin 对冲扩大命中区不挤布局 */
+.ai-hist-check {
+  flex: none;
+  position: relative;
+  display: inline-flex;
+  padding: 4px;
+  margin: -4px;
+  cursor: pointer;
+}
+.ai-hist-check input {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.ai-hist-check i {
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border: 1.5px solid rgba(255, 255, 255, 0.28);
+  border-radius: 4px;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
+}
+.ai-hist-check:hover i {
+  border-color: rgba(255, 255, 255, 0.5);
+}
+.ai-hist-check input:checked + i {
+  background: var(--ai-brand);
+  border-color: var(--ai-brand);
+}
+.ai-hist-check input:checked + i::after {
+  content: '';
+  position: absolute;
+  left: 4.5px;
+  top: 1.5px;
+  width: 3.5px;
+  height: 7.5px;
+  border-right: 1.5px solid #fff;
+  border-bottom: 1.5px solid #fff;
+  transform: rotate(45deg);
+}
+.ai-hist-check input:focus-visible + i {
+  outline: 1px solid var(--ai-brand);
+  outline-offset: 2px;
 }

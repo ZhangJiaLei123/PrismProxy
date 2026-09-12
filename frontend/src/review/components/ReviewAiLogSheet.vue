@@ -161,8 +161,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { NPopconfirm, NTab, NTabs } from 'naive-ui'
-import DOMPurify from 'dompurify'
 import { renderMarkdown } from '../ai-md'
+import { hydrateMermaidIn } from '../aiMermaid'
 import { clearSession } from '../useAiSession'
 import type { ConvTurn, LogEntry, LogKind } from '../useAiSession'
 
@@ -234,12 +234,10 @@ function fmtT(t: number): string {
   return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
 }
 
-// ===== 模型正文 Markdown 渲染 + mermaid 水合 =====
+// ===== 模型正文 Markdown 渲染 =====
 // 正文经 ai-md.ts 净化出口渲染（表格/代码块/mermaid 图）；结果按轮次对象 WeakMap 缓存——
 // 流式仅末轮 text 变化，历史轮次命中缓存零重解析，resetRun 后旧对象随 GC 自动清除。
-// mermaid 代码块动态 import（独立分包，对话中无图不加载）：渲染成功替换原代码块，
-// 解析失败（流式中途图源不完整/语法错）保留代码块降级展示——v-html 重写 DOM 后标记
-// 自然失效，下一帧或 phase 离开 streaming 时自动重试。
+// mermaid 水合用共享出口 hydrateMermaidIn（见 aiMermaid.ts，与历史记录抽层共用）
 const mdCache = new WeakMap<ConvTurn, { text: string; html: string }>()
 function mdHtml(t: ConvTurn): string {
   const c = mdCache.get(t)
@@ -247,80 +245,6 @@ function mdHtml(t: ConvTurn): string {
   const html = renderMarkdown(t.text)
   mdCache.set(t, { text: t.text, html })
   return html
-}
-
-type Mermaid = (typeof import('mermaid'))['default']
-let mermaidLoading: Promise<Mermaid> | null = null
-let mmdSeq = 0
-function ensureMermaid(): Promise<Mermaid> {
-  mermaidLoading ??= import('mermaid')
-    .then((m) => {
-      m.default.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' })
-      return m.default
-    })
-    .catch((e) => {
-      mermaidLoading = null // 加载失败允许下次重试；失败期间 mermaid 块保持代码块降级
-      throw e
-    })
-  return mermaidLoading
-}
-
-let hydrating = false
-let mmdPending = false // hydrating 期间又有新触发：收尾后补跑一次（审计修复：原实现静默丢弃，done 后末轮完整图源停留代码块态）
-async function hydrateMermaid(): Promise<void> {
-  const root = logBodyEl.value
-  if (root && hydrating) {
-    mmdPending = true
-    return
-  }
-  if (!root) return
-  const pairs = [...root.querySelectorAll('pre > code.language-mermaid')]
-    .map((code) => ({ code, pre: code.parentElement }))
-    .filter((p): p is { code: Element; pre: HTMLElement } => p.pre !== null)
-  if (!pairs.length) return
-  hydrating = true
-  try {
-    // 先挂渲染中角标（含 mermaid 库首次动态加载的等待期），成功随节点替换消失
-    for (const { pre } of pairs) pre.classList.add('mmd-loading')
-    const mm = await ensureMermaid()
-    for (const { code, pre } of pairs) {
-      const src = code.textContent ?? ''
-      // parse 门禁：语法完整才进入渲染。流式中图源不完整解析失败→静默保留代码块
-      // （loading 角标已随上文挂载，此处需摘除），避免每帧闪烁；语法错误终态同为代码块
-      const ok = await mm.parse(src, { suppressErrors: true }).catch(() => false)
-      if (!ok) {
-        pre.classList.remove('mmd-loading')
-        continue
-      }
-      const id = `mmd-${++mmdSeq}`
-      try {
-        const { svg } = await mm.render(id, src)
-        const holder = document.createElement('div')
-        holder.className = 'ai-md-mermaid'
-        // mermaid 产物过一遍净化（strict 模式已禁交互，此处兜底 SVG 注入面）
-        // foreignObject 是 HTML 集成点：缺 HTML_INTEGRATION_POINTS 时即使放行标签，
-        // 其内部 HTML 也会被整体清空（图只剩框线无文字，浏览器实测踩坑）
-        holder.innerHTML = DOMPurify.sanitize(svg, {
-          USE_PROFILES: { svg: true, html: true },
-          ADD_TAGS: ['foreignObject'],
-          HTML_INTEGRATION_POINTS: { foreignobject: true },
-        })
-        pre.replaceWith(holder)
-      } catch {
-        document.getElementById(id)?.remove() // render 失败清理 mermaid 残留元素，保留原代码块
-        pre.classList.remove('mmd-loading') // 恢复代码块观感，下轮触发可重试
-      }
-    }
-  } catch {
-    // mermaid 库加载失败：摘除全部角标，保持代码块降级（下次触发重试加载）
-    for (const { pre } of pairs) pre.classList.remove('mmd-loading')
-  } finally {
-    hydrating = false
-    if (mmdPending) {
-      mmdPending = false
-      void hydrateMermaid()
-    }
-  }
 }
 
 // ===== 滚动跟随 =====
@@ -343,7 +267,7 @@ function pinLiveFolds(force: boolean): void {
 watch([() => props.open, logTab], () => {
   if (!props.open) return
   nextTick(() => {
-    void hydrateMermaid()
+    void hydrateMermaidIn(logBodyEl.value)
     const el = logBodyEl.value
     if (el && props.open) el.scrollTop = el.scrollHeight
     pinLiveFolds(true)
@@ -363,7 +287,7 @@ watch(
   () => {
     if (!props.open) return
     nextTick(() => {
-      void hydrateMermaid()
+      void hydrateMermaidIn(logBodyEl.value)
       const el = logBodyEl.value
       if (!el || !props.open) return
       if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) el.scrollTop = el.scrollHeight
@@ -377,7 +301,7 @@ watch(
   () => props.phase,
   () => {
     nextTick(() => {
-      void hydrateMermaid()
+      void hydrateMermaidIn(logBodyEl.value)
       pinLiveFolds(true)
     })
   },
