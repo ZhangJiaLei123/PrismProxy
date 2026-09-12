@@ -350,7 +350,7 @@
         :api="api"
         :mode="aiPanelMode"
         :flow-id="selectedFlow"
-        :flow-label="aiPanelLabel"
+        :explain-auto-tick="aiExplainAutoTick"
         :checked-ids="checkedIds"
         :view-flows="flows"
         :view-total="total"
@@ -418,14 +418,13 @@ function onMarkIntents(): void {
   aiPanelMode.value = 'intent'
   aiPanelShow.value = true
 }
-// AI 面板 explain 目标展示名：跟随列表当前选中流（选中即目标，无需经「AI 解读」入口）
-const aiPanelLabel = computed(() => {
-  const f = flows.value.find((x) => x.ID === selectedFlow.value)
-  return f ? f.Method + ' ' + (f.Path || f.URL) : selectedFlow.value
-})
+// explain 显式解读信号：详情页「AI 解读」/路径列意图摘要点击时递增（列表浏览不递增），
+// 面板据此换目标重置并自动解读；目标展示名由面板内部快照（runTarget），无需外部传 label
+const aiExplainAutoTick = ref(0)
 function onDetailExplain(): void {
   aiPanelMode.value = 'explain'
   aiPanelShow.value = true
+  aiExplainAutoTick.value++
 }
 // M13 §7 意图持久化展示：与 AI 面板共享的会话缓存（模块级单例）；
 // 列表加载时经 seed 回填归档库持久化结果（仅缓存缺失时写入，详见 useIntents）
@@ -446,6 +445,7 @@ function onIntentClick(f: ReviewFlowMeta): void {
   selectedFlow.value = f.ID
   aiPanelMode.value = 'explain'
   aiPanelShow.value = true
+  aiExplainAutoTick.value++
 }
 // 面板「查看 →」跳转：目标在当前已加载列表内则选中，否则提示切分页（设计 §7.1）
 function onAiLocate(flowId: string): void {
