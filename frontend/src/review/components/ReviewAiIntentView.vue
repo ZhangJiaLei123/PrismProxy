@@ -43,20 +43,24 @@
 
   <div v-if="phase === 'error'" class="ai-error">{{ errMsg }}</div>
 
-  <!-- 结果列表：候选池里有结果的，按模型输出序号排（排序/过滤在父级 intentResults） -->
+  <!-- 结果列表：当前表格页里有结果的，按全局位置排（父级 intentRows 派生，rowNo=全局序号 1 起） -->
   <div class="ai-intents">
-    <div
-      v-for="it in results"
-      :key="it.flowId"
-      class="ai-intent-row"
-      :title="rowTip(it)"
-      @click="emit('locate', it.flowId)"
-    >
-      <span class="ai-intent-seq">#{{ it.seq }}</span>
-      <span class="ai-intent-text" :class="{ 'k-ai-low': it.confidence === 'low', 'k-ai-needs-body': it.needsBody }">{{ it.intent }}</span>
-      <span class="ai-intent-flow">{{ labelOf(it.flowId) }}</span>
+    <!-- 跨页批量后本页只显示可定位的子集：口径提示，避免与「送审 N/N」分母困惑 -->
+    <div v-if="totalCount > shownCount" class="ai-intent-hint">
+      仅显示当前页可点击定位的 {{ shownCount }} 条（已标注共 {{ totalCount }} 条，其余请翻页查看）
     </div>
-    <div v-if="!results.length && phase !== 'idle'" class="ai-hint">{{ phase === 'streaming' ? '标注中…' : '暂无结果' }}</div>
+    <div
+      v-for="r in rows"
+      :key="r.it.flowId"
+      class="ai-intent-row"
+      :title="rowTip(r.it, r.rowNo)"
+      @click="emit('locate', r.it.flowId)"
+    >
+      <span class="ai-intent-seq">#{{ r.rowNo }}</span>
+      <span class="ai-intent-text" :class="{ 'k-ai-low': r.it.confidence === 'low', 'k-ai-needs-body': r.it.needsBody }">{{ r.it.intent }}</span>
+      <span class="ai-intent-flow">{{ labelOf(r.it.flowId) }}</span>
+    </div>
+    <div v-if="!rows.length && phase !== 'idle'" class="ai-hint">{{ phase === 'streaming' ? '标注中…' : '暂无结果' }}</div>
   </div>
 </template>
 
@@ -81,8 +85,12 @@ defineProps<{
   continueState?: AiChatNotice | null
   /** 进度百分比（父级按单条轮询快照/批量 total 计算） */
   pct: number
-  /** 结果行（父级 intentResults：候选池有结果者按 seq 排） */
-  results: IntentResult[]
+  /** 结果行（父级 intentRows：当前表格页有结果者按全局位置排，rowNo=全局序号 1 起） */
+  rows: { it: IntentResult; rowNo: number }[]
+  /** 当前页可点击定位的结果条数 */
+  shownCount: number
+  /** 全部候选池已标注结果条数（>shownCount 时提示翻页） */
+  totalCount: number
   /** flowId → 「METHOD 路径」标签（父级 flowLabelOf，候选池实时映射） */
   labelOf: (id: string) => string
   includeReq: boolean
@@ -97,8 +105,8 @@ const emit = defineEmits<{
   (e: 'update:singleMode', v: boolean): void
 }>()
 
-function rowTip(it: IntentResult): string {
-  const tips: string[] = ['点击在列表中定位该流']
+function rowTip(it: IntentResult, rowNo: number): string {
+  const tips: string[] = [`#${rowNo} = 当前筛选结果中的第 ${rowNo} 条接口，点击滚动定位到该接口`]
   if (it.confidence === 'low') tips.push('AI 对此判定置信度较低，仅供参考')
   if (it.needsBody) tips.push('需结合请求正文才能准确判定；可勾选「包含请求正文」重新标注')
   return tips.join('；')

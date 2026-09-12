@@ -7,7 +7,7 @@
     - 行右键菜单与表头右键菜单（菜单项与动作经 actions 注入，组件内不碰 wails/store）
     排序方向状态在父级（@sort），本组件只呈现并上抛。
   -->
-  <div class="flow-table">
+  <div ref="rootEl" class="flow-table">
     <!-- 表头双层：外层只做 overflow:hidden 裁剪壳（宽度恒为父容器宽），grid/min-width 挂内层。
          overflow:hidden 裁剪不了盒子自身——若 min-width 挂本层，列总宽超出容器时表头盒子会自己伸进相邻容器 -->
     <div ref="headEl" class="list-head" @contextmenu.prevent="onHeaderMenu($event)">
@@ -113,7 +113,7 @@
 
 <script setup lang="ts">
 import { useVirtualList } from '@vueuse/core'
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NCheckbox, NDropdown } from 'naive-ui'
 import type { DropdownOption } from 'naive-ui'
 import { fmtBytes, fmtDuration, fmtTime } from '../lib/format'
@@ -178,8 +178,10 @@ const props = withDefaults(
     /** M13 §7：行高像素（useVirtualList 固定行高，构造期取值非响应式）；
      *  默认 28=主窗口径不变；复盘页传 44 容纳路径列下两行展示 */
     itemHeight?: number
+    /** 外部定位（AI 意图/定位点击）要闪烁高亮的流 id；配合 scrollToId 使用，置值即加高亮 class */
+    highlightId?: string
   }>(),
-  { selectedId: '', emptyText: '', selectable: false, checkedIds: () => [], itemHeight: 28 },
+  { selectedId: '', emptyText: '', selectable: false, checkedIds: () => [], itemHeight: 28, highlightId: '' },
 )
 
 const emit = defineEmits<{
@@ -326,18 +328,71 @@ const containerProps = virtual.containerProps
 const wrapperProps = virtual.wrapperProps
 // 复盘页码切换后须回到顶部（useVirtualList 不重置 scrollTop）
 function onScroll(e: Event) {
-  // 仅作为容器 ref 透传占位；翻页归零由父级通过 expose 的 scrollToTop 调用
   const el = e.target as HTMLElement
-  scrollEl.value = el
   // 横向滚动同步：表头 overflow:hidden，滚动位置跟随数据区（列最小总宽超出容器时）
   if (headEl.value) headEl.value.scrollLeft = el.scrollLeft
 }
-const scrollEl = ref<HTMLElement | null>(null)
+const rootEl = ref<HTMLElement | null>(null)
 const headEl = ref<HTMLElement | null>(null)
-function scrollToTop() {
-  scrollEl.value?.scrollTo({ top: 0 })
+// 滚动容器由 vueuse 经 v-bind="containerProps" 内部持有（不能再在同元素挂静态 ref，
+// 否则会与 vueuse 的 ref 合并、干扰其 useElementSize 导致虚拟列表渲染 0 行）。
+// 这里在 onMounted 用 querySelector 兜底取一次：用户首次手动滚动前不触发 scroll 事件，
+// 不兜底会让「未滚过表格即点意图定位」拿不到容器而误判为不在当前页。
+const listBody = ref<HTMLElement | null>(null)
+onMounted(() => {
+  listBody.value = rootEl.value?.querySelector<HTMLElement>('.list-body') ?? null
+})
+// 在进行中的自托管滚动动画句柄（卸载/再次定位时取消，避免旧动画把列表拉回旧目标）
+let scrollRaf = 0
+// 自托管 rAF 平滑滚动：不用原生 scrollTo({behavior:'smooth'})——它是浏览器托管的异步动画，
+// 与 useVirtualList 的滚动回收存在时序竞态，且在 prefers-reduced-motion 下被降级为瞬时、
+// 跨环境落点不一致、没有「最终必达」保证（曾出现动画未跑完目标行仍在视口外）。
+// 这里逐帧写 scrollTop（每次写入都会触发 useVirtualList 的 onScroll → calculateRange，
+// 目标行随动画推进被虚拟列表及时渲染），结束帧强制钳到精确目标值，确保目标必定可见。
+function animateScrollTo(el: HTMLElement, target: number): void {
+  if (scrollRaf) cancelAnimationFrame(scrollRaf)
+  // prefers-reduced-motion：直接落位，不播动画
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    el.scrollTop = target
+    return
+  }
+  const start = el.scrollTop
+  const dist = target - start
+  if (dist === 0) return
+  const duration = Math.min(450, 90 + Math.abs(dist) * 0.35)
+  const t0 = performance.now()
+  const step = (now: number) => {
+    const p = Math.min(1, (now - t0) / duration)
+    const eased = 0.5 - Math.cos(Math.min(1, p) * Math.PI) / 2 // ease-in-out
+    el.scrollTop = start + dist * eased
+    if (p < 1) {
+      scrollRaf = requestAnimationFrame(step)
+    } else {
+      scrollRaf = 0
+      el.scrollTop = target // 最终钳到精确落点（easing 末帧可能差 1px），保证目标行精确居中可见
+    }
+  }
+  scrollRaf = requestAnimationFrame(step)
 }
-defineExpose({ scrollToTop })
+function scrollToTop() {
+  if (scrollRaf) { cancelAnimationFrame(scrollRaf); scrollRaf = 0 }
+  listBody.value && (listBody.value.scrollTop = 0)
+}
+// 外部定位（AI 意图/定位点击）：滚动虚拟列表使目标行尽量居中；id 不在当前页或容器缺失返回 false。
+// useVirtualList 的 scrollTo(index) 默认贴顶；这里按固定行高自行换算居中偏移，
+// 负值（目标在首屏内）交浏览器钳到 0。
+function scrollToId(id: string): boolean {
+  const idx = props.rows.findIndex((f) => f.ID === id)
+  const el = listBody.value
+  if (idx < 0 || !el) return false
+  const top = Math.max(0, idx * props.itemHeight - Math.max(0, (el.clientHeight - props.itemHeight) / 2))
+  animateScrollTo(el, top)
+  return true
+}
+onBeforeUnmount(() => {
+  if (scrollRaf) cancelAnimationFrame(scrollRaf)
+})
+defineExpose({ scrollToTop, scrollToId })
 
 // ---- 单元格文本 / class / title ----
 function cellText(col: FlowColumn, f: ReviewFlowMeta): string {
@@ -373,6 +428,7 @@ function rowClass(f: ReviewFlowMeta): Record<string, boolean> {
     selected: f.ID === props.selectedId,
     error: f.State === 'error',
     pinned: !!f.Pinned,
+    'locate-flash': !!props.highlightId && f.ID === props.highlightId,
     ...(props.rowExtraClass ? props.rowExtraClass(f) : {}),
   }
 }
@@ -683,6 +739,21 @@ function onHeadCtxSelect(key: string) {
 .item { cursor: pointer; border-bottom: 1px solid rgba(255, 255, 255, 0.04); }
 .item:hover { background: rgba(255, 255, 255, 0.06); }
 .item.selected { background: rgba(32, 128, 240, 0.25); }
+/* 外部定位（AI 意图/定位点击）闪烁：品牌紫脉冲两拍，动画结束恢复常态（选中蓝底仍在）。
+   复合选择器压过后置定义的 .item.pinned（同为单类时金条/金底会盖住紫条/紫底），置顶行也有定位反馈 */
+.item.locate-flash,
+.item.pinned.locate-flash {
+  animation: locate-flash 1.6s ease-out 2;
+  box-shadow: inset 3px 0 0 #b57edc;
+}
+@keyframes locate-flash {
+  0%, 100% { background-color: transparent; }
+  35% { background-color: rgba(181, 126, 220, 0.42); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .item.locate-flash,
+  .item.pinned.locate-flash { animation: none; background-color: rgba(181, 126, 220, 0.22); }
+}
 .item.error { color: #e88080; }
 .item.pinned { background: rgba(229, 192, 123, 0.10); box-shadow: inset 2px 0 0 #e5c07b; }
 .item.pinned.selected { background: rgba(32, 128, 240, 0.28); }

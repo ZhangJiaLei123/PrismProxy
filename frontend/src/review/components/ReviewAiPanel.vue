@@ -31,11 +31,11 @@
     </header>
 
     <div class="ai-body">
-      <!-- 空态：未启用 / 未配 Key（Ollama 等自托管免 Key 已由后端 keyMissingWarn 豁免）/ 配置读取失败（设计 §九 空态引导） -->
+      <!-- 空态：未启用 / 未配 Key / 配置读取失败（设计 §九 空态引导） -->
       <div v-if="showEmpty || cfgFailed" class="ai-empty">
         <div class="ai-empty-ic">⚙️</div>
         <div class="ai-empty-title">{{ emptyTitle }}</div>
-        <div class="ai-empty-sub">在主窗「设置 → AI 分析」中启用并完成模型配置后即可使用（本地 Ollama 无需填写 API Key）</div>
+        <div class="ai-empty-sub">在主窗「设置 → AI 分析」中启用并填写 API Key 后即可使用</div>
         <n-button v-if="api.mode === 'http' && cfg" size="small" type="primary" secondary @click="goSettings">去主窗设置</n-button>
         <div v-if="settingMsg" class="ai-empty-msg">{{ settingMsg }}</div>
       </div>
@@ -71,7 +71,9 @@
           :err-msg="errMsg"
           :continue-state="continueStateView"
           :pct="intentPct"
-          :results="intentResults"
+          :rows="intentRows"
+          :shown-count="intentShownCount"
+          :total-count="intentTotalCount"
           :label-of="flowLabelOf"
           v-model:include-req="includeReq"
           v-model:single-mode="singleMode"
@@ -234,6 +236,8 @@ const props = defineProps<{
   /** 当前视图已加载的流（intent/locate/flowmap 候选池，面板按 StartedAt 降序取 id） */
   viewFlows: ReviewFlowMeta[]
   viewTotal: number
+  /** 当前页之前的流条数（(page-1)*pageSize）：意图序号按全局位置编号，跨页连续不重置 */
+  pageOffset?: number
   /** 范围说明文案用：当前标签名 / 关键词 */
   tagName: string
   scope: string
@@ -321,18 +325,8 @@ const AI_RELEASE_GRACE_MS = 350
 let runSeq = 0
 
 // ===== 配置与空态 =====
-// 密钥就绪口径与后端 settings.WarnNoKey 对齐：有 key 即可；无 key 时仅自托管 Ollama
-// （顶层 provider 或当前条目 provider=ollama）属正常形态，不得误挡为「未配置 API Key」
-const keyReady = computed(() => {
-  const c = cfg.value
-  if (!c) return false
-  if (c.hasApiKey) return true
-  if (c.provider === 'ollama') return true
-  const cur = (c.entries ?? []).find((m) => m.current)
-  return cur?.provider === 'ollama'
-})
-const cfgOk = computed(() => !!cfg.value && cfg.value.enabled && keyReady.value)
-const showEmpty = computed(() => !!cfg.value && (!cfg.value.enabled || !keyReady.value))
+const cfgOk = computed(() => !!cfg.value && cfg.value.enabled && cfg.value.hasApiKey)
+const showEmpty = computed(() => !!cfg.value && (!cfg.value.enabled || !cfg.value.hasApiKey))
 const cfgFailed = computed(() => !cfg.value && !cfgLoading.value)
 const emptyTitle = computed(() => {
   if (!cfg.value) return 'AI 配置读取失败'
@@ -395,13 +389,22 @@ function flowLabelOf(id: string): string {
   return f ? f.Method + ' ' + (f.Path || f.URL) : id
 }
 
-// intent 结果行 = 候选池里有结果的，按模型输出序号排
-const intentResults = computed<IntentResult[]>(() =>
-  intentIds.value
-    .map((id) => intentOf(id))
-    .filter((it): it is IntentResult => !!it)
-    .sort((a, b) => a.seq - b.seq),
-)
+// intent 结果行 = 当前视图（中间表格当前页）里有意图结果的流。
+// seq 是后端「当次批量送审 prompt」内的临时编号（刷新后 seed 恒 0、单条轮询恒 1），
+// 无稳定身份意义；列表序号改用该流在当前筛选/排序结果中的全局位置（pageOffset+页内位，1 起），
+// 跨页连续、与点击定位目标同源；候选池外（翻页离开当前页）的已标注流不展示——点击也无法在当前页定位。
+const intentRows = computed(() => {
+  const off = props.pageOffset ?? 0
+  const out: { it: IntentResult; rowNo: number }[] = []
+  props.viewFlows.forEach((f, i) => {
+    const it = intentOf(f.ID)
+    if (it) out.push({ it, rowNo: off + i + 1 })
+  })
+  return out
+})
+// 本页可展示的已标注意图数 vs 全部候选池已标注数：跨页批量后两者可能不等，用于口径提示
+const intentShownCount = computed(() => intentRows.value.length)
+const intentTotalCount = computed(() => intentIds.value.filter((id) => !!intentOf(id)).length)
 
 // ===== 文案 =====
 const scopeText = computed(() => {

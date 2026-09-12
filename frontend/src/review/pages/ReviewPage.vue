@@ -291,6 +291,7 @@
                   :default-widths="TABLE_DEFAULT_WIDTHS"
                   :col-mins="TABLE_COL_MINS"
                   :selected-id="selectedFlow"
+                  :highlight-id="locateFlashId"
                   :actions="tableActions"
                   :item-height="44"
                   selectable
@@ -354,6 +355,7 @@
         :checked-ids="checkedIds"
         :view-flows="flows"
         :view-total="total"
+        :page-offset="(page - 1) * pageSize"
         :tag-name="currentTagName"
         :scope="scope"
         :keyword="keyword"
@@ -447,13 +449,36 @@ function onIntentClick(f: ReviewFlowMeta): void {
   aiPanelShow.value = true
   aiExplainAutoTick.value++
 }
-// 面板「查看 →」跳转：目标在当前已加载列表内则选中，否则提示切分页（设计 §7.1）
+// 面板意图/定位行点击联动：目标在当前表格页内则选中 + 滚动居中 + 闪烁两拍；
+// 不在当前页（被筛选/翻页）无法定位，提示用户切到所在分页（设计 §7.1）。
+const locateFlashId = ref('')
+let locateTimer: ReturnType<typeof setTimeout> | null = null
+let locateRaf = 0
+let locateAlive = true // 卸载后置 false：兜底取消「点击已发生、双 rAF 尚未 flush」极端时序里的延迟回调
+const LOCATE_FLASH_MS = 3400 // = 闪烁动画 1.6s × 2 + 余量，到点清 class
 function onAiLocate(flowId: string): void {
-  if (flows.value.some((f) => f.ID === flowId)) {
-    selectedFlow.value = flowId
-  } else {
-    message.info('该流不在当前列表（可能被筛选或翻页），请切换到该流所在分页后重试', { duration: 5000, closable: true })
+  if (!tableRef.value?.scrollToId(flowId)) {
+    message.info('该接口不在当前列表（可能被筛选或翻页），请切换到所在分页后重试', { duration: 5000, closable: true })
+    return
   }
+  selectedFlow.value = flowId
+  // 先清空 class，再跨「两个真实渲染帧」重挂：nextTick 只是微任务，同一帧内浏览器会把
+  // 「移除→重加」合并成净变化，连续点同一行不会重启动画。双 rAF 确保无 class 的状态先被
+  // 绘制一帧，第二次 rAF 再加回，CSS animation 才会重新起播。
+  locateFlashId.value = ''
+  if (locateTimer) clearTimeout(locateTimer)
+  if (locateRaf) cancelAnimationFrame(locateRaf)
+  locateRaf = requestAnimationFrame(() => {
+    locateRaf = requestAnimationFrame(() => {
+      locateRaf = 0
+      if (!locateAlive) return // 组件已卸载：不再写 ref / 建定时器
+      locateFlashId.value = flowId
+      locateTimer = setTimeout(() => {
+        locateFlashId.value = ''
+        locateTimer = null
+      }, LOCATE_FLASH_MS)
+    })
+  })
 }
 // 页码分页（1 起）；页大小可选 50/100/200/500，默认 100
 const page = ref(1)
@@ -1070,6 +1095,9 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (kwTimer) clearTimeout(kwTimer)
+  if (locateTimer) clearTimeout(locateTimer)
+  if (locateRaf) cancelAnimationFrame(locateRaf)
+  locateAlive = false
   window.removeEventListener('pointermove', onDragMove)
   window.removeEventListener('pointerup', onDragEnd)
 })
