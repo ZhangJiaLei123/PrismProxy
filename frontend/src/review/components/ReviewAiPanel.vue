@@ -708,7 +708,7 @@ async function doStart(): Promise<void> {
             const len = mdBuf.length // closeTurn 会清缓冲，字数先取
             const cont = ev.data?.continued ?? 0
             closeTurn(ev.data?.finishReason, ev.data?.usage)
-            noticeMsg.value = '' // 本条续写状态不带到下一条
+            continueState.value = null // 本条续写状态不带到下一条
             const fr = ev.data?.finishReason
             let tail = ''
             if (fr === 'length') tail = ' · 输出被截断（模型上下文不足）'
@@ -724,6 +724,7 @@ async function doStart(): Promise<void> {
         } catch (e) {
           if (ctl.signal.aborted || seq !== runSeq) break
           closeTurn() // 本条中途失败（error 帧被 itemFrame 拦截或网络异常）：关闭进行中轮次再继续下一条
+          continueState.value = null // 防御清理：本条 notice 状态不带入下一条（正常路径 done 已清，此处兜底 error 帧/传输中断）
           failed++
           addLog('error', `第 ${i + 1}/${total} 条失败：${flowLabelOf(id)} · ${String((e as Error)?.message ?? e)}`)
         }
@@ -796,17 +797,15 @@ function onFrame(ev: AiChatEvent): void {
       addLog('match', `#${ev.data.rank} ${ev.data.method} ${ev.data.url} · ${confLabel(ev.data.confidence)}`)
       break
     case 'notice': {
-      // length 截断 → 后端自动开「临时压缩会话 + 新会话续写」：日志留痕 + metaText 短进度
-      const round = ev.data.round ?? 1
-      if (ev.data.stage === 'compressing') {
-        noticeMsg.value = '续写中：压缩历史对话…'
-        addLog('notice', `检测到输出截断 · 第 ${round} 轮自动续写：临时会话正在压缩历史对话…`)
-      } else if (ev.data.stage === 'continuing') {
-        noticeMsg.value = '续写中：新会话输出…'
-        addLog('notice', `第 ${round} 轮历史压缩完成 · 已开启新会话续写`)
+      // length 截断 → 后端自动开「临时压缩会话 + 新会话续写」：内联状态条 + 日志留痕 + metaText 短进度
+      const n = ev.data
+      continueState.value = { stage: n.stage, round: n.round ?? 1, message: n.message }
+      if (n.stage === 'compressing') {
+        addLog('notice', `检测到输出截断 · 第 ${n.round ?? 1} 轮自动续写：临时会话正在压缩历史对话…`)
+      } else if (n.stage === 'continuing') {
+        addLog('notice', `第 ${n.round ?? 1} 轮历史压缩完成 · 已开启新会话续写`)
       } else {
-        noticeMsg.value = '续写失败'
-        addLog('error', ev.data.message || '自动续写失败，已保留截断稿')
+        addLog('error', n.message || '自动续写失败，已保留截断稿')
       }
       break
     }
@@ -821,7 +820,7 @@ function onFrame(ev: AiChatEvent): void {
       const cont = ev.data?.continued ?? 0
       closeTurn(ev.data?.finishReason, ev.data?.usage)
       phase.value = 'done'
-      noticeMsg.value = ''
+      continueState.value = null
       // finishReason 如实来自上游（length=输出预算耗尽被截断）；continued>0=经自动续写后收尾
       const fr = ev.data?.finishReason
       let tail = ''
@@ -896,7 +895,7 @@ function stopRun(): void {
   curTurn = null
   meta.value = null
   runTarget.value = ''
-  noticeMsg.value = ''
+  continueState.value = null
 }
 // 仅 doStart 前的全量清场：新 run 独占界面态，日志归档为上一轮供回看（G3 审计建议）
 function resetRun(): void {
