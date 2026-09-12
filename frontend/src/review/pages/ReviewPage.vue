@@ -410,12 +410,12 @@ const keyword = ref('')
 const loading = ref(false)
 // P4 复盘 AI：列表勾选集合（批量标注意图候选）；作废规则见 loadFlows(reset) / onPageChange
 const checkedIds = ref<string[]>([])
-// AI 面板显隐与初始模式（P4-14 挂载 ReviewAiPanel）：各入口设置后打开
+// AI 面板显隐与模式（P4-14 挂载 ReviewAiPanel）：显式模式入口设置 mode 后打开
 const aiPanelShow = ref(false)
 const aiPanelMode = ref<AiChatMode>('intent')
-// 标注意图入口：打开面板并预选 intent 模式（候选=勾选集，无勾选=当前已加载页，由面板内说明）
+// 标注意图入口：纯「打开面板」通用入口——不强制切模式，恢复上次打开的 tab（交互 bug 修复：
+// 原每次强制 intent 抹掉上次 tab）；候选=勾选集，无勾选=当前已加载页，由面板内说明
 function onMarkIntents(): void {
-  aiPanelMode.value = 'intent'
   aiPanelShow.value = true
 }
 // explain 显式解读信号：详情页「AI 解读」/路径列意图摘要点击时递增（列表浏览不递增），

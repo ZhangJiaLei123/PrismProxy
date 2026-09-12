@@ -906,7 +906,8 @@ watch(
   () => props.show,
   (s) => {
     if (s) {
-      activeTab.value = props.mode
+      // 打开不重置 activeTab（状态记忆：恢复上次打开的 tab）；显式模式入口经 props.mode
+      // watch 切换（aiPanelMode 变化先于 show=true 触发，watch 顺序见上方联动节）
       // 停止按钮留下的 stopped 终态在重开时归位：上次结果以干净态回显（done/error 保留）
       if (phase.value === 'stopped') phase.value = 'idle'
       void loadCfg()
@@ -925,7 +926,10 @@ watch(
 watch(
   () => props.explainAutoTick,
   () => {
-    if (!props.show || activeTab.value !== 'explain' || !cfgOk.value) return
+    if (!props.show || !cfgOk.value) return
+    // tick 自带「强制进 explain」语义（审计修复）：mode 同值赋值不触发 props.mode watch，
+    // 面板可能停在其他 tab（上次手动切走）——显式点击必须切回解读再自动开始，否则点击意图丢失
+    activeTab.value = 'explain'
     resetRun()
     requestStart(true)
   },
