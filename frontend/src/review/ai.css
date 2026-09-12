@@ -146,6 +146,16 @@ body.ew-resizing * {
 .ai-close:active {
   transform: scale(0.96);
 }
+/* 日志抽层清空按钮：hover 红色警示（破坏性操作视觉预告） */
+.ai-log-clear:hover:not(:disabled) {
+  color: rgba(255, 100, 100, 0.9);
+  background: rgba(255, 100, 100, 0.08);
+}
+/* 流式输出中禁用（防清空后 in-flight 轮次写旧对象丢失）：弱化 + 禁用光标 */
+.ai-log-clear:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 .ai-body {
   flex: 1;
   min-height: 0;
@@ -274,6 +284,81 @@ body.ew-resizing * {
 .ai-md td {
   border: 1px solid rgba(255, 255, 255, 0.12);
   padding: 4px 8px;
+}
+
+/* 对话气泡内的 Markdown（ReviewAiLogSheet 模型返回正文；复用 .ai-md 体系 + 气泡内适配） */
+.ai-conv-md > :first-child {
+  margin-top: 0; /* 气泡 padding 已有呼吸，首末元素不再叠加外距 */
+}
+.ai-conv-md > :last-child {
+  margin-bottom: 0;
+}
+/* 宽表格：fit-content 气泡内自滚动，不撑破 max-width */
+.ai-conv-md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+/* 代码块同心圆角：气泡 12px − 内距 ≈ 8px */
+.ai-conv-md pre {
+  border-radius: 8px;
+}
+/* mermaid 图容器：与代码块同族暗底，图居中、大图横向滚动 */
+.ai-md-mermaid {
+  margin: 6px 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+}
+.ai-md-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+/* mermaid 渲染中角标：右上角胶囊 + spinner。hydrateMermaid 经 parse 门禁进入渲染态才挂载，
+   成功随节点替换消失；渲染中不遮挡代码内容（右上角空白区），pointer-events 不拦截交互 */
+pre.mmd-loading {
+  position: relative;
+}
+pre.mmd-loading::after {
+  content: '渲染图中';
+  position: absolute;
+  top: 6px;
+  right: 26px;
+  padding: 3px 9px;
+  font-size: 11px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  pointer-events: none;
+}
+pre.mmd-loading::before {
+  content: '';
+  position: absolute;
+  top: 10px;
+  right: 9px;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid rgba(255, 255, 255, 0.25);
+  border-top-color: rgba(255, 255, 255, 0.8);
+  border-radius: 50%;
+  animation: mmd-spin 0.8s linear infinite;
+  pointer-events: none;
+}
+@keyframes mmd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  pre.mmd-loading::before {
+    animation: none; /* 仅静态圆环，文字提示仍表达渲染中 */
+  }
 }
 
 /* intent 结果列表 */
@@ -552,33 +637,6 @@ body.row-resizing * {
   white-space: pre-wrap;
   word-break: break-word;
 }
-/* 对话 tab 四区：提问 → 提示词（折叠）→ 思考过程（折叠/自动开合）→ 模型输出 */
-.ai-conv-sec {
-  margin-bottom: 12px;
-}
-.ai-conv-label {
-  margin-bottom: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  color: var(--ai-brand);
-}
-.ai-conv-q {
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.ai-conv-scope {
-  margin-top: 4px;
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.4);
-}
 /* 折叠开关行：chevron 旋转过渡（transform 可中断，不重排） */
 .ai-conv-toggle {
   display: flex;
@@ -629,15 +687,6 @@ body.row-resizing * {
   overflow: hidden;
   min-height: 0;
 }
-.ai-conv-label-sub {
-  margin: 6px 0 2px;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.4);
-}
-.ai-conv-label-sub:first-child {
-  margin-top: 4px;
-}
 /* 思考过程弱化展示：与正文输出区分层级 */
 .ai-conv-think {
   color: rgba(255, 255, 255, 0.55);
@@ -647,6 +696,28 @@ body.row-resizing * {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+/* 轮次头提问快照：品牌紫小标签 + 单行省略（完整内容 hover title） */
+.ai-turn-q {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+.ai-turn-q-label {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--ai-brand);
+}
+.ai-turn-q-text {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* 气泡：fit-content 收缩到内容宽（块级默认满宽会失去聊天感），上限 92% 留出左右归属；
    radius 12px ≈ 内 padding 10px + 内容无底色，无嵌套圆角失配 */

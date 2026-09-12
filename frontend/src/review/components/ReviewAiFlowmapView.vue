@@ -1,0 +1,55 @@
+<template>
+  <!-- 流程模块（flowmap）：自然语言目标 → 模型正文 Markdown，无正文开关（后端默认必带正文）。
+       由 ReviewAiPanel 挂载：父持运行引擎与全部状态，本组件纯展示 -->
+  <div class="ai-scope">{{ scopeText }}</div>
+
+  <!-- 模式专属输入：自然语言目标 -->
+  <n-input
+    :value="question"
+    type="textarea"
+    :rows="2"
+    placeholder="例：梳理下单流程的接口调用顺序"
+    :disabled="phase === 'streaming'"
+    @update:value="emit('update:question', $event)"
+  />
+
+  <ReviewAiRunActions
+    :phase="phase"
+    label="开始分析"
+    :start-disabled="startDisabled"
+    :need-confirm="needConfirm"
+    :meta-text="metaText"
+    @start="emit('start')"
+    @stop="emit('stop')"
+  />
+
+  <div v-if="phase === 'error'" class="ai-error">{{ errMsg }}</div>
+
+  <ReviewAiMdView :md="md" :pending="pending" />
+</template>
+
+<script setup lang="ts">
+import { NInput } from 'naive-ui'
+import ReviewAiRunActions from './ReviewAiRunActions.vue'
+import ReviewAiMdView from './ReviewAiMdView.vue'
+
+defineProps<{
+  scopeText: string
+  phase: 'idle' | 'streaming' | 'done' | 'stopped' | 'error'
+  startDisabled: boolean
+  needConfirm: boolean
+  metaText: string
+  errMsg: string
+  question: string
+  /** 模型正文（父级 displayMd：当前模式末轮输出） */
+  md: string
+  /** 首 token 前骨架占位 */
+  pending: boolean
+}>()
+
+const emit = defineEmits<{
+  (e: 'start'): void
+  (e: 'stop'): void
+  (e: 'update:question', v: string): void
+}>()
+</script>

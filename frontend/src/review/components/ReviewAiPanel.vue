@@ -43,110 +43,72 @@
       <div v-else-if="cfgLoading" class="ai-hint ai-pad">正在读取 AI 配置…</div>
 
       <template v-else>
-        <!-- 范围说明：模式差异文案（勾选集 / 当前视图 / 单流目标） -->
-        <div class="ai-scope">{{ scopeText }}</div>
-
-        <!-- 模式专属输入：locate/flowmap 自然语言目标；explain/intent 无输入 -->
-        <n-input
-          v-if="activeTab === 'locate' || activeTab === 'flowmap'"
-          v-model:value="question"
-          type="textarea"
-          :rows="2"
-          :placeholder="qPlaceholder"
-          :disabled="phase === 'streaming'"
+        <!-- 四个模式模块（独立组件）：父持运行引擎与全部状态，视图纯展示经 props 注入（同 ReviewAiLogSheet 拆分模式）；
+             动作行（RunActions）/Markdown 结论区（MdView）为跨模式共用小件，由各视图内部挂载 -->
+        <ReviewAiExplainView
+          v-if="activeTab === 'explain'"
+          :scope-text="scopeText"
+          :phase="phase"
+          :start-disabled="startDisabled"
+          :need-confirm="needConfirm"
+          :meta-text="metaText"
+          :err-msg="errMsg"
+          :md="displayMd"
+          :pending="pendingStream"
+          @start="requestStart()"
+          @stop="stop"
         />
-
-        <!-- 正文开关（对齐后端 OR 语义：explain/flowmap 默认必带正文、关不掉，故不给开关） -->
-        <div v-if="activeTab === 'intent' || activeTab === 'locate'" class="ai-opts">
-          <n-checkbox v-model:checked="includeReq" :disabled="phase === 'streaming'">包含请求正文</n-checkbox>
-          <n-checkbox v-if="activeTab === 'locate'" v-model:checked="includeResp" :disabled="phase === 'streaming'">包含响应正文</n-checkbox>
-          <!-- 单条轮询：逐条独立调用模型，规避整批 prompt 过大导致的截断/首响应超时（批量标注实测红线） -->
-          <n-checkbox
-            v-if="activeTab === 'intent'"
-            v-model:checked="singleMode"
-            :disabled="phase === 'streaming'"
-            title="每条流单独调用一次模型，慢但稳，可规避批量 prompt 过大导致的输出截断或超时"
-          >单条轮询处理</n-checkbox>
-        </div>
-
-        <!-- 动作行：开始（redact 关闭时每次需确认）/停止互斥 + 运行状态 -->
-        <div class="ai-actions">
-          <n-popconfirm
-            v-if="cfg && !cfg.redact"
-            placement="top-start"
-            positive-text="继续"
-            negative-text="取消"
-            @positive-click="requestStart()"
-          >
-            <template #trigger>
-              <n-button type="primary" size="small" :disabled="startDisabled">{{ startLabel }}</n-button>
-            </template>
-            当前未开启脱敏，请求头将原样发送给 AI 服务，确定继续？
-          </n-popconfirm>
-          <n-button v-else type="primary" size="small" :disabled="startDisabled" @click="requestStart()">{{ startLabel }}</n-button>
-          <n-button v-if="phase === 'streaming'" size="small" quaternary @click="stop">停止</n-button>
-          <!-- 分析中状态 pill：弹跳点 + 流动渐变文字（静态线索=紫色底与点色，动画非唯一反馈） -->
-          <span v-if="phase === 'streaming'" class="ai-live">
-            <i></i><i></i><i></i><span>AI 分析中</span>
-          </span>
-          <!-- 读屏播报（R1 审计修复）：live region 必须先于消息常驻无障碍树才会被播报；sr-only 视觉隐藏不影响布局 -->
-          <span class="ai-sr-live" aria-live="polite">{{ phase === 'streaming' ? 'AI 分析中' : '' }}</span>
-          <span v-if="metaText" class="ai-meta">{{ metaText }}</span>
-          <span v-else-if="phase === 'done'" class="ai-state">已完成</span>
-          <span v-else-if="phase === 'stopped'" class="ai-state">已停止</span>
-        </div>
-
-        <!-- intent 进度（n/total，tabular-nums 防数字抖动） -->
-        <n-progress
-          v-if="activeTab === 'intent' && phase !== 'idle'"
-          type="line"
-          :percentage="intentPct"
-          :show-indicator="false"
-          class="ai-progress"
+        <ReviewAiIntentView
+          v-else-if="activeTab === 'intent'"
+          :scope-text="scopeText"
+          :phase="phase"
+          :start-disabled="startDisabled"
+          :need-confirm="needConfirm"
+          :meta-text="metaText"
+          :err-msg="errMsg"
+          :pct="intentPct"
+          :results="intentResults"
+          :label-of="flowLabelOf"
+          v-model:include-req="includeReq"
+          v-model:single-mode="singleMode"
+          @start="requestStart()"
+          @stop="stop"
+          @locate="emit('locate', $event)"
         />
-
-        <div v-if="phase === 'error'" class="ai-error">{{ errMsg }}</div>
-
-        <!-- intent 结果列表：设计 §7.2 无 Markdown 区（delta 里的列表/JSON 不展示，仅收 intent 帧） -->
-        <div v-if="activeTab === 'intent'" class="ai-intents">
-          <div
-            v-for="it in intentResults"
-            :key="it.flowId"
-            class="ai-intent-row"
-            :title="intentRowTip(it)"
-            @click="emit('locate', it.flowId)"
-          >
-            <span class="ai-intent-seq">#{{ it.seq }}</span>
-            <span class="ai-intent-text" :class="{ 'k-ai-low': it.confidence === 'low', 'k-ai-needs-body': it.needsBody }">{{ it.intent }}</span>
-            <span class="ai-intent-flow">{{ flowLabelOf(it.flowId) }}</span>
-          </div>
-          <div v-if="!intentResults.length && phase !== 'idle'" class="ai-hint">{{ phase === 'streaming' ? '标注中…' : '暂无结果' }}</div>
-        </div>
-
-        <!-- Markdown 结论区（explain/locate/flowmap）：50ms 节流渲染，v-html 唯一出口经 renderMarkdown 净化 -->
-        <div v-else class="ai-md">
-          <!-- 首 token 前的等待骨架：微光横条示意"正在思考" -->
-          <div v-if="pendingStream" class="ai-skel" aria-hidden="true">
-            <i></i><i></i><i></i><i></i><i></i>
-          </div>
-          <div v-else v-html="renderedHtml"></div>
-        </div>
-
-        <!-- locate 匹配卡片：rank/method/url/置信度/理由/[查看→] -->
-        <div v-if="activeTab === 'locate' && matches.length" class="ai-matches">
-          <div v-for="m in matches" :key="m.flowId" class="ai-match">
-            <div class="ai-match-head">
-              <span class="ai-match-rank">#{{ m.rank }}</span>
-              <span class="ai-match-method">{{ m.method }}</span>
-              <span class="ai-match-url" :title="m.url">{{ m.url }}</span>
-              <span class="ai-match-conf" :class="confCls(m.confidence)">{{ confLabel(m.confidence) }}</span>
-            </div>
-            <div class="ai-match-reason">
-              <span class="ai-match-reason-text" :title="m.reason">{{ m.reason }}</span>
-              <n-button size="tiny" quaternary class="ai-match-go" @click="emit('locate', m.flowId)">查看 →</n-button>
-            </div>
-          </div>
-        </div>
+        <ReviewAiLocateView
+          v-else-if="activeTab === 'locate'"
+          :scope-text="scopeText"
+          :phase="phase"
+          :start-disabled="startDisabled"
+          :need-confirm="needConfirm"
+          :meta-text="metaText"
+          :err-msg="errMsg"
+          v-model:question="question"
+          v-model:include-req="includeReq"
+          v-model:include-resp="includeResp"
+          :md="displayMd"
+          :pending="pendingStream"
+          :matches="matches"
+          :conf-cls="confCls"
+          :conf-label="confLabel"
+          @start="requestStart()"
+          @stop="stop"
+          @locate="emit('locate', $event)"
+        />
+        <ReviewAiFlowmapView
+          v-else
+          :scope-text="scopeText"
+          :phase="phase"
+          :start-disabled="startDisabled"
+          :need-confirm="needConfirm"
+          :meta-text="metaText"
+          :err-msg="errMsg"
+          v-model:question="question"
+          :md="displayMd"
+          :pending="pendingStream"
+          @start="requestStart()"
+          @stop="stop"
+        />
       </template>
     </div>
 
@@ -165,7 +127,7 @@
     </footer>
 
     <!-- 调用日志抽层（独立组件 ReviewAiLogSheet）：对话内容（模型原始输出实时流）+ 调用日志（帧级事件）；
-         数据源（convTurns/logs）与开合态由本面板持有，展示/滚随/拖高在子组件内 -->
+         数据源（convTurns/logs）为模块级 store（useAiSession），开合态由本面板持有，展示/滚随/拖高在子组件内 -->
     <ReviewAiLogSheet
       ref="logSheetRef"
       v-model:open="logOpen"
@@ -174,8 +136,6 @@
       :conv-turns="convTurns"
       :logs="logs"
       :prev-logs="prevLogs"
-      :question="question"
-      :scope-text="scopeText"
     />
 
     <!-- 首次分析告知（设计 §8-1）：localStorage 记忆，确认后才真正开始 -->
@@ -199,14 +159,28 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { NButton, NCheckbox, NInput, NModal, NPopconfirm, NProgress, NTab, NTabs } from 'naive-ui'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { NButton, NModal, NTab, NTabs } from 'naive-ui'
 import type { AiChatEvent, AiChatMeta, AiChatMode, AiUsage, AIApiConfigView, ReviewApi } from '../api'
 import type { AiMatchItem, IntentResult, ReviewFlowMeta } from '../../lib/types'
-import { renderMarkdown } from '../ai-md'
 import { useIntents } from '../useIntents'
 import ReviewAiLogSheet from './ReviewAiLogSheet.vue'
-import type { ConvTurn, LogEntry, LogKind } from './ReviewAiLogSheet.vue'
+import ReviewAiExplainView from './ReviewAiExplainView.vue'
+import ReviewAiIntentView from './ReviewAiIntentView.vue'
+import ReviewAiLocateView from './ReviewAiLocateView.vue'
+import ReviewAiFlowmapView from './ReviewAiFlowmapView.vue'
+import {
+  addLog,
+  archiveLogs,
+  convTurns,
+  createTurn,
+  hydrateAiSession,
+  logs,
+  matches,
+  prevLogs,
+  scheduleSave,
+} from '../useAiSession'
+import type { ConvTurn } from '../useAiSession'
 
 // 面板状态机（设计 §7.3）：idle → streaming(meta→delta/intent/match*) → done|stopped|error；
 // 切模式/换流重置，同面板同时只跑一个任务
@@ -246,6 +220,8 @@ const TABS: { key: AiChatMode; label: string }[] = [
 const NOTICE_KEY = 'prismproxy:review-ai-notice-v1'
 
 const { intentOf, runIntent, upsert, busy } = useIntents()
+// 阶段三持久化：启动恢复 IndexedDB 中的对话轮次/日志/匹配（幂等，模块级单例只跑一次）
+void hydrateAiSession()
 
 const activeTab = ref<AiChatMode>(props.mode)
 const phase = ref<Phase>('idle')
@@ -254,13 +230,12 @@ const phase = ref<Phase>('idle')
 const runTarget = ref('')
 const errMsg = ref('')
 const meta = ref<AiChatMeta | null>(null)
-const matches = ref<AiMatchItem[]>([])
 const intentDone = ref(0)
 // 对话 tab 聊天模型：每条流一对「消息发送 → 模型返回」气泡。单条轮询每条独立成对
 // （每次 meta 开新轮），批量/explain 等单次调用=单轮。curTurn 为 in-flight 轮的
-// reactive 代理：推入数组后代理身份不变，50ms 合帧直接写代理属性即触发更新
-// （ConvTurn / LogEntry / LogKind 结构见子组件 ReviewAiLogSheet 导出）
-const convTurns = ref<ConvTurn[]>([])
+// reactive 代理：50ms 合帧直接写代理属性即触发更新。
+// convTurns/logs/prevLogs/matches 为模块级 store（useAiSession）：常驻内存 + IndexedDB
+// 持久化，切模式/组件卸载不丢（阶段三）
 let curTurn: ConvTurn | null = null
 const question = ref('')
 const includeReq = ref(false)
@@ -372,12 +347,10 @@ const scopeText = computed(() => {
   const kw = props.keyword ? `，关键词「${props.keyword}」` : ''
   return `将分析当前视图 ${byStartedDesc.value.length} 条流（${props.tagName}${kw}）`
 })
-const qPlaceholder = computed(() =>
-  activeTab.value === 'locate' ? '例：找出登录接口的响应位置' : '例：梳理下单流程的接口调用顺序',
-)
-const startLabel = computed(() =>
-  activeTab.value === 'intent' ? '开始标注' : activeTab.value === 'explain' ? '开始解读' : '开始分析',
-)
+// 本轮提问快照（开轮时存入对话记录）：locate/flowmap 为自然语言，explain/intent 无输入则回显范围说明
+const qAsked = computed(() => question.value.trim() || scopeText.value)
+// 未开启脱敏时，开始分析前须经 popconfirm 二次确认（外发隐私风险提示，视图组件内渲染）
+const needConfirm = computed(() => !!cfg.value && !cfg.value.redact)
 const startDisabled = computed(() => {
   if (phase.value === 'streaming' || !cfgOk.value) return true
   if (activeTab.value === 'explain') return !props.flowId
@@ -401,23 +374,20 @@ const intentPct = computed(() => {
   return t ? Math.round((intentDone.value / t) * 100) : 0
 })
 
-// locate 显示缓冲：截掉模型尾部 ```json 块（流式中半截块也不闪现）；
+// locate 显示缓冲：截掉当前模式末轮的尾部 ```json 块（流式中半截块也不闪现）；
 // 大小写不敏感（模型可能输出 ```JSON，与 Go 侧 lastJSONBlock 同语义，L3 审计修复）
 const displayMd = computed(() => {
-  if (activeTab.value !== 'locate') return fullText.value
-  const fences = [...fullText.value.matchAll(/```json/gi)]
+  const text = lastText.value
+  if (activeTab.value !== 'locate') return text
+  const fences = [...text.matchAll(/```json/gi)]
   const last = fences[fences.length - 1]
-  return last?.index != null ? fullText.value.slice(0, last.index) : fullText.value
+  return last?.index != null ? text.slice(0, last.index) : text
 })
-const renderedHtml = computed(() => renderMarkdown(displayMd.value))
 // 首 token 前的骨架占位：流式进行中且尚无任何输出
 const pendingStream = computed(() => phase.value === 'streaming' && !displayMd.value)
 
-// ===== 调用日志（右下角抽层，UI 见子组件 ReviewAiLogSheet）=====
-// 父持有数据源与开合态：流式引擎逐帧写入，子组件以 props 注入展示
-const logs = ref<LogEntry[]>([])
-// 上一轮归档（G3 审计建议）：新 run 启动时保留最近一轮帧序列供回看
-const prevLogs = ref<LogEntry[]>([])
+// ===== 调用日志与对话（右下角抽层，UI 见子组件 ReviewAiLogSheet）=====
+// 数据源（logs/prevLogs/convTurns/matches）在模块级 store useAiSession，本组件仅持有开合态
 const prevOpen = ref(false)
 const logOpen = ref(false)
 const logSheetRef = ref<InstanceType<typeof ReviewAiLogSheet> | null>(null)
@@ -425,19 +395,7 @@ const logSheetRef = ref<InstanceType<typeof ReviewAiLogSheet> | null>(null)
 // meta 帧=开轮；done/error/stop=关轮（幂等，覆盖 done/error/abort/卸载全路径）。
 // 关轮先把缓冲落盘本轮，再清 in-flight 缓冲；同时清残余 50ms 合帧定时器（防悬空回调）
 function beginTurn(system: string, user: string): void {
-  curTurn = reactive<ConvTurn>({
-    system,
-    user,
-    reason: '',
-    text: '',
-    open: false,
-    sysOpen: false,
-    usrOpen: false,
-    touched: false,
-    finishReason: '',
-    usage: undefined,
-  })
-  convTurns.value.push(curTurn)
+  curTurn = createTurn(qAsked.value, system, user, activeTab.value)
 }
 function closeTurn(fr?: string, usage?: AiUsage): void {
   if (renderTimer !== null) {
@@ -453,105 +411,25 @@ function closeTurn(fr?: string, usage?: AiUsage): void {
   mdBuf = ''
   reasonBuf = ''
   curTurn = null
+  scheduleSave() // 关轮=内容定稿点，落盘防抖
 }
-// 非响应式：本 run 起始时间、首 delta 标记与日志自增 id（跨 run 单调；
-// 500 上限 shift 后长度恒定，滚底 watch 改以末条 id 驱动——A1 审计修复）
+// 非响应式：本 run 起始时间与首 delta 标记
 let runStartTs = 0
 let sawDelta = false // run 级首 delta 标记：仅驱动「模型开始输出」日志
-let logSeq = 0
-
-function log(kind: LogKind, msg: string): void {
-  logs.value.push({ id: ++logSeq, t: Date.now(), kind, msg })
-  if (logs.value.length > 500) logs.value.shift()
-}
-// 全量模型输出聚合（批量单轮=原 convText 行为不变；locate 的 ```json 截断视图作用于它；
-// 对话抽层的滚随监听在子组件内基于 props 另行聚合）
-const fullText = computed(() => convTurns.value.map((t) => t.text).join('\n\n'))
+// 当前模式的末轮模型输出：ConvTurn.mode 记录开轮时所在模式，反向找属于本模式的末轮——
+// 切模式/持久化恢复多轮历史后不再跨模式串显，locate 截 json 块也不误伤其他模式的历史轮
+// （审计修复：原全局末轮实现会在 explain 跑完切 locate 时串显并误截断）
+const lastText = computed(() => {
+  for (let i = convTurns.value.length - 1; i >= 0; i--) {
+    if (convTurns.value[i].mode === activeTab.value) return convTurns.value[i].text
+  }
+  return ''
+})
 
 function toggleLog(): void {
   logOpen.value = !logOpen.value
   // 流式中打开优先展示实时对话
   if (logOpen.value && phase.value === 'streaming') logSheetRef.value?.openConv()
-}
-
-// ===== 抽层高度拖拽 + 缓存 =====
-// 顶部把手上下拖动调高，pointerup 落盘 localStorage；双击恢复 CSS 默认。
-// 缓存值以内联 height: min(px, calc(100% - 保留)) 生效——窗口变小时 CSS 就近钳制不溢出抽屉
-const LOG_H_KEY = 'prismproxy:review-ai-logsheet-h-v1'
-const LOG_H_MIN = 200 // 与 .ai-logsheet min-height 一致
-const LOG_H_RESERVE_EXTRA = 120 // 正文可视保留；上限 = 抽屉高 - footer 高(--ai-foot-h) - 120（I2 审计修复：footer 高单一事实源是 CSS 变量）
-const logsheetEl = ref<HTMLElement | null>(null)
-const logH = ref(0) // 0 = 未自定义，走 CSS 默认 min(58%, 430px)
-const logDragging = ref(false)
-let logDragStartY = 0
-let logDragStartH = 0
-
-try {
-  const v = Number(localStorage.getItem(LOG_H_KEY))
-  if (v >= LOG_H_MIN) logH.value = v
-} catch {
-  /* 存储不可用仅本会话生效 */
-}
-
-const logHStyle = computed<{ height: string } | undefined>(() =>
-  logH.value > 0
-    ? { height: `min(${logH.value}px, calc(100% - var(--ai-foot-h) - ${LOG_H_RESERVE_EXTRA}px))` }
-    : undefined,
-)
-
-function logMaxH(): number {
-  const drawerH = logsheetEl.value?.parentElement?.clientHeight ?? 0
-  const footH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ai-foot-h')) || 35
-  return Math.max(LOG_H_MIN, drawerH - footH - LOG_H_RESERVE_EXTRA)
-}
-
-function startLogDrag(e: PointerEvent): void {
-  if (e.button !== 0) return // 仅左键拖拽（I1 审计修复：右键/中键不进入拖拽）
-  const el = logsheetEl.value
-  if (!el) return
-  logDragging.value = true
-  logDragStartY = e.clientY
-  logDragStartH = el.clientHeight // clientWidth/Height 不含 1px border，= style 值零漂移（G-1 审计修复，rect 起点会逐会话 +1px）
-  window.addEventListener('pointermove', onLogDragMove)
-  window.addEventListener('pointerup', onLogDragEnd)
-  window.addEventListener('pointercancel', onLogDragEnd)
-  document.body.classList.add('row-resizing')
-  try {
-    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
-  } catch {
-    /* 合成事件无活动指针，捕获失败不影响拖拽逻辑 */
-  }
-  e.preventDefault() // 防触发文本选择
-}
-
-function onLogDragMove(e: PointerEvent): void {
-  if (!logDragging.value) return
-  // 向上拖（clientY 减小）增高
-  logH.value = Math.min(Math.max(logDragStartH + (logDragStartY - e.clientY), LOG_H_MIN), logMaxH())
-}
-
-function onLogDragEnd(): void {
-  if (!logDragging.value) return
-  logDragging.value = false
-  window.removeEventListener('pointermove', onLogDragMove)
-  window.removeEventListener('pointerup', onLogDragEnd)
-  window.removeEventListener('pointercancel', onLogDragEnd)
-  document.body.classList.remove('row-resizing')
-  try {
-    if (logH.value >= LOG_H_MIN) localStorage.setItem(LOG_H_KEY, String(logH.value)) // 未达下限（0 哨兵）不落盘，防纯点击残留 "0"（G-3 审计修复）
-  } catch {
-    /* 存储不可用仅本会话生效 */
-  }
-}
-
-// 双击把手恢复默认高度
-function resetLogH(): void {
-  logH.value = 0
-  try {
-    localStorage.removeItem(LOG_H_KEY)
-  } catch {
-    /* 忽略 */
-  }
 }
 
 // ===== 面板宽度拖拽 + 缓存 =====
@@ -663,12 +541,12 @@ function onNoticeOk(): void {
 
 async function doStart(): Promise<void> {
   resetRun()
-  // explain 目标快照（在 resetRun 之后：resetRun 会清 runTarget）
+  // explain 目标快照（在 resetRun 之后：stopRun 已清 runTarget）
   if (activeTab.value === 'explain') runTarget.value = props.flowId || ''
   phase.value = 'streaming'
   runStartTs = Date.now()
   sawDelta = false
-  log('start', TABS.find((t) => t.key === activeTab.value)?.label + ' · ' + scopeText.value)
+  addLog('start', TABS.find((t) => t.key === activeTab.value)?.label + ' · ' + scopeText.value)
   const ctl = new AbortController()
   abortCtl = ctl
   const seq = ++runSeq
@@ -697,7 +575,7 @@ async function doStart(): Promise<void> {
             const len = mdBuf.length // closeTurn 会清缓冲，字数先取
             closeTurn(ev.data?.finishReason, ev.data?.usage)
             const fr = ev.data?.finishReason
-            log('done', `第 ${i + 1}/${total} 条完成 · ${len} 字` + (fr === 'length' ? ' · 输出被截断（模型上下文不足）' : ''))
+            addLog('done', `第 ${i + 1}/${total} 条完成 · ${len} 字` + (fr === 'length' ? ' · 输出被截断（模型上下文不足）' : ''))
             return
           }
           if (ev.event === 'error') return
@@ -709,7 +587,7 @@ async function doStart(): Promise<void> {
           if (ctl.signal.aborted || seq !== runSeq) break
           closeTurn() // 本条中途失败（error 帧被 itemFrame 拦截或网络异常）：关闭进行中轮次再继续下一条
           failed++
-          log('error', `第 ${i + 1}/${total} 条失败：${flowLabelOf(id)} · ${String((e as Error)?.message ?? e)}`)
+          addLog('error', `第 ${i + 1}/${total} 条失败：${flowLabelOf(id)} · ${String((e as Error)?.message ?? e)}`)
         }
       }
       if (seq === runSeq && phase.value === 'streaming' && total > 0) {
@@ -718,7 +596,7 @@ async function doStart(): Promise<void> {
           phase.value = 'error'
           errMsg.value = `单条轮询全部失败（0/${total}），详见日志抽层`
         } else if (failed > 0) {
-          log('error', `轮询结束 · 成功 ${total - failed}/${total} · 失败 ${failed} 条`)
+          addLog('error', `轮询结束 · 成功 ${total - failed}/${total} · 失败 ${failed} 条`)
         }
       }
     } else if (activeTab.value === 'intent') {
@@ -763,7 +641,7 @@ function onFrame(ev: AiChatEvent): void {
       meta.value = ev.data
       const m = ev.data
       beginTurn(m.system ?? '', m.user ?? '') // 每次送审开新轮：单条轮询每条流独立成对气泡
-      log('meta', `送审 ${m.sent}/${m.total} 条 · 预算 ${m.budget.flows} 流 / ${m.budget.kb}KB` + (m.truncated ? ' · 已截断' : ''))
+      addLog('meta', `送审 ${m.sent}/${m.total} 条 · 预算 ${m.budget.flows} 流 / ${m.budget.kb}KB` + (m.truncated ? ' · 已截断' : ''))
       break
     }
     case 'delta':
@@ -773,17 +651,17 @@ function onFrame(ev: AiChatEvent): void {
     case 'intent':
       intentDone.value++
       upsert(ev.data) // P1 审计修复：缓存写入挪进 runSeq+phase 双守卫内（旧任务迟到帧不再污染共享缓存）
-      log('intent', `#${ev.data.seq} ${ev.data.intent}` + (ev.data.needsBody ? '（需正文）' : ''))
+      addLog('intent', `#${ev.data.seq} ${ev.data.intent}` + (ev.data.needsBody ? '（需正文）' : ''))
       break
     case 'match':
       upsertMatch(ev.data)
-      log('match', `#${ev.data.rank} ${ev.data.method} ${ev.data.url} · ${confLabel(ev.data.confidence)}`)
+      addLog('match', `#${ev.data.rank} ${ev.data.method} ${ev.data.url} · ${confLabel(ev.data.confidence)}`)
       break
     case 'error':
       closeTurn() // 本轮就此终止，缓冲落盘后不再累积
       phase.value = 'error'
       errMsg.value = ev.data.message
-      log('error', ev.data.message)
+      addLog('error', ev.data.message)
       break
     case 'done': {
       const len = mdBuf.length // closeTurn 会清缓冲，字数先取
@@ -791,7 +669,7 @@ function onFrame(ev: AiChatEvent): void {
       phase.value = 'done'
       // finishReason 如实来自上游（length=输出预算耗尽被截断），截断时附加操作提示
       const fr = ev.data?.finishReason
-      log('done', `共 ${len} 字` + (runStartTs ? ` · 耗时 ${((Date.now() - runStartTs) / 1000).toFixed(1)}s` : '') +
+      addLog('done', `共 ${len} 字` + (runStartTs ? ` · 耗时 ${((Date.now() - runStartTs) / 1000).toFixed(1)}s` : '') +
         (fr === 'length' ? ' · 输出被截断（模型上下文/输出预算不足），建议减小批量流数或精简正文' : ''))
       break
     }
@@ -812,7 +690,7 @@ function scheduleRender(): void {
 function pushDelta(text: string): void {
   if (!sawDelta) {
     sawDelta = true
-    log('delta', '模型开始输出')
+    addLog('delta', '模型开始输出')
   }
   // 本轮首个正文增量：思考阶段结束，自动收起本轮思考区（用户手动开合过则不打扰）
   if (curTurn && !mdBuf && !curTurn.touched && curTurn.open) curTurn.open = false
@@ -820,7 +698,7 @@ function pushDelta(text: string): void {
   scheduleRender()
 }
 function pushReason(reason: string): void {
-  // 思考增量先于正文到达：自动展开本轮思考区（正文开始后不再打扰；touched 已由 toggleTurn 置位）
+  // 思考增量先于正文到达：自动展开本轮思考区（正文开始后不再打扰；touched 已由子组件 toggleTurn 置位）
   if (curTurn && !reasonBuf && !curTurn.touched && !curTurn.open) curTurn.open = true
   reasonBuf += reason
   scheduleRender()
@@ -839,29 +717,27 @@ function stop(): void {
   abortCtl?.abort()
   abortCtl = null
   closeTurn() // P2 审计修复：清残余 50ms 合帧定时器并把最后一批 delta 落盘本轮（防悬空回调）
-  log('stop', '已手动停止')
+  addLog('stop', '已手动停止')
 }
 
-// 清运行态（保留 question/开关等输入值）
-function resetRun(): void {
+// 停流清 in-flight（切模式/收面板/卸载路径）：保留对话轮次、日志与匹配（阶段三持久化语义）
+function stopRun(): void {
   stop()
   phase.value = 'idle'
   errMsg.value = ''
   mdBuf = ''
   reasonBuf = ''
   curTurn = null
-  convTurns.value = []
   meta.value = null
+  runTarget.value = ''
+}
+// 仅 doStart 前的全量清场：新 run 独占界面态，日志归档为上一轮供回看（G3 审计建议）
+function resetRun(): void {
+  stopRun()
   matches.value = []
   intentDone.value = 0
   singleTotal.value = 0
-  // 日志按 run 独立：本记录档为上一轮供回看（G3 审计建议），本轮从零开始
-  if (logs.value.length) {
-    prevLogs.value = logs.value
-    prevOpen.value = false
-  }
-  logs.value = []
-  runTarget.value = ''
+  if (archiveLogs()) prevOpen.value = false
 }
 
 function closePanel(): void {
@@ -876,7 +752,7 @@ function onEsc(e: KeyboardEvent): void {
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
   // 日志抽层展开时先收抽层，再按一次 Esc 才关面板（Z1 审计修复：交互层级）
   if (logOpen.value) {
-    if (logDragging.value) onLogDragEnd() // 拖拽中收抽层先终止拖拽态（摘监听/落盘，I3 审计修复）
+    logSheetRef.value?.endDrag() // 拖拽中收抽层先终止拖拽态（摘监听/落盘，I3 审计修复；拖拽态已迁入子组件，经 expose 命令式收尾）
     if (wDragging.value) onWDragEnd() // 宽度拖拽把手上部在抽层外仍可达：收抽层同时终止（与上行 I3 同构：一次 Esc = 终止拖拽 + 逐层收合，G-2 审计修复）
     logOpen.value = false
     return
@@ -887,12 +763,6 @@ function onEsc(e: KeyboardEvent): void {
 }
 
 // ===== 结果辅助 =====
-function intentRowTip(it: IntentResult): string {
-  const tips: string[] = ['点击在列表中定位该流']
-  if (it.confidence === 'low') tips.push('AI 对此判定置信度较低，仅供参考')
-  if (it.needsBody) tips.push('需结合请求正文才能准确判定；可勾选「包含请求正文」重新标注')
-  return tips.join('；')
-}
 function confCls(c: 'high' | 'medium' | 'low'): string {
   return c === 'high' ? 'k-ai-conf-high' : c === 'medium' ? 'k-ai-conf-med' : 'k-ai-low'
 }
@@ -907,8 +777,8 @@ watch(
     activeTab.value = m
   },
 )
-// 切模式重置运行态（同面板单任务）
-watch(activeTab, () => resetRun())
+// 切模式停流并清运行态；对话/日志/匹配保留（阶段三持久化语义，同面板单任务）
+watch(activeTab, () => stopRun())
 
 watch(
   () => props.show,
@@ -942,8 +812,6 @@ onBeforeUnmount(() => {
   stop()
   closeTurn() // P2 审计修复：非 streaming 卸载（如 error 态）时合帧定时器可能仍挂，兜底清掉
   window.removeEventListener('keydown', onEsc)
-  // 高度拖拽中卸载：摘除 window 级监听并还原 body 光标
-  if (logDragging.value) onLogDragEnd()
   // 宽度拖拽中卸载：同上兜底（摘监听/还原光标/落盘）
   if (wDragging.value) onWDragEnd()
 })

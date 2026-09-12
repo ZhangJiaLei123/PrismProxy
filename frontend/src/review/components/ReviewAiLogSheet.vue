@@ -17,6 +17,25 @@
         <n-tab name="conv">对话内容</n-tab>
         <n-tab name="log">调用日志</n-tab>
       </n-tabs>
+      <!-- 清空全部记录（阶段三持久化后记录跨页面存活，需提供手动清空出口）；
+           流式输出中禁用（审计修复：清空会换掉 convTurns 数组，而父侧 in-flight curTurn/mdBuf
+           仍写旧对象——后续 delta 不可见、closeTurn 写回不落盘，UI 卡「等待模型输出…」） -->
+      <n-popconfirm placement="top-end" positive-text="清空" negative-text="取消" @positive-click="clearSession">
+        <template #trigger>
+          <button
+            class="ai-close ai-log-clear"
+            :title="phase === 'streaming' ? '停止分析后才能清空' : '清空对话与日志'"
+            :disabled="phase === 'streaming'"
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 4.5h10" />
+              <path d="M6.5 4.5v-2h3v2" />
+              <path d="M4.5 4.5l.8 9h5.4l.8-9" />
+            </svg>
+          </button>
+        </template>
+        清空全部对话轮次与调用日志？该操作不可恢复。
+      </n-popconfirm>
       <button class="ai-close" title="收起日志" @click="emit('update:open', false)">
         <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
           <path d="M8 6.59L12.95 1.64l1.41 1.41L9.41 8l4.95 4.95-1.41 1.41L8 9.41l-4.95 4.95-1.41-1.41L6.59 8 1.64 3.05l1.41-1.41L8 6.59z" />
@@ -24,19 +43,20 @@
       </button>
     </header>
     <div ref="logBodyEl" class="ai-log-body">
-      <!-- 对话 tab：提问 → 对话轮次（每条流一对「消息发送→模型返回」气泡；单条轮询逐条成对） -->
+      <!-- 对话 tab：对话轮次（每条流一对「消息发送→模型返回」气泡；单条轮询逐条成对），
+           轮次头展示本轮提问快照（开轮时由父侧存入 t.question） -->
       <template v-if="logTab === 'conv'">
         <div v-if="convEmpty" class="ai-hint ai-log-empty">
           {{ phase === 'streaming' ? '等待模型输出…' : '暂无对话内容 · 发起一次分析后这里实时展示模型原始输出' }}
         </div>
         <template v-else>
-          <section class="ai-conv-sec">
-            <div class="ai-conv-label">提问</div>
-            <div class="ai-conv-q">{{ qAsked }}</div>
-            <div v-if="hasQuestion" class="ai-conv-scope">{{ scopeText }}</div>
-          </section>
-          <!-- 轮次仅追加不重排（resetRun 整体清空），index 作 key 安全 -->
+          <!-- 轮次仅追加不重排（切模式/新 run/恢复均保留历史），index 作 key 安全 -->
           <div v-for="(t, ti) in convTurns" :key="ti" class="ai-turn">
+            <!-- 本轮提问快照：单条轮询逐条同题，仅在与上一轮不同（或首轮）时显示，避免每对气泡重复 -->
+            <div v-if="t.question && (ti === 0 || convTurns[ti - 1].question !== t.question)" class="ai-turn-q">
+              <span class="ai-turn-q-label">提问</span>
+              <span class="ai-turn-q-text" :title="t.question">{{ t.question }}</span>
+            </div>
             <!-- 消息发送（右）：head 显示字数 + token（done 帧真实 usage 精确，缺失估算带 ≈） -->
             <div class="ai-bubble ai-bubble-send">
               <div class="ai-bubble-head">
@@ -86,7 +106,8 @@
                   <pre class="ai-log-conv ai-conv-think">{{ t.reason }}</pre>
                 </div>
               </template>
-              <pre v-if="t.text" class="ai-log-conv">{{ t.text }}</pre>
+              <!-- 模型返回正文：Markdown 渲染（表格/代码块/mermaid 图），ai-md.ts 净化出口 -->
+              <div v-if="t.text" class="ai-md ai-conv-md" v-html="mdHtml(t)"></div>
               <div v-else-if="ti === convTurns.length - 1 && phase === 'streaming'" class="ai-hint">模型输出中…</div>
               <div v-else-if="!t.reason" class="ai-hint">（无输出）</div>
               <div v-if="t.finishReason === 'length'" class="ai-hint ai-conv-trunc">输出被截断（模型上下文/输出预算不足）</div>
@@ -121,34 +142,13 @@
   </section>
 </template>
 
-<!-- 非-setup 脚本块：导出父组件流式引擎直接复用的类型（对话轮次 / 帧级日志条目） -->
-<script lang="ts">
-import type { AiUsage } from '../api'
-
-export interface ConvTurn {
-  system: string // meta 帧 system（实际送审 System 提示词）
-  user: string // meta 帧 user（实际送审 User 提示词）
-  reason: string // 推理增量（delta 帧 reason 字段；普通模型/demo 无此流）
-  text: string // 正文增量
-  open: boolean // 思考过程折叠开合
-  sysOpen: boolean // System 提示词折叠开合
-  usrOpen: boolean // User 提示词折叠开合
-  touched: boolean // 思考区被用户手动开合过：本轮流式自动开合逻辑退出
-  finishReason: string // done 帧 finishReason（length=输出截断）
-  usage?: AiUsage // done 帧真实 token 统计（服务商不支持时缺省，前端按字数估算兜底）
-}
-export type LogKind = 'start' | 'meta' | 'delta' | 'intent' | 'match' | 'error' | 'done' | 'stop'
-export interface LogEntry {
-  id: number
-  t: number
-  kind: LogKind
-  msg: string
-}
-</script>
-
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { NTab, NTabs } from 'naive-ui'
+import { NPopconfirm, NTab, NTabs } from 'naive-ui'
+import DOMPurify from 'dompurify'
+import { renderMarkdown } from '../ai-md'
+import { clearSession } from '../useAiSession'
+import type { ConvTurn, LogEntry, LogKind } from '../useAiSession'
 
 const props = defineProps<{
   /** 抽层开合（父持有：底部日志按钮与 Esc 逐层收合共用） */
@@ -163,10 +163,6 @@ const props = defineProps<{
   prevLogs: LogEntry[]
   /** 上一轮归档展开态（父持有：新 run 开跑归档时强制收起） */
   prevOpen: boolean
-  /** 发起分析时的提问（locate/flowmap 自然语言；explain/intent 为空 → 回显 scopeText） */
-  question: string
-  /** 范围说明文案 */
-  scopeText: string
 }>()
 
 const emit = defineEmits<{
@@ -177,12 +173,8 @@ const emit = defineEmits<{
 const logTab = ref<'conv' | 'log'>('log')
 
 // ===== 展示派生 =====
-const hasQuestion = computed(() => !!props.question.trim())
-const qAsked = computed(() => (hasQuestion.value ? props.question.trim() : props.scopeText))
 // 空态判定：尚无任何对话轮次
 const convEmpty = computed(() => !props.convTurns.length)
-// 全量正文聚合（滚随监听依赖；Markdown 展示视图的 fullText 由父持有，不在此重复）
-const fullText = computed(() => props.convTurns.map((t) => t.text).join('\n\n'))
 
 function toggleTurn(t: ConvTurn): void {
   t.open = !t.open
@@ -217,30 +209,132 @@ function fmtT(t: number): string {
   return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
 }
 
+// ===== 模型正文 Markdown 渲染 + mermaid 水合 =====
+// 正文经 ai-md.ts 净化出口渲染（表格/代码块/mermaid 图）；结果按轮次对象 WeakMap 缓存——
+// 流式仅末轮 text 变化，历史轮次命中缓存零重解析，resetRun 后旧对象随 GC 自动清除。
+// mermaid 代码块动态 import（独立分包，对话中无图不加载）：渲染成功替换原代码块，
+// 解析失败（流式中途图源不完整/语法错）保留代码块降级展示——v-html 重写 DOM 后标记
+// 自然失效，下一帧或 phase 离开 streaming 时自动重试。
+const mdCache = new WeakMap<ConvTurn, { text: string; html: string }>()
+function mdHtml(t: ConvTurn): string {
+  const c = mdCache.get(t)
+  if (c && c.text === t.text) return c.html
+  const html = renderMarkdown(t.text)
+  mdCache.set(t, { text: t.text, html })
+  return html
+}
+
+type Mermaid = (typeof import('mermaid'))['default']
+let mermaidLoading: Promise<Mermaid> | null = null
+let mmdSeq = 0
+function ensureMermaid(): Promise<Mermaid> {
+  mermaidLoading ??= import('mermaid')
+    .then((m) => {
+      m.default.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' })
+      return m.default
+    })
+    .catch((e) => {
+      mermaidLoading = null // 加载失败允许下次重试；失败期间 mermaid 块保持代码块降级
+      throw e
+    })
+  return mermaidLoading
+}
+
+let hydrating = false
+let mmdPending = false // hydrating 期间又有新触发：收尾后补跑一次（审计修复：原实现静默丢弃，done 后末轮完整图源停留代码块态）
+async function hydrateMermaid(): Promise<void> {
+  const root = logBodyEl.value
+  if (root && hydrating) {
+    mmdPending = true
+    return
+  }
+  if (!root) return
+  const pairs = [...root.querySelectorAll('pre > code.language-mermaid')]
+    .map((code) => ({ code, pre: code.parentElement }))
+    .filter((p): p is { code: Element; pre: HTMLElement } => p.pre !== null)
+  if (!pairs.length) return
+  hydrating = true
+  try {
+    // 先挂渲染中角标（含 mermaid 库首次动态加载的等待期），成功随节点替换消失
+    for (const { pre } of pairs) pre.classList.add('mmd-loading')
+    const mm = await ensureMermaid()
+    for (const { code, pre } of pairs) {
+      const src = code.textContent ?? ''
+      // parse 门禁：语法完整才进入渲染。流式中图源不完整解析失败→静默保留代码块
+      // （loading 角标已随上文挂载，此处需摘除），避免每帧闪烁；语法错误终态同为代码块
+      const ok = await mm.parse(src, { suppressErrors: true }).catch(() => false)
+      if (!ok) {
+        pre.classList.remove('mmd-loading')
+        continue
+      }
+      const id = `mmd-${++mmdSeq}`
+      try {
+        const { svg } = await mm.render(id, src)
+        const holder = document.createElement('div')
+        holder.className = 'ai-md-mermaid'
+        // mermaid 产物过一遍净化（strict 模式已禁交互，此处兜底 SVG 注入面）
+        // foreignObject 是 HTML 集成点：缺 HTML_INTEGRATION_POINTS 时即使放行标签，
+        // 其内部 HTML 也会被整体清空（图只剩框线无文字，浏览器实测踩坑）
+        holder.innerHTML = DOMPurify.sanitize(svg, {
+          USE_PROFILES: { svg: true, html: true },
+          ADD_TAGS: ['foreignObject'],
+          HTML_INTEGRATION_POINTS: { foreignobject: true },
+        })
+        pre.replaceWith(holder)
+      } catch {
+        document.getElementById(id)?.remove() // render 失败清理 mermaid 残留元素，保留原代码块
+        pre.classList.remove('mmd-loading') // 恢复代码块观感，下轮触发可重试
+      }
+    }
+  } catch {
+    // mermaid 库加载失败：摘除全部角标，保持代码块降级（下次触发重试加载）
+    for (const { pre } of pairs) pre.classList.remove('mmd-loading')
+  } finally {
+    hydrating = false
+    if (mmdPending) {
+      mmdPending = false
+      void hydrateMermaid()
+    }
+  }
+}
+
 // ===== 滚动跟随 =====
-// 开合/切 tab：导航意图，无条件滚到底展示最新内容
+// 开合/切 tab：导航意图，无条件滚到底展示最新内容；顺带水合 mermaid 块
 watch([() => props.open, logTab], () => {
   if (!props.open) return
   nextTick(() => {
+    void hydrateMermaid()
     const el = logBodyEl.value
     if (el && props.open) el.scrollTop = el.scrollHeight
   })
 })
 // 流式追加（日志帧/对话更新）：仅当视口已近底部（40px 阈值）才跟随滚动，
-// 尊重用户上翻回看——B1 审计修复（原先无条件滚底会每 50ms 把用户拉回底部）
+// 尊重用户上翻回看——B1 审计修复（原先无条件滚底会每 50ms 把用户拉回底部）。
+// 依赖取末轮 text/reason 长度（引擎仅写末轮）而非全量聚合——审计修复：原 fullText
+// 每 50ms 合帧全量 join（上限 3M 字符）重算，MB 级字符串分配徒增 GC 压力
 watch(
   [
     () => props.logs[props.logs.length - 1]?.id ?? 0,
-    fullText,
+    () => props.convTurns[props.convTurns.length - 1]?.text.length ?? 0,
     () => props.convTurns.length,
     () => props.convTurns[props.convTurns.length - 1]?.reason.length ?? 0,
   ],
   () => {
     if (!props.open) return
     nextTick(() => {
+      void hydrateMermaid()
       const el = logBodyEl.value
       if (!el || !props.open) return
       if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) el.scrollTop = el.scrollHeight
+    })
+  },
+)
+// phase 收尾（streaming→done/stopped/error）：末帧图源此时才完整，补一次水合
+watch(
+  () => props.phase,
+  () => {
+    nextTick(() => {
+      void hydrateMermaid()
     })
   },
 )
