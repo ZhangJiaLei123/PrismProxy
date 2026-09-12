@@ -31,6 +31,13 @@ const (
 	// 30s 内收不到首个 data 帧即视为服务不可用。
 	// 不用 http.Client.Timeout 的原因：整体超时会掐断长回答的流式输出（设计稿 §5.2）。
 	firstChunkTimeoutMax = 30 * time.Second
+	// idleTimeoutCloud / idleTimeoutSelfHosted 首块之后的「帧间空闲」看门狗：
+	// 收到首块即撤销首块超时、改挂空闲定时器，之后每收到一帧重置；连续无帧超过阈值判死。
+	// 解决本地 thinking 模型思考中途停顿/上游挂死导致 scanner.Scan 无限阻塞、前端永久转圈。
+	// 阈值须明显宽于正常 token 间隔（流式中帧间隔通常亚秒级），给慢推理留足余量：
+	// 云端 30s；自托管 120s（本地 4B 模型长 prompt prefill 后思考可能阶段性无输出，实测宽限）。
+	idleTimeoutCloud      = 30 * time.Second
+	idleTimeoutSelfHosted = 120 * time.Second
 	// errBodyLimit 非 200 响应读体上限（截断 2KB 解析 error.message）。
 	errBodyLimit = 2048
 	// scanInitBuf / scanMaxBuf SSE 行扫描缓冲：初始 64KB、上限 1MB
@@ -138,6 +145,22 @@ func (c *Client) firstChunkTimeoutErr(ft time.Duration) error {
 	return fmt.Errorf("连接服务商超时：%.0f 秒内未收到首个响应，请检查网络或代理设置", ft.Seconds())
 }
 
+// idleTimeout 首块之后的帧间空闲阈值：云端 30s、自托管 120s（本地慢推理宽限）。
+func (c *Client) idleTimeout() time.Duration {
+	if c.cfg.APIKey == "" {
+		return idleTimeoutSelfHosted
+	}
+	return idleTimeoutCloud
+}
+
+// idleTimeoutErr 帧间空闲看门狗超时文案（区别于首块超时：流已建立后中途停摆）。
+func (c *Client) idleTimeoutErr(d time.Duration) error {
+	if c.cfg.APIKey == "" {
+		return fmt.Errorf("模型连续 %.0f 秒没有输出，已自动中断。本地模型可能在长思考或负载过高，可重试或换用更快的模型；若频繁出现请调小单次分析的流数/正文预算", d.Seconds())
+	}
+	return fmt.Errorf("服务商连续 %.0f 秒没有返回数据，连接已中断，请重试或检查网络", d.Seconds())
+}
+
 // endpoint 请求地址 = 归一化 BaseURL + /chat/completions。
 func (c *Client) endpoint() string {
 	return normalizeBaseURL(c.cfg.BaseURL) + "/chat/completions"
@@ -151,7 +174,7 @@ type Usage struct {
 }
 
 // streamOptions OpenAI 流式选项；include_usage=true 要求上游在流末下发 usage 帧
-//（token 统计；不支持的服务商缺省该帧，前端估算兜底）。
+// （token 统计；不支持的服务商缺省该帧，前端估算兜底）。
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
@@ -210,18 +233,22 @@ func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(De
 		return "", Usage{}, fmt.Errorf("构造请求失败：%w", err)
 	}
 
-	// 看门狗 ctx：首块超时取消，父 ctx 取消也联动取消
+	// 看门狗 ctx：首块超时 / 帧间空闲超时取消，父 ctx 取消也联动取消
 	watchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	var firstSeen, timedOut atomic.Bool
+	// 两级看门狗共用一个定时器：首块前 ft（首块阈值）；收到首块后 Reset 为 idle（帧间空闲），
+	// 之后每收到一帧重置。timedOut/idled 标记在读取侧裁决具体超时文案（避免与 Stop 竞态）。
+	var firstSeen, timedOut, idled atomic.Bool
 	ft := c.firstChunkTimeout()
+	idle := c.idleTimeout()
 	timer := time.AfterFunc(ft, func() {
-		// 首块已到则不触发（Stop 与本回调的竞态下，靠 timedOut 标记在读取侧裁决）
-		if !firstSeen.Load() {
+		if firstSeen.Load() {
+			idled.Store(true)
+		} else {
 			timedOut.Store(true)
-			cancel()
 		}
+		cancel()
 	})
 	defer timer.Stop()
 
@@ -239,6 +266,9 @@ func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(De
 	if err != nil {
 		if timedOut.Load() {
 			return "", Usage{}, c.firstChunkTimeoutErr(ft)
+		}
+		if idled.Load() {
+			return "", Usage{}, c.idleTimeoutErr(idle)
 		}
 		if ctx.Err() != nil {
 			return "", Usage{}, ctx.Err() // 用户主动停止：正常关闭路径，由编排层转为「已停止」
@@ -266,11 +296,12 @@ func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(De
 		if data == "[DONE]" {
 			return finishReason, usage, nil
 		}
-		// 收到首个数据帧：撤销看门狗（先 CAS 标记再 Stop，避免与定时器竞态漏判）
+		// 看门狗续命：首块前首块看门狗 → 首块后帧间空闲看门狗；之后每帧 Reset，
+		// 只要持续有帧（含思考帧/心跳/usage 帧）就不判死（先标记再 Reset，避免与定时器竞态）。
 		if !firstSeen.Load() {
 			firstSeen.Store(true)
-			timer.Stop()
 		}
+		timer.Reset(idle)
 		var chunk sseChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue // 容错：跳过无法解析的杂帧（部分网关会夹心跳/日志）
@@ -301,6 +332,9 @@ func (c *Client) Stream(ctx context.Context, messages []Message, onDelta func(De
 	if err := scanner.Err(); err != nil {
 		if timedOut.Load() {
 			return "", Usage{}, c.firstChunkTimeoutErr(ft)
+		}
+		if idled.Load() {
+			return "", Usage{}, c.idleTimeoutErr(idle)
 		}
 		if ctx.Err() != nil {
 			return "", Usage{}, ctx.Err()

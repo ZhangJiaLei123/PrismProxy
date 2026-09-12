@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -37,7 +38,21 @@ const (
 	// 保头 4KB（章节/结论骨架）+ 保尾 10KB（断点细节，含半截 JSON），中段省略。
 	compressHeadBudget = 4096
 	compressTailBudget = 10240
+
+	// compressTickEvery 压缩会话过程心跳间隔。本地 thinking 模型压缩时，首块后可能
+	// 持续数十秒只吐思考帧（实测 qwen3.5:4b 压缩一次 80s+、正文第 72s 才开始），
+	// 若完全静默前端只能看到状态条干转像「卡死」——按此间隔把阶段进度（思考/撰写
+	// 标记 + 已耗时 + 文本量）经回调透出，调用方转 notice 帧。
+	compressTickEvery = 500 * time.Millisecond
 )
+
+// CompressTick 压缩会话的一次过程心跳（经 onCompressTick 回调，调用方转 notice progress 帧）。
+type CompressTick struct {
+	Round     int   // 当前续写轮次
+	Reasoning bool  // 自上拍至今主要在产出思考（true）还是记忆正文（false）
+	Elapsed   int64 // 压缩会话已耗时（毫秒）
+	Chars     int   // 压缩会话累计产出字符数（思考+正文）
+}
 
 // StreamRunner 流式对话能力（*Client 天然满足）：抽接口仅供续写编排单测注入伪实现。
 type StreamRunner interface {
@@ -58,14 +73,16 @@ type AutoContinueResult struct {
 // AutoContinue 检测到 length 截断后的自动续写入口。origSystem=首轮系统提示词；
 // origUser=首轮用户消息；partial=首轮被截断的正文（必须非空）。
 // onStage 在每次压缩/续写开始时回调（调用方转发 notice 帧）；
+// onCompressTick 在压缩会话进行中按固定间隔回调（思考/撰写进度，本地长思考模型必需的活性反馈）；
 // onDelta 透传续写会话的增量（调用方写入同一正文缓冲并转发 delta 帧）。
-// 压缩会话自身的思考增量（reason）不外显——它只是临时工具会话。
+// 压缩会话自身的思考增量不进记忆正文（记忆只收 Text），但计数/阶段经 onCompressTick 透出。
 func AutoContinue(
 	ctx context.Context,
 	cli StreamRunner,
 	mode ChatMode,
 	origSystem, origUser, partial string,
 	onStage func(stage string, round int),
+	onCompressTick func(CompressTick),
 	onDelta func(Delta),
 ) AutoContinueResult {
 	if strings.TrimSpace(partial) == "" {
@@ -80,14 +97,45 @@ func AutoContinue(
 			return AutoContinueResult{FailError: err} // 用户停止/断连：调用方静默收尾
 		}
 
-		// 1) 临时专用压缩会话：历史对话 → 结构化记忆（非流式用途，借 Stream 拿首块看门狗）
+		// 1) 临时专用压缩会话：历史对话 → 结构化记忆。
+		// 记忆正文只收 Text；Reason（思考）不计入记忆，但驱动过程心跳（阶段/耗时/字符量），
+		// 避免本地 thinking 模型长思考期间前端完全静默（实测压缩一次可静默 70s+）。
 		if onStage != nil {
 			onStage(StageCompressing, round)
 		}
 		compMsgs := BuildCompressMessages(mode, origSystem, historyUser, historyPartial, round)
 		var memSB strings.Builder
+		var reasonChars, textChars int
+		start := time.Now()
+		lastTick := start
+		var tickReasoning bool // 自上拍至今是否出现过思考增量
+		maybeTick := func(now time.Time, reasoning bool) {
+			if reasoning {
+				tickReasoning = true
+			}
+			if onCompressTick == nil || now.Sub(lastTick) < compressTickEvery {
+				return
+			}
+			onCompressTick(CompressTick{
+				Round:     round,
+				Reasoning: tickReasoning,
+				Elapsed:   now.Sub(start).Milliseconds(),
+				Chars:     reasonChars + textChars,
+			})
+			tickReasoning = false
+			lastTick = now
+		}
 		_, cu, err := cli.Stream(ctx, compMsgs, func(d Delta) {
-			memSB.WriteString(d.Text) // 压缩会话的 reason 增量有意忽略
+			now := time.Now()
+			if d.Reason != "" {
+				reasonChars += len([]rune(d.Reason))
+				maybeTick(now, true)
+			}
+			if d.Text != "" {
+				memSB.WriteString(d.Text)
+				textChars += len([]rune(d.Text))
+				maybeTick(now, false)
+			}
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -100,10 +148,10 @@ func AutoContinue(
 		memory := strings.TrimSpace(memSB.String())
 		if memory == "" {
 			return AutoContinueResult{
-				Rounds:       round - 1,
-				Usage:        sum,
-				FailedStage:  StageCompressing,
-				FailError:    errors.New("压缩会话未返回有效内容"),
+				Rounds:      round - 1,
+				Usage:       sum,
+				FailedStage: StageCompressing,
+				FailError:   errors.New("压缩会话未返回有效内容"),
 			}
 		}
 

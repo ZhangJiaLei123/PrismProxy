@@ -9,15 +9,16 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeContinueRunner 脚本化 StreamRunner：
 // answers=回答/续写调用依次返回的脚本（按序消费）；compressor=压缩调用的统一应答。
 type fakeContinueRunner struct {
-	answers         []fakeStream
-	compressor      fakeStream
-	nAnswer         int
-	nCompress       int
+	answers          []fakeStream
+	compressor       fakeStream
+	nAnswer          int
+	nCompress        int
 	lastCompressUser string // 最近一次压缩会话的 user 消息（断言再压缩历史链路用）
 }
 
@@ -170,6 +171,7 @@ func TestAutoContinueSingleRound(t *testing.T) {
 	var gotText strings.Builder
 	res := AutoContinue(context.Background(), runner, ModeExplain, "SYS", "USER", "首轮截断稿",
 		func(stage string, round int) { stages = append(stages, stage) },
+		nil,
 		func(d Delta) { gotText.WriteString(d.Text) })
 	if res.Rounds != 1 || res.FinishReason != "stop" {
 		t.Fatalf("应 1 轮续写后 stop: %+v", res)
@@ -192,6 +194,47 @@ func TestAutoContinueSingleRound(t *testing.T) {
 	}
 }
 
+// tickRunner 压缩会话先吐思考（跨过节流间隔）再吐正文，用于验证过程心跳。
+type tickRunner struct {
+	gotTicks []CompressTick
+}
+
+func (r *tickRunner) Stream(ctx context.Context, messages []Message, onDelta func(Delta)) (string, Usage, error) {
+	isCompress := len(messages) > 0 && strings.Contains(messages[0].Content, "你是会话压缩助手")
+	if isCompress {
+		onDelta(Delta{Reason: "开始思考"})
+		time.Sleep(compressTickEvery + 100*time.Millisecond) // 跨 500ms 节流拍点
+		onDelta(Delta{Reason: "继续思考"})
+		onDelta(Delta{Text: "记忆正文"})
+		return "stop", Usage{}, nil
+	}
+	onDelta(Delta{Text: "续写收尾"})
+	return "stop", Usage{}, nil
+}
+
+// TestAutoContinueCompressTick 压缩会话进行中：思考阶段跨节流间隔后必须回调一次心跳，
+// 且 Reasoning=true、Chars 计入思考字符；记忆正文仍只取 Text（续写能拿到记忆）。
+func TestAutoContinueCompressTick(t *testing.T) {
+	runner := &tickRunner{}
+	res := AutoContinue(context.Background(), runner, ModeExplain, "s", "u", "截断稿",
+		nil,
+		func(tk CompressTick) { runner.gotTicks = append(runner.gotTicks, tk) },
+		nil)
+	if res.FailedStage != "" || res.Rounds != 1 {
+		t.Fatalf("应正常完成 1 轮: %+v", res)
+	}
+	if len(runner.gotTicks) == 0 {
+		t.Fatal("压缩思考跨过节流间隔，至少应回调一次心跳")
+	}
+	first := runner.gotTicks[0]
+	if first.Round != 1 || !first.Reasoning || first.Elapsed <= 0 {
+		t.Fatalf("首个心跳应为第 1 轮思考态且带耗时: %+v", first)
+	}
+	if first.Chars < 4 { // 「开始思考」=4 个 rune
+		t.Fatalf("心跳字符数应计入思考增量: %+v", first)
+	}
+}
+
 // TestAutoContinueTwoRounds 续写后仍 length：第 2 轮以「上轮记忆+续写新产出」再压缩，
 // 第 2 次续写 stop → Rounds=2。
 func TestAutoContinueTwoRounds(t *testing.T) {
@@ -207,6 +250,7 @@ func TestAutoContinueTwoRounds(t *testing.T) {
 	var gotText strings.Builder
 	res := AutoContinue(context.Background(), runner, ModeFlowmap, "SYS", "USER", "首轮截断稿",
 		func(stage string, round int) { stages = append(stages, stage+":"+itoa(round)) },
+		nil,
 		func(d Delta) { gotText.WriteString(d.Text) })
 	if res.Rounds != 2 || res.FinishReason != "stop" {
 		t.Fatalf("应 2 轮续写后 stop: %+v", res)
@@ -244,7 +288,7 @@ func TestAutoContinueRoundsExhausted(t *testing.T) {
 		},
 		compressor: fakeStream{fin: "stop", text: "记忆"},
 	}
-	res := AutoContinue(context.Background(), runner, ModeExplain, "s", "u", "p", nil, nil)
+	res := AutoContinue(context.Background(), runner, ModeExplain, "s", "u", "p", nil, nil, nil)
 	if res.Rounds != maxContinueRounds || res.FinishReason != FinishReasonLength {
 		t.Fatalf("耗尽轮次应保留 length: %+v", res)
 	}
@@ -260,7 +304,7 @@ func TestAutoContinueCompressFailure(t *testing.T) {
 		answers:    []fakeStream{{fin: "stop", text: "不应被调用"}},
 		compressor: fakeStream{err: errors.New("压缩服务 500")},
 	}
-	res := AutoContinue(context.Background(), runner, ModeExplain, "s", "u", "p", nil,
+	res := AutoContinue(context.Background(), runner, ModeExplain, "s", "u", "p", nil, nil,
 		func(d Delta) { t.Fatal("压缩失败后不应有续写增量") })
 	if res.FailedStage != StageCompressing || res.FailError == nil {
 		t.Fatalf("应报告压缩阶段失败: %+v", res)
@@ -276,7 +320,7 @@ func TestAutoContinueContinueFailure(t *testing.T) {
 		answers:    []fakeStream{{err: errors.New("续写连接中断")}},
 		compressor: fakeStream{fin: "stop", text: "记忆"},
 	}
-	res := AutoContinue(context.Background(), runner, ModeExplain, "s", "u", "p", nil, nil)
+	res := AutoContinue(context.Background(), runner, ModeExplain, "s", "u", "p", nil, nil, nil)
 	if res.FailedStage != StageContinuing || res.FailError == nil || res.Rounds != 1 {
 		t.Fatalf("应报告续写阶段失败且记 1 轮: %+v", res)
 	}
@@ -285,7 +329,7 @@ func TestAutoContinueContinueFailure(t *testing.T) {
 // TestAutoContinueEmptyGuard 空截断稿（纯思考耗尽等）不触发续写。
 func TestAutoContinueEmptyGuard(t *testing.T) {
 	runner := &fakeContinueRunner{}
-	res := AutoContinue(context.Background(), runner, ModeExplain, "s", "u", "   \n\t ", nil, nil)
+	res := AutoContinue(context.Background(), runner, ModeExplain, "s", "u", "   \n\t ", nil, nil, nil)
 	if res.Rounds != 0 || res.FinishReason != "" {
 		t.Fatalf("空稿不应续写: %+v", res)
 	}
@@ -299,7 +343,7 @@ func TestAutoContinueContextCanceled(t *testing.T) {
 	runner := &fakeContinueRunner{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	res := AutoContinue(ctx, runner, ModeExplain, "s", "u", "p", nil, nil)
+	res := AutoContinue(ctx, runner, ModeExplain, "s", "u", "p", nil, nil, nil)
 	if res.FailedStage != "" || !errors.Is(res.FailError, context.Canceled) {
 		t.Fatalf("ctx 取消应静默返回: %+v", res)
 	}

@@ -90,6 +90,14 @@ export interface AiChatNotice {
   round: number
   /** failed 阶段携带的人话原因（其余阶段可缺省）。 */
   message?: string
+  /** 压缩会话过程心跳（compressing 阶段每 ~0.5s 一帧，本地长思考模型活性反馈；首帧为阶段起始非心跳）。 */
+  progress?: boolean
+  /** 自上拍至今主要在产出模型思考（true）还是记忆正文（false）。 */
+  reasoning?: boolean
+  /** 压缩会话已耗时（毫秒）。 */
+  elapsedMs?: number
+  /** 压缩会话累计产出字符数（思考+正文）。 */
+  chars?: number
 }
 
 /** SSE 事件判别联合（{event, data} 帧形态；三实现零转换上抛，面板统一消费）。 */

@@ -100,6 +100,13 @@
       <span class="inline-hint">整请求上限；流式下同时约束首块超时</span>
     </div>
     <div class="form-row">
+      <span class="label">上下文窗口</span>
+      <span class="inline-hint">
+        Ollama 的 OpenAI 兼容接口（/v1）不支持请求级 num_ctx，大抓包超默认窗口（常为 4K/8K）会被静默截断；
+        请用 Modelfile 固化上下文（<code>FROM 模型名</code> + <code>PARAMETER num_ctx 32768</code>，再 <code>ollama create 别名 -f Modelfile</code>，模型选该别名），或启动服务前设环境变量 <code>OLLAMA_CONTEXT_LENGTH=32768</code>
+      </span>
+    </div>
+    <div class="form-row">
       <span class="label">最大流数</span>
       <n-input-number v-model:value="form.ai.maxFlows" :min="1" :max="100" style="width: 140px" />
       <span class="inline-hint">单次分析最多送审的接口条数（按时间取最近）</span>

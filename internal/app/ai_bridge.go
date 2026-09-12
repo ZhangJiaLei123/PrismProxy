@@ -193,7 +193,7 @@ func aiConfigView(g settings.GlobalSettings, cfg settings.AIConfig) map[string]a
 }
 
 // aiEntriesView 供应商条目脱敏视图：模型/别名/URL/当前标记 + hasKey，永不回原文 key
-//（主窗 AiTab 已不消费此视图；复盘页与 HTTP 端 GET /ai/config 客户端使用）。
+// （主窗 AiTab 已不消费此视图；复盘页与 HTTP 端 GET /ai/config 客户端使用）。
 func aiEntriesView(entries []settings.AIModelEntry) []map[string]any {
 	if entries == nil {
 		return nil
@@ -484,6 +484,18 @@ func (a *App) runAIChatOnce(ctx context.Context, req ctlapi.AIChatRequest, emit 
 		res := ai.AutoContinue(sctx, client, mode, br.System, br.User, sb.String(),
 			func(stage string, round int) {
 				emitSafe(ctlapi.AIEventNotice, map[string]any{"stage": stage, "round": round})
+			},
+			func(tick ai.CompressTick) {
+				// 压缩会话活性心跳：本地 thinking 模型压缩时可能数十秒只吐思考帧，
+				// 透阶段/耗时/字符量，前端状态条据此显示计时而非干转（progress 非致命帧）
+				emitSafe(ctlapi.AIEventNotice, map[string]any{
+					"stage":     ai.StageCompressing,
+					"round":     tick.Round,
+					"progress":  true,
+					"reasoning": tick.Reasoning,
+					"elapsedMs": tick.Elapsed,
+					"chars":     tick.Chars,
+				})
 			},
 			func(d ai.Delta) {
 				sb.WriteString(d.Text) // 续写正文进同一缓冲：文末 JSON 解析作用于拼接后的完整稿
