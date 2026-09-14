@@ -31,11 +31,11 @@
     </header>
 
     <div class="ai-body">
-      <!-- 空态：未启用 / 未配 Key / 配置读取失败（设计 §九 空态引导） -->
+      <!-- 空态：未启用 / 未配 Key（Ollama 等自托管免 Key 已由后端 keyMissingWarn 豁免）/ 配置读取失败（设计 §九 空态引导） -->
       <div v-if="showEmpty || cfgFailed" class="ai-empty">
         <div class="ai-empty-ic">⚙️</div>
         <div class="ai-empty-title">{{ emptyTitle }}</div>
-        <div class="ai-empty-sub">在主窗「设置 → AI 分析」中启用并填写 API Key 后即可使用</div>
+        <div class="ai-empty-sub">在主窗「设置 → AI 分析」中启用并完成模型配置后即可使用（本地 Ollama 无需填写 API Key）</div>
         <n-button v-if="api.mode === 'http' && cfg" size="small" type="primary" secondary @click="goSettings">去主窗设置</n-button>
         <div v-if="settingMsg" class="ai-empty-msg">{{ settingMsg }}</div>
       </div>
@@ -325,8 +325,18 @@ const AI_RELEASE_GRACE_MS = 350
 let runSeq = 0
 
 // ===== 配置与空态 =====
-const cfgOk = computed(() => !!cfg.value && cfg.value.enabled && cfg.value.hasApiKey)
-const showEmpty = computed(() => !!cfg.value && (!cfg.value.enabled || !cfg.value.hasApiKey))
+// 密钥就绪口径与后端 settings.WarnNoKey 对齐：有 key 即可；无 key 时仅自托管 Ollama
+// （顶层 provider 或当前条目 provider=ollama）属正常形态，不得误挡为「未配置 API Key」
+const keyReady = computed(() => {
+  const c = cfg.value
+  if (!c) return false
+  if (c.hasApiKey) return true
+  if (c.provider === 'ollama') return true
+  const cur = (c.entries ?? []).find((m) => m.current)
+  return cur?.provider === 'ollama'
+})
+const cfgOk = computed(() => !!cfg.value && cfg.value.enabled && keyReady.value)
+const showEmpty = computed(() => !!cfg.value && (!cfg.value.enabled || !keyReady.value))
 const cfgFailed = computed(() => !cfg.value && !cfgLoading.value)
 const emptyTitle = computed(() => {
   if (!cfg.value) return 'AI 配置读取失败'
