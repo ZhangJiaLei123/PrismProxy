@@ -132,6 +132,8 @@ export interface AIApiConfigView {
   maxFlows: number
   maxKb: number
   redact: boolean
+  /** 自动缺省适配：复盘页同「域名+方法+路径」继承已标注意图（纯前端推导，不调 AI 不写库） */
+  autoFillIntent: boolean
   hasApiKey: boolean
   apiKeyMasked: string
   keyMissingWarn?: string

@@ -108,6 +108,7 @@ const emptyForm = (): app.SettingsView =>
       maxFlows: 50,
       maxKb: 64,
       redact: true,
+      autoFillIntent: false,
       entries: [],
     },
     rulesProject: '',
@@ -143,9 +144,12 @@ async function loadSettings() {
     maxFlows: 50,
     maxKb: 64,
     redact: true,
+    autoFillIntent: false,
     entries: [],
   }
   form.value.ai.entries ??= []
+  // 旧后端/旧配置无此字段：显式补 false，避免 switch 绑到 undefined
+  form.value.ai.autoFillIntent ??= false
   for (const g of form.value.filterGroups) {
     g.hosts ??= []
     g.paths ??= []

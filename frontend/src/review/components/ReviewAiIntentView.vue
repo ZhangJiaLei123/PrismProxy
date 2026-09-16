@@ -58,6 +58,7 @@
     >
       <span class="ai-intent-seq">#{{ r.rowNo }}</span>
       <span class="ai-intent-text" :class="{ 'k-ai-low': r.it.confidence === 'low', 'k-ai-needs-body': r.it.needsBody }">{{ r.it.intent }}</span>
+      <span v-if="r.it.adapted" class="k-ai-adapted">自动适配</span>
       <span class="ai-intent-flow">{{ labelOf(r.it.flowId) }}</span>
     </div>
     <div v-if="!rows.length && phase !== 'idle'" class="ai-hint">{{ phase === 'streaming' ? '标注中…' : '暂无结果' }}</div>
@@ -107,6 +108,7 @@ const emit = defineEmits<{
 
 function rowTip(it: IntentResult, rowNo: number): string {
   const tips: string[] = [`#${rowNo} = 当前筛选结果中的第 ${rowNo} 条接口，点击滚动定位到该接口`]
+  if (it.adapted) tips.push('自动缺省适配：继承自同「域名+方法+路径」的已标注接口，未单独调用 AI，可在摘要条「重新分析」实判覆盖')
   if (it.confidence === 'low') tips.push('AI 对此判定置信度较低，仅供参考')
   if (it.needsBody) tips.push('需结合请求正文才能准确判定；可勾选「包含请求正文」重新标注')
   return tips.join('；')

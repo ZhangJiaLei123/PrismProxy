@@ -7,6 +7,7 @@
       :class="{ 'k-ai-low': intent.confidence === 'low', 'k-ai-needs-body': intent.needsBody }"
       :title="intentTip"
     >{{ intent.intent }}</span>
+    <span v-if="intent.adapted" class="k-ai-adapted" title="自动缺省适配：继承自同域名+方法+路径的已标注接口，「重新分析」可单独实判覆盖">自动适配</span>
     <span class="ib-actions">
       <n-button size="tiny" quaternary :loading="reanalyzing" :disabled="busy" title="仅对本条重新发起意图标注，原地覆盖旧结果" @click="onReanalyze">
         重新分析
@@ -26,9 +27,10 @@ import { useIntents } from '../useIntents'
 const props = defineProps<{ api: ReviewApi; flowId: string }>()
 const emit = defineEmits<{ (e: 'explain'): void; (e: 'error', msg: string): void }>()
 
-// 意图缓存为 useIntents 模块级单例（reactive Map），标注完成即在此响应式出现
-const { intentOf, runIntent, upsert, busy } = useIntents()
-const intent = computed<IntentResult | undefined>(() => intentOf(props.flowId))
+// 意图缓存为 useIntents 模块级单例（reactive Map），标注完成即在此响应式出现；
+// 走 effectiveIntent：开启自动缺省适配时，同端点未标注流展示继承意图（adapted 派生）
+const { effectiveIntent, runIntent, upsert, busy } = useIntents()
+const intent = computed<IntentResult | undefined>(() => effectiveIntent(props.flowId))
 const reanalyzing = ref(false)
 
 // 弱样式说明：low 置信度 / needsBody（需正文才能判准）逐一拼接进 tooltip
@@ -36,6 +38,7 @@ const intentTip = computed(() => {
   const it = intent.value
   if (!it) return ''
   const tips: string[] = []
+  if (it.adapted) tips.push('自动缺省适配：该意图继承自同「域名+方法+路径」的已标注接口，未单独调用 AI；「重新分析」可实判覆盖')
   if (it.confidence === 'low') tips.push('AI 对此判定置信度较低，仅供参考')
   if (it.needsBody) tips.push('AI 判断需结合请求正文才能准确判定；可在 AI 面板勾选「包含请求正文」后重新分析')
   return tips.join('；')

@@ -27,6 +27,19 @@
 .k-ai-conf-med {
   color: rgba(229, 192, 123, 0.9);
 }
+/* 自动缺省适配标记（autoFillIntent）：意图非本流实判而是同端点继承，用中性灰蓝小标弱化区分 */
+.k-ai-adapted {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 14px;
+  font-style: normal;
+  border-radius: 3px;
+  color: rgba(158, 180, 210, 0.85);
+  border: 1px solid rgba(158, 180, 210, 0.35);
+  vertical-align: middle;
+}
 
 /* ===== P4 AI 分析面板（ReviewAiPanel，设计 §7）=====
    自绘右侧滑入抽屉：absolute 挂 .review-root 内（主窗内嵌只盖复盘页区域），

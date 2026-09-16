@@ -1055,6 +1055,7 @@ export namespace settings {
 	    maxFlows: number;
 	    maxKb: number;
 	    redact: boolean;
+	    autoFillIntent: boolean;
 	    entries?: AIModelEntry[];
 	
 	    static createFrom(source: any = {}) {
@@ -1073,6 +1074,7 @@ export namespace settings {
 	        this.maxFlows = source["maxFlows"];
 	        this.maxKb = source["maxKb"];
 	        this.redact = source["redact"];
+	        this.autoFillIntent = source["autoFillIntent"];
 	        this.entries = this.convertValues(source["entries"], AIModelEntry);
 	    }
 	
@@ -1105,6 +1107,7 @@ export namespace settings {
 	    maxFlows: number;
 	    maxKb: number;
 	    redact: boolean;
+	    autoFillIntent: boolean;
 	    entries?: AIModelEntry[];
 	
 	    static createFrom(source: any = {}) {
@@ -1122,6 +1125,7 @@ export namespace settings {
 	        this.maxFlows = source["maxFlows"];
 	        this.maxKb = source["maxKb"];
 	        this.redact = source["redact"];
+	        this.autoFillIntent = source["autoFillIntent"];
 	        this.entries = this.convertValues(source["entries"], AIModelEntry);
 	    }
 	

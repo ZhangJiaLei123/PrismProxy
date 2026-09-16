@@ -172,6 +172,11 @@ type AIConfig struct {
 	MaxKB       int     `json:"maxKb"`       // 单次送审正文总预算 KB，默认 64、上限 256
 	Redact      bool    `json:"redact"`      // 发送前脱敏（默认 true）
 
+	// AutoFillIntent 意图自动缺省适配：开启后复盘页对「同域名+方法+路径」的流，
+	// 若其中一条已有 AI 意图，其余未标注流在前端实时继承该意图展示（不额外调用 AI、不写库）。
+	// 旧配置无此字段反序列化为 false=关闭（默认关，用户显式开启）。
+	AutoFillIntent bool `json:"autoFillIntent"`
+
 	Entries []AIModelEntry `json:"entries,omitempty"` // 供应商条目清单（每条独立 URL/Key）；顶层四字段=当前条目快照（SyncAICurrent）
 }
 
@@ -188,6 +193,8 @@ type AISettings struct {
 	MaxFlows    int     `json:"maxFlows"`
 	MaxKB       int     `json:"maxKb"`
 	Redact      bool    `json:"redact"`
+	// AutoFillIntent 同 AIConfig（设置面板非密钥字段随表单往返）。
+	AutoFillIntent bool `json:"autoFillIntent"`
 
 	Entries []AIModelEntry `json:"entries,omitempty"`
 }
@@ -195,16 +202,17 @@ type AISettings struct {
 // AISettings 返回设置面板投影（顶层 key 除外；条目含原文 key，浅拷贝防调用方改元素污染全局）。
 func (c AIConfig) AISettings() AISettings {
 	return AISettings{
-		Enabled:     c.Enabled,
-		Provider:    c.Provider,
-		BaseURL:     c.BaseURL,
-		Model:       c.Model,
-		Temperature: c.Temperature,
-		TimeoutSec:  c.TimeoutSec,
-		MaxFlows:    c.MaxFlows,
-		MaxKB:       c.MaxKB,
-		Redact:      c.Redact,
-		Entries:     append([]AIModelEntry(nil), c.Entries...),
+		Enabled:        c.Enabled,
+		Provider:       c.Provider,
+		BaseURL:        c.BaseURL,
+		Model:          c.Model,
+		Temperature:    c.Temperature,
+		TimeoutSec:     c.TimeoutSec,
+		MaxFlows:       c.MaxFlows,
+		MaxKB:          c.MaxKB,
+		Redact:         c.Redact,
+		AutoFillIntent: c.AutoFillIntent,
+		Entries:        append([]AIModelEntry(nil), c.Entries...),
 	}
 }
 

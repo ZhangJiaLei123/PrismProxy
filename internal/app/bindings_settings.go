@@ -100,16 +100,17 @@ func (a *App) SaveSettings(nu *SettingsView) (*SaveSettingsResult, error) {
 	// 跳过合并防误清（判定式与 WithDefaults 未初始化哨兵一致）。
 	if !(nu.AI.Provider == "" && nu.AI.MaxKB == 0) {
 		g.AI = settings.AIConfig{
-			Enabled:     nu.AI.Enabled,
-			Provider:    nu.AI.Provider,
-			BaseURL:     nu.AI.BaseURL,
-			APIKey:      g.AI.APIKey,
-			Model:       nu.AI.Model,
-			Temperature: nu.AI.Temperature,
-			TimeoutSec:  nu.AI.TimeoutSec,
-			MaxFlows:    nu.AI.MaxFlows,
-			MaxKB:       nu.AI.MaxKB,
-			Redact:      nu.AI.Redact,
+			Enabled:        nu.AI.Enabled,
+			Provider:       nu.AI.Provider,
+			BaseURL:        nu.AI.BaseURL,
+			APIKey:         g.AI.APIKey,
+			Model:          nu.AI.Model,
+			Temperature:    nu.AI.Temperature,
+			TimeoutSec:     nu.AI.TimeoutSec,
+			MaxFlows:       nu.AI.MaxFlows,
+			MaxKB:          nu.AI.MaxKB,
+			Redact:         nu.AI.Redact,
+			AutoFillIntent: nu.AI.AutoFillIntent,
 			// SaveSettings 不走 AI Validate，清单归一化在此显式完成（trim/去空/去重/截断/Current 唯一化）
 			Entries: settings.NormalizeAIEntries(nu.AI.Entries),
 		}

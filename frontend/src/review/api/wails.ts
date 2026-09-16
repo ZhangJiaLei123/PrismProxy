@@ -221,6 +221,7 @@ export class WailsReviewApi implements ReviewApi {
       maxFlows: ai?.maxFlows ?? 0,
       maxKb: ai?.maxKb ?? 0,
       redact: ai?.redact ?? true,
+      autoFillIntent: ai?.autoFillIntent ?? false,
       hasApiKey: !!c?.hasApiKey,
       apiKeyMasked: c?.apiKeyMasked ?? '',
       keyMissingWarn: c?.keyMissingWarn,

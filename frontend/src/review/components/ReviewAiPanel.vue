@@ -248,6 +248,8 @@ const emit = defineEmits<{
   (e: 'update:show', v: boolean): void
   (e: 'locate', flowId: string): void
   (e: 'error', msg: string): void
+  /** AI 配置加载完成后回传（父页面据此同步自动缺省适配开关到 useIntents 单例） */
+  (e: 'ai-cfg', cfg: AIApiConfigView): void
 }>()
 
 const TABS: { key: AiChatMode; label: string }[] = [
@@ -258,7 +260,9 @@ const TABS: { key: AiChatMode; label: string }[] = [
 ]
 const NOTICE_KEY = 'prismproxy:review-ai-notice-v1'
 
-const { intentOf, runIntent, upsert, busy } = useIntents()
+// intentRows 走 effectiveIntent：自动缺省适配开启时，同端点继承意图也列入意图结果；
+// intentTotalCount（候选池已实判数口径）仍用 intentOf 只认真实标注，避免把派生计成已标注。
+const { intentOf, effectiveIntent, runIntent, upsert, busy } = useIntents()
 // 阶段三持久化：启动恢复 IndexedDB 中的对话轮次/日志/匹配（幂等，模块级单例只跑一次）
 void hydrateAiSession()
 
@@ -363,6 +367,7 @@ async function loadCfg(): Promise<void> {
   cfgLoading.value = true
   try {
     cfg.value = await props.api.getAIConfig()
+    emit('ai-cfg', cfg.value) // 回传父页面同步自动缺省适配开关（useIntents 模块单例）
   } catch (e) {
     cfg.value = null
     settingMsg.value = ''
@@ -407,7 +412,7 @@ const intentRows = computed(() => {
   const off = props.pageOffset ?? 0
   const out: { it: IntentResult; rowNo: number }[] = []
   props.viewFlows.forEach((f, i) => {
-    const it = intentOf(f.ID)
+    const it = effectiveIntent(f.ID)
     if (it) out.push({ it, rowNo: off + i + 1 })
   })
   return out

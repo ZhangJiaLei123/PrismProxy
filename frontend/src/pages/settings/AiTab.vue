@@ -121,6 +121,17 @@
   </section>
 
   <section class="sec">
+    <div class="sec-title">意图关联</div>
+    <div class="form-row">
+      <span class="label">自动缺省适配</span>
+      <n-switch v-model:value="form.ai.autoFillIntent" size="small" />
+      <span class="inline-hint">
+        开启后，复盘页同一「域名 + 方法 + 路径」的接口，只要其中一条已由 AI 标注意图，其余未标注的自动继承该意图展示（不额外调用 AI、不写库，可用「重新分析」单独实判覆盖）
+      </span>
+    </div>
+  </section>
+
+  <section class="sec">
     <div class="sec-title">隐私脱敏</div>
     <div class="form-row">
       <span class="label">发送前脱敏</span>

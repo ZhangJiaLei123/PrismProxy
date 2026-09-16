@@ -311,7 +311,7 @@
                         :title="intentTitle(intentOf(f.ID)!)"
                         @click.stop="onIntentClick(f)"
                         @dblclick.stop
-                      >✨ {{ intentOf(f.ID)!.intent }}</button>
+                      >✨ {{ intentOf(f.ID)!.intent }}<span v-if="intentOf(f.ID)!.adapted" class="k-ai-adapted">自动适配</span></button>
                     </span>
                   </template>
                 </flow-table>
@@ -360,6 +360,7 @@
         :scope="scope"
         :keyword="keyword"
         @locate="onAiLocate"
+        @ai-cfg="onAiCfg"
         @error="(m) => message.error(m, { duration: 6000, closable: true })"
       />
 
@@ -429,18 +430,40 @@ function onDetailExplain(): void {
   aiExplainAutoTick.value++
 }
 // M13 §7 意图持久化展示：与 AI 面板共享的会话缓存（模块级单例）；
-// 列表加载时经 seed 回填归档库持久化结果（仅缓存缺失时写入，详见 useIntents）
-const { intentOf, seed: seedIntents, clear: clearIntents } = useIntents()
+// 列表加载时经 seed 回填归档库持久化结果（仅缓存缺失时写入，详见 useIntents）。
+// 角标/摘要统一走 effectiveIntent：开启自动缺省适配时，同「域名+方法+路径」未标注流
+// 实时继承已标注流意图（adapted 派生结果，不调 AI 不写库），详见 useIntents。
+const {
+  effectiveIntent: intentOf,
+  seed: seedIntents,
+  setAutoFill,
+  clear: clearIntents,
+} = useIntents()
+// 自动缺省适配开关同步：页面挂载取一次 AI 配置；面板打开时自身也会 loadCfg，
+// 经 @ai-cfg 回传最新值再同步一次（用户在主窗设置改开关后重开面板即时生效）。
+async function syncAutoFill(): Promise<void> {
+  try {
+    const cfg = await api.getAIConfig()
+    setAutoFill(!!cfg.autoFillIntent)
+  } catch {
+    /* 配置取不到时按关闭处理（默认 false），不影响实判意图展示 */
+  }
+}
+function onAiCfg(cfg: { autoFillIntent?: boolean }): void {
+  setAutoFill(!!cfg.autoFillIntent)
+}
 // 意图置信度 → ai.css 色卡：high 绿 / medium 黄 / low 暗黄斜体（异常值降级 low）
 function intentConfCls(confidence: string): string {
   if (confidence === 'high') return 'k-ai-conf-high'
   if (confidence === 'medium') return 'k-ai-conf-med'
   return 'k-ai-low'
 }
-// 意图按钮悬浮提示：正文未送审时提示重析可精判
+// 意图按钮悬浮提示：正文未送审时提示重析可精判；自动适配派生结果提示可单独实判覆盖
 function intentTitle(it: IntentResult): string {
   const base = '点击查看 AI 详细分析'
-  return it.needsBody ? base + '（正文未送审，含正文重析可精判）' : base
+  const adapted = it.adapted ? '（自动缺省适配：继承自同域名+方法+路径的已标注接口，「重新分析」可单独实判覆盖）' : ''
+  const needsBody = it.needsBody ? '（正文未送审，含正文重析可精判）' : ''
+  return base + adapted + needsBody
 }
 // 路径列意图概要点击：选中该流并打开 AI 面板 explain 模式看详细分析（M13 §7）
 function onIntentClick(f: ReviewFlowMeta): void {
@@ -1090,6 +1113,7 @@ function initListW() {
 onMounted(() => {
   initListW()
   clearIntents() // 跨项目清理（§7 审计修复）：重挂即换会话上下文，旧项目意图缓存不留存
+  syncAutoFill() // 自动缺省适配开关：从 AI 配置初始化（失败按关闭处理）
   refreshAll()
 })
 

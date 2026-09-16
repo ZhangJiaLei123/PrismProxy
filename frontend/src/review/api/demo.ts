@@ -627,6 +627,7 @@ export class DemoApi implements ReviewApi {
       maxFlows: 20,
       maxKb: 512,
       redact: true,
+      autoFillIntent: true,
       hasApiKey: true,
       apiKeyMasked: 'sk-demo****',
     }

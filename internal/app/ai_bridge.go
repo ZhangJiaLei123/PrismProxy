@@ -138,6 +138,10 @@ func (a *App) SaveAIConfigPatch(raw json.RawMessage) (map[string]any, error) {
 			if err := json.Unmarshal(v, &cfg.Redact); err != nil {
 				return nil, bad(k, err)
 			}
+		case "autoFillIntent":
+			if err := json.Unmarshal(v, &cfg.AutoFillIntent); err != nil {
+				return nil, bad(k, err)
+			}
 		default:
 			return nil, fmt.Errorf("%w: 不支持的配置字段 %q", ctlapi.ErrAIBadReq, k)
 		}
@@ -186,6 +190,7 @@ func aiConfigView(g settings.GlobalSettings, cfg settings.AIConfig) map[string]a
 		"maxFlows":       cfg.MaxFlows,
 		"maxKb":          cfg.MaxKB,
 		"redact":         cfg.Redact,
+		"autoFillIntent": cfg.AutoFillIntent,
 		"hasApiKey":      cfg.APIKey != "",
 		"apiKeyMasked":   maskAPIKey(cfg.APIKey),
 		"keyMissingWarn": g.WarnNoKey(),

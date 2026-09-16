@@ -165,6 +165,8 @@ export interface IntentResult {
   confidence: 'high' | 'medium' | 'low'
   /** 模型判不准（如全是无语义路径），提示用户带正文重析 */
   needsBody: boolean
+  /** 自动缺省适配：非本流实判，而是按同「域名+方法+路径」从已标注流实时继承的派生结果（不写库） */
+  adapted?: boolean
 }
 
 /** 智能定位单条匹配（match 事件载荷，面板可点击卡片跳转选中流）。 */
