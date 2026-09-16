@@ -163,6 +163,13 @@ func (a *App) AdbInstallSystemCert(adbPath, serial string) (string, error) {
 	// 挂载根，那里可见即代表对应用生效，因此脚本输出 OK 即可判定成功。
 	// 注意：注入会把 adbd 切到 root；状态查询 AdbSystemCertStatus 独立用「push 脚本」探测，
 	// 不复用 `sh -c 多参数`（Windows adb 下会被 toybox 拆分 argv 导致误判）。
+
+	// 证书补注入成功后，清空代理内存中因先前 TLS 握手失败而降级为盲隧道的 host 集合：
+	// 否则这些 host 在本代代理进程内会一直走盲隧道（典型：设备重启/证书晚于 App 就绪）。
+	// 仅影响新连接；已运行 App 仍需强制停止重开才会重新加载信任根。
+	if n := a.ResetProxyBypass(); n > 0 {
+		runtimeLogf(a, "系统证书注入成功，已清空 %d 个降级为盲隧道的 host（后续连接重新尝试解密）", n)
+	}
 	return fmt.Sprintf("系统证书已注入（%s.0）。设备重启后挂载会失效，重新点本按钮即可恢复；已运行的 App 如仍报证书错误请强制停止后重开", hash), nil
 }
 

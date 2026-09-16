@@ -116,6 +116,17 @@ func GuardUpstreamLoop(upstream, selfHost string, selfPort uint16) string {
 	return upstream
 }
 
+// ResetBypass 清空因 MITM 握手失败被降级为盲隧道的 host 集合，使后续 CONNECT 重新尝试 MITM。
+// 典型触发：系统 CA 注入成功 / 用户手动要求重试（证书补好后，不清空则这些 host 永久走盲隧道）。
+// 仅影响新连接，已建立的盲隧道连接与已运行 App 的信任缓存不在此处理。返回被清理的 host 数。
+func (s *Server) ResetBypass() int {
+	s.bypassMu.Lock()
+	defer s.bypassMu.Unlock()
+	n := len(s.bypass)
+	s.bypass = make(map[string]struct{})
+	return n
+}
+
 // shouldDecrypt 解密规则判定（默认 MITM）
 func (s *Server) shouldDecrypt(host string) bool {
 	if s.eng == nil {

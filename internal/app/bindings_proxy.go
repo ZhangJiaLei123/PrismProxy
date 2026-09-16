@@ -139,6 +139,19 @@ func (a *App) GetProxyStatus() ProxyStatus {
 	return ProxyStatus{Running: a.srv != nil, Addr: a.addr, Mode: mode, FlowCount: len(a.st.List()), StartError: a.startErr}
 }
 
+// ResetProxyBypass 清空运行中代理因 TLS 握手失败而降级为盲隧道的 host 集合，
+// 让后续连接重新尝试 MITM。典型用于系统 CA 注入成功后自动调用，或 CLI/HTTP 手动兜底。
+// 代理未运行时返回 0（无 bypass 可清）。仅影响新连接。
+func (a *App) ResetProxyBypass() int {
+	a.mu.Lock()
+	srv := a.srv
+	a.mu.Unlock()
+	if srv == nil {
+		return 0
+	}
+	return srv.ResetBypass()
+}
+
 // resolveUpstream 按全局配置解析上游代理地址（空=直连）；mode/manual 为调用方快照值
 func resolveUpstream(mode, manual, selfAddr string) string {
 	switch mode {

@@ -161,12 +161,19 @@ func (f *fakeService) UISettings(tab string) bool {
 func (f *fakeService) StartProxy() error                      { return nil }
 func (f *fakeService) StopProxy() error                       { return nil }
 func (f *fakeService) InstallCA() error                       { return nil }
+func (f *fakeService) ResetProxyBypass() int                  { return 0 }
 func (f *fakeService) AdbTest(adbPath string) (string, error) { return "ok", nil }
 func (f *fakeService) AdbSetProxy(adbPath, serial string) (string, error) {
 	return "已设置设备代理", nil
 }
 func (f *fakeService) AdbClearProxy(adbPath, serial string) (string, error) {
 	return "已清除设备代理", nil
+}
+func (f *fakeService) AdbInstallSystemCert(adbPath, serial string) (string, error) {
+	return "系统证书已注入", nil
+}
+func (f *fakeService) AdbSystemCertStatus(adbPath, serial string) (string, error) {
+	return "installed", nil
 }
 func (f *fakeService) AdbDevices() any { return map[string]any{"devices": []any{}} }
 func (f *fakeService) ListDomainGroups(project string) (any, error) {

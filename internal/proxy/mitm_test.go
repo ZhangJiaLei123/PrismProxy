@@ -142,6 +142,17 @@ func TestMITMUntrustedThenBypass(t *testing.T) {
 	if string(body) != "tls-hello" {
 		t.Fatalf("body = %q", body)
 	}
+
+	// ResetBypass：清掉降级集合，返回清理数；清空后 host 不再被视为盲隧道
+	if n := srv.ResetBypass(); n != 1 {
+		t.Fatalf("ResetBypass cleared = %d, want 1", n)
+	}
+	if srv.isBypass(host) {
+		t.Fatal("host still bypassed after ResetBypass")
+	}
+	if n := srv.ResetBypass(); n != 0 {
+		t.Fatalf("second ResetBypass cleared = %d, want 0", n)
+	}
 }
 
 // TestCAPage 验收 #5：/ca 下载页

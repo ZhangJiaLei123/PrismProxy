@@ -543,9 +543,10 @@ func (s *ctlService) UISettings(tab string) bool {
 
 // ---------- 代理生命周期 / CA（M10 补面） ----------
 
-func (s *ctlService) StartProxy() error { return s.app.StartProxy("") }
-func (s *ctlService) StopProxy() error  { return s.app.StopProxy() }
-func (s *ctlService) InstallCA() error  { return s.app.InstallRootCA() }
+func (s *ctlService) StartProxy() error          { return s.app.StartProxy("") }
+func (s *ctlService) StopProxy() error           { return s.app.StopProxy() }
+func (s *ctlService) InstallCA() error           { return s.app.InstallRootCA() }
+func (s *ctlService) ResetProxyBypass() int      { return s.app.ResetProxyBypass() }
 
 // ---------- ADB 设备代理（M10 补面） ----------
 
@@ -613,6 +614,24 @@ func (s *ctlService) AdbClearProxy(adbPath, serial string) (string, error) {
 		return "", err
 	}
 	return s.app.AdbClearProxy(p, sr)
+}
+
+// AdbInstallSystemCert 系统 CA 注入：先按已配置设备消歧 path/serial，再调 App 绑定。
+func (s *ctlService) AdbInstallSystemCert(adbPath, serial string) (string, error) {
+	p, sr, err := s.app.resolveAdbPathSerial(adbPath, serial)
+	if err != nil {
+		return "", err
+	}
+	return s.app.AdbInstallSystemCert(p, sr)
+}
+
+// AdbSystemCertStatus 只读探测系统 CA 注入状态（UI 绑定不执行 adb root，无副作用）。
+func (s *ctlService) AdbSystemCertStatus(adbPath, serial string) (string, error) {
+	p, sr, err := s.app.resolveAdbPathSerial(adbPath, serial)
+	if err != nil {
+		return "", err
+	}
+	return s.app.AdbSystemCertStatus(p, sr)
 }
 
 // ---------- 域名组（M10 补面；project 空=当前项目，非当前项目只写文件不热切换） ----------

@@ -57,11 +57,18 @@ type Service interface {
 	StartProxy() error
 	StopProxy() error
 	InstallCA() error
+	// ResetProxyBypass 清空因 TLS 握手失败降级为盲隧道的 host（证书注入成功后自动调/手动兜底）。
+	// 返回被清理的 host 数；代理未运行时返回 0。
+	ResetProxyBypass() int
 	// ADB 设备代理（M10 补面）
 	AdbTest(adbPath string) (string, error)
 	AdbSetProxy(adbPath, serial string) (string, error) // deviceHost 由后端按配置/默认补
 	AdbClearProxy(adbPath, serial string) (string, error)
 	AdbDevices() any // 已配置的 ADB 设备清单（供 CLI 发现 path/serial）
+	// AdbInstallSystemCert 把当前 CA 注入设备系统信任存储（需 root），成功返回说明文本。
+	AdbInstallSystemCert(adbPath, serial string) (string, error)
+	// AdbSystemCertStatus 返回 installed|missing（只读探测，不产生 adb root 副作用）。
+	AdbSystemCertStatus(adbPath, serial string) (string, error)
 	// 域名组（M10 补面）；project 空=当前项目，非当前项目写文件不热切换
 	ListDomainGroups(project string) (any, error)
 	GetDomainGroup(project, id string) (any, error) // 返回 {id,text}
@@ -1087,7 +1094,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		var req struct {
-			Action string `json:"action"` // start | stop
+			Action string `json:"action"` // start | stop | reset-bypass
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 			writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
@@ -1099,8 +1106,12 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 			err = s.svc.StartProxy()
 		case "stop":
 			err = s.svc.StopProxy()
+		case "reset-bypass":
+			cleared := s.svc.ResetProxyBypass()
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": cleared})
+			return
 		default:
-			writeErr(w, http.StatusBadRequest, "action 须为 start|stop")
+			writeErr(w, http.StatusBadRequest, "action 须为 start|stop|reset-bypass")
 			return
 		}
 		if err != nil {
@@ -1136,6 +1147,16 @@ func (s *Server) handleADB(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, s.svc.AdbDevices())
 			return
 		}
+		// GET /adb/cert-status?adbPath=&serial= → 只读证书注入状态（installed|missing）
+		if r.Method == http.MethodGet && rest == "cert-status" {
+			status, err := s.svc.AdbSystemCertStatus(r.URL.Query().Get("adbPath"), r.URL.Query().Get("serial"))
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": status})
+			return
+		}
 		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET/POST")
 		return
 	}
@@ -1149,7 +1170,7 @@ func (s *Server) handleADB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 允许 /adb/<action> 子路径覆盖请求体 action（CLI 走 RESTful 子路径）
-	if rest != "" && (rest == "test" || rest == "set" || rest == "clear") {
+	if rest != "" && (rest == "test" || rest == "set" || rest == "clear" || rest == "cert-install") {
 		req.Action = rest
 	}
 	var msg string
@@ -1161,8 +1182,10 @@ func (s *Server) handleADB(w http.ResponseWriter, r *http.Request) {
 		msg, err = s.svc.AdbSetProxy(req.AdbPath, req.Serial)
 	case "clear":
 		msg, err = s.svc.AdbClearProxy(req.AdbPath, req.Serial)
+	case "cert-install":
+		msg, err = s.svc.AdbInstallSystemCert(req.AdbPath, req.Serial)
 	default:
-		writeErr(w, http.StatusBadRequest, "action 须为 test|set|clear")
+		writeErr(w, http.StatusBadRequest, "action 须为 test|set|clear|cert-install")
 		return
 	}
 	if err != nil {

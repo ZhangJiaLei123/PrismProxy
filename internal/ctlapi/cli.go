@@ -89,6 +89,10 @@ func RunCLI(configDir string, args []string) int {
 		out, err = cliCompose(c, pos)
 	case "processes":
 		out, err = c.get("/processes")
+	case "tags":
+		out, err = cliTags(c, pos)
+	case "ai":
+		out, err = cliAI(c, pos)
 	case "ca":
 		out, err = cliCA(c, pos)
 	default:
@@ -126,11 +130,32 @@ func printCLIUsage(w io.Writer) {
                                          实时监控：先输出全量 snapshot，再持续输出增量
                                          （upsert/evict/status/reset），断线自动重连
   proxy start|stop                       启动/停止代理监听（sysproxy on 会隐式启动）
+  proxy reset-bypass                     清空因 TLS 握手失败降级为盲隧道的 host（证书补注入后的手动兜底）
   ca install                             安装根证书到当前用户受信根存储（免管理员）
   adb devices                            已配置的 ADB 设备清单（名称/path/serial/autoSet）
   adb test [--adb 路径]                   测试 adb 连通性并列出已连接设备
   adb set [--adb 路径] [--serial 序列号]  给设备写全局 http_proxy（指向本机代理）
   adb clear [--adb 路径] [--serial ...]   清除设备全局 http_proxy
+  adb cert install [--adb 路径] [--serial S]
+                                         把根 CA 注入设备系统信任存储（需 root；成功后自动清 bypass）
+  adb cert status [--adb 路径] [--serial S]
+                                         只读查询系统 CA 注入状态（installed|missing，不重启 adbd）
+  tags list                              标签概览（复盘归档）
+  tags add --name 名称 <flowId...>       把流打标/追加到标签
+  tags flows <tagId|all> [--scope --q --limit --sort --dir --show-ignored]
+                                         查看标签内流（id=all 配合 --scope all 查全库）
+  tags flow <flowId>                     归档单流详情
+  tags body <flowId> [--which req|resp]  归档单流正文
+  tags rename <tagId> --name 新名称
+  tags delete <tagId> [--flows]          删除标签（--flows 连带删除归档流）
+  tags histogram <tagId> [--scope --buckets]
+  tags ignore list|add --kind host|path|process --value 值 [--note]|rm --kind --value
+  ai config [get]                        读取 AI 配置掩码视图
+  ai config set --file JSON文件|-        部分更新 AI 配置（- 从 stdin；apiKey 空=保持、__clear__=清空）
+  ai test                                测试 AI 连通性
+  ai chat --mode explain|intent|locate|flowmap [--flow ID | --ids a,b]
+          [--question 文本] [--req-body] [--resp-body] [--raw]
+                                         SSE 分析（默认打印答案文本，--raw 输出 ndjson 帧）
   domains list                           域名组清单（--project 可指定目标项目）
   domains get <id>                       查看域名组原始文本
   domains save <id> <域名...>            新建/覆盖域名组（空格分隔，每行一个域名）
@@ -491,8 +516,11 @@ func cliProxy(c *client, pos []string) (any, error) {
 		return c.post("/proxy", map[string]any{"action": "start"})
 	case "stop":
 		return c.post("/proxy", map[string]any{"action": "stop"})
+	case "reset-bypass":
+		// 清空因 TLS 握手失败降级为盲隧道的 host（证书注入成功后通常已自动调用，此为手动兜底）
+		return c.post("/proxy", map[string]any{"action": "reset-bypass"})
 	default:
-		return nil, fmt.Errorf("未知 proxy 子命令: %s（start|stop）", action)
+		return nil, fmt.Errorf("未知 proxy 子命令: %s（start|stop|reset-bypass）", action)
 	}
 }
 
@@ -530,8 +558,33 @@ func cliADB(c *client, pos []string) (any, error) {
 		return c.get("/adb")
 	case "test", "set", "clear":
 		return c.post("/adb/"+action, body)
+	case "cert":
+		// adb cert install|status [--adb PATH] [--serial S]
+		if len(args) < 1 || strings.HasPrefix(args[0], "-") {
+			return nil, fmt.Errorf("用法: adb cert install|status")
+		}
+		sub := args[0]
+		switch sub {
+		case "install":
+			return c.post("/adb/cert-install", body)
+		case "status":
+			q := url.Values{}
+			if *adbPath != "" {
+				q.Set("adbPath", *adbPath)
+			}
+			if *serial != "" {
+				q.Set("serial", *serial)
+			}
+			path := "/adb/cert-status"
+			if enc := q.Encode(); enc != "" {
+				path += "?" + enc
+			}
+			return c.get(path)
+		default:
+			return nil, fmt.Errorf("未知 adb cert 子命令: %s（install|status）", sub)
+		}
 	default:
-		return nil, fmt.Errorf("未知 adb 子命令: %s（devices|test|set|clear）", action)
+		return nil, fmt.Errorf("未知 adb 子命令: %s（devices|test|set|clear|cert）", action)
 	}
 }
 
