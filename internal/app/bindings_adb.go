@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -202,9 +203,15 @@ func (a *App) runAdb(adbPath, serial string, args ...string) (string, error) {
 }
 
 // listAdbDeviceSerials 解析 `adb devices`，返回所有处于 device 态的传输序列号
-// （offline/unauthorized 不计入，避免自动选到不可用目标）。
+// （offline/unauthorized 不计入，避免自动选到不可用目标）。与其它 adb 调用一样带 context
+// 超时：5037 上的 server 半死（TCP 可连不响应）时裸 exec 会无限等待，拖死 worker。
 func (a *App) listAdbDeviceSerials(adbPath string) ([]string, error) {
-	out, err := exec.Command(adbPath, "devices").CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), adbTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, adbPath, "devices").CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("adb devices 超时（%s）", adbTimeout)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("adb devices: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -223,10 +230,14 @@ func (a *App) listAdbDeviceSerials(adbPath string) ([]string, error) {
 }
 
 // resolveSerial 在用户未填序列号时自动选定目标设备。雷电等模拟器会为「同一台设备」同时
-// 暴露 emulator-5554 与 127.0.0.1:5555 两个传输入口，二者设备相同；这种重复需要去重，
-// 否则空序列号会报 more than one device/emulator。去重后：
-//   - 仅一台物理设备：优先返回 emulator-* 入口（最稳），否则唯一序列号；
-//   - 多台不同设备：无法替用户决定，返回明确错误（提示在配置里填序列号）。
+// 暴露 emulator-<console> 与 127.0.0.1:<adbport> 两个传输入口（console 端口 N 对应 adb
+// 端口 N+1，如 emulator-5554 ↔ 127.0.0.1:5555），需要把这种重复折叠成一台设备；但不能
+// 仅凭「有 emulator 且其余只有 1 条」就折叠——否则一台模拟器 + 一台真机会把真机配置静默
+// 打到模拟器上，两个 emulator 双开也会静默吞掉第二个。
+//
+// 规则（按物理设备去重后）：
+//   - 仅一台物理设备：优先返回其 emulator-* 入口（最稳），否则返回其任一传输序列号；
+//   - 两台及以上不同物理设备：无法替用户决定，返回明确错误（提示在配置里填序列号）。
 //
 // 调用成本是一条 `adb devices`，仅在空序列号路径执行。
 func (a *App) resolveSerial(adbPath string) (string, error) {
@@ -234,30 +245,76 @@ func (a *App) resolveSerial(adbPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if picked, ok := selectResolvedSerial(serials); ok {
+		return picked, nil
+	}
 	if len(serials) == 0 {
 		return "", fmt.Errorf("未检测到已连接设备（adb devices 为空）")
 	}
-	// 同机双传输去重：含 emulator-* 与 127.0.0.1:<port> 且端口一致时视为同一台。
-	emu := ""
-	others := make([]string, 0, len(serials))
+	return "", fmt.Errorf("检测到多台设备（%s），请在 ADB 配置中填写「设备序列号」（adb devices 第一列）", strings.Join(serials, "、"))
+}
+
+// selectResolvedSerial 把 `adb devices` 的传输序列号按物理设备去重后选出唯一目标。
+// 模拟器为同一台设备同时暴露 emulator-<console> 与 127.0.0.1:<console+1> 两个入口，
+// 仅当端口严格配对（console N ↔ adb 端口 N+1）时折叠；配不上对的传输各自独立成一台。
+// 返回 ok=false 表示无法唯一决定（无设备或多台物理设备），由调用方报错要求填序列号。
+func selectResolvedSerial(serials []string) (string, bool) {
+	type device struct {
+		emu  string // emulator-<console> 入口（若有）
+		any  string // 任一传输序列号（兜底返回）
+		port int    // 回环入口的 adb 端口（用于配对，0=无回环）
+	}
+	devices := make([]*device, 0, len(serials))
+
+	// 第一轮：emulator-* 各自成一台设备（多个 emulator 必然是多台）。
 	for _, s := range serials {
-		if strings.HasPrefix(s, "emulator-") {
-			if emu == "" {
-				emu = s
-			}
+		console, ok := strings.CutPrefix(s, "emulator-")
+		if !ok {
 			continue
 		}
-		others = append(others, s)
+		n, perr := strconv.Atoi(console)
+		if perr != nil {
+			devices = append(devices, &device{any: s})
+			continue
+		}
+		devices = append(devices, &device{emu: s, any: s, port: n + 1})
 	}
-	// 单台物理设备：只有模拟器入口（一个或 emulator+其网络回环）时直接用 emulator-*。
-	if emu != "" && len(others) <= 1 {
-		return emu, nil
+	// 第二轮：回环入口 127.0.0.1:<port> 折叠到 console 端口 = port-1 的同机模拟器；
+	// 配不上对的（真机/其它模拟器实例/非回环 IP）各自独立成一台。
+	for _, s := range serials {
+		if strings.HasPrefix(s, "emulator-") {
+			continue
+		}
+		host, portStr, perr := net.SplitHostPort(s)
+		if perr != nil || host != "127.0.0.1" {
+			devices = append(devices, &device{any: s})
+			continue
+		}
+		port, perr := strconv.Atoi(portStr)
+		if perr != nil || port == 0 {
+			devices = append(devices, &device{any: s})
+			continue
+		}
+		matched := false
+		for _, d := range devices {
+			if d.port == port {
+				matched = true // 同机双传输：该回环入口已被 emulator 设备代表，无需另计
+				break
+			}
+		}
+		if !matched {
+			devices = append(devices, &device{any: s, port: port})
+		}
 	}
-	// 无模拟器入口且只有一条传输。
-	if emu == "" && len(serials) == 1 {
-		return serials[0], nil
+
+	if len(devices) != 1 {
+		return "", false
 	}
-	return "", fmt.Errorf("检测到多台设备（%s），请在 ADB 配置中填写「设备序列号」（adb devices 第一列）", strings.Join(serials, "、"))
+	d := devices[0]
+	if d.emu != "" {
+		return d.emu, true
+	}
+	return d.any, true
 }
 
 // runAdbTimeout 同 runAdb，但允许指定超时（退出/关机路径用更短超时）。
@@ -379,7 +436,11 @@ func (a *App) convergeAdbConfigs(old, nu settings.ADBConfig, restarted bool) {
 		for _, c := range added {
 			if _, err := a.AdbSetProxy(c.Path, c.Serial, nu.DeviceProxyHost); err != nil {
 				runtimeLogf(a, "配置变更后设置设备代理失败（%s）: %v", c.Name, err)
+				continue
 			}
+			// 与 worker 的 set 路径对齐：代理生效后顺手确保系统 CA 注入存活，
+			// 否则运行中新增的 AutoSet 设备 http_proxy 已写但 HTTPS 仍抓不到。
+			a.bestEffortEnsureSystemCert(c)
 		}
 	}()
 }

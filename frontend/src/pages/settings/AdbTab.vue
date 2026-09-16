@@ -204,10 +204,11 @@ async function installCert(c: settings.ADBDevice) {
   })
 }
 
-// 打开设置面板时对已配置 adb 路径的条目探测一次注入状态（失败静默为「未知」）。
-onMounted(() => {
+// 打开设置面板时对已配置 adb 路径的条目串行探测一次注入状态（失败静默为「未知」）。
+// 不并发：多条配置可能解析到同一台设备，并发 adb 调用会互相打断导致状态误回落「未知」。
+onMounted(async () => {
   for (const c of props.form.adb.configs) {
-    if (c.path?.trim()) void refreshCert(c)
+    if (c.path?.trim()) await refreshCert(c)
   }
 })
 </script>

@@ -166,10 +166,20 @@ func (a *App) AdbInstallSystemCert(adbPath, serial string) (string, error) {
 	return fmt.Sprintf("系统证书已注入（%s.0）。设备重启后挂载会失效，重新点本按钮即可恢复；已运行的 App 如仍报证书错误请强制停止后重开", hash), nil
 }
 
-// AdbSystemCertStatus 查询指定设备的系统 CA 注入状态：
-// 返回 "installed"（bind-mount 存活且证书可见）/ "missing"（需注入或重启后丢失）；
+// AdbSystemCertStatus 查询指定设备的系统 CA 注入状态（UI 只读探测，不产生设备侧副作用）：
+// 返回 "installed"（证书可见）/ "missing"（需注入或重启后丢失）；
 // adb 不可用/设备离线等命令级失败返回错误，由调用方按「未知」处理，避免离线误报成未注入。
+// 注意此处**不执行 adb root**：打开设置面板就重启 adbd 会在多条配置/同设备并发探测时互相
+// 打断（device offline），且只读查询不应改设备状态。root 后的 init/zygote 权威复核由
+// systemCertStatus(allowRoot=true) 在自动注入路径内部使用。
 func (a *App) AdbSystemCertStatus(adbPath, serial string) (string, error) {
+	return a.systemCertStatus(adbPath, serial, false)
+}
+
+// systemCertStatus 实现状态探测。allowRoot=true 时第一轮（当前身份）判定缺失会 best-effort
+// `adb root` 后在 init(pid 1)/zygote 命名空间权威复核——shell(uid 2000) 的 nsenter /proc/1
+// 会被 SELinux 拒绝，仅当前身份探测可能把已注入误判成缺失而重复挂载（虽幂等但有 adbd 重启）。
+func (a *App) systemCertStatus(adbPath, serial string, allowRoot bool) (string, error) {
 	_, hash, err := a.currentCAPEMAndHash()
 	if err != nil {
 		return "", err
@@ -199,6 +209,15 @@ func (a *App) AdbSystemCertStatus(adbPath, serial string) (string, error) {
 	}
 	if strings.Contains(out, "PRISM_CERT_INSTALLED") {
 		return "installed", nil
+	}
+
+	// 只读 UI 探测不 root：第一轮结果即终态（MISSING 或无法识别的输出），避免打开面板就
+	// 重启 adbd。自动注入路径（allowRoot）才做第二轮提权权威复核。
+	if !allowRoot {
+		if strings.Contains(out, "PRISM_CERT_MISSING") {
+			return "missing", nil
+		}
+		return "", fmt.Errorf("无法识别的证书状态输出: %s", strings.TrimSpace(out))
 	}
 
 	// 第二轮：当前 shell 看不到（adbd 私有挂载视图，或仍是 shell 用户无法 nsenter init），
@@ -231,7 +250,8 @@ func (a *App) AdbSystemCertStatus(adbPath, serial string) (string, error) {
 // bestEffortEnsureSystemCert 自动挂钩用：先只读探测注入是否存活，缺失才执行注入；
 // 任何失败只记日志（非 root/设备未就绪不应让自动设置代理的流程报错）。
 func (a *App) bestEffortEnsureSystemCert(device settings.ADBDevice) {
-	status, err := a.AdbSystemCertStatus(device.Path, device.Serial)
+	// 自动注入路径允许提权复核（避免 shell 身份把已注入误判为缺失而重复挂载）。
+	status, err := a.systemCertStatus(device.Path, device.Serial, true)
 	if err != nil {
 		runtimeLogf(a, "查询系统证书状态失败（%s）: %v", device.Name, err)
 		return
