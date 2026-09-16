@@ -1,4 +1,4 @@
-package ctlapi
+﻿package ctlapi
 
 import (
 	"flag"
@@ -207,9 +207,9 @@ func cliTagIgnore(c *client, args []string) (any, error) {
 // normalizeIgnoreKind 归一化忽略类型到服务端口径（persist.ValidIgnoreKind）：
 // host|path|proc|method|status；兼容 rules 侧的 "process" 写法，其余非法值返空串。
 func normalizeIgnoreKind(k string) string {
-	switch strings.TrimSpace(k) {
+	switch t := strings.TrimSpace(k); t {
 	case "host", "path", "proc", "method", "status":
-		return k
+		return t
 	case "process":
 		return "proc"
 	default:

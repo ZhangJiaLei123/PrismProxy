@@ -278,10 +278,10 @@ func runAIChat(c *client, args []string) error {
 	}
 	// 收尾判定（两模式一致）：error 帧 > 读取错误（排除用户中断）> 缺 done 帧。
 	if streamErr == nil {
-		if rErr := sc.Err(); rErr != nil {
+		if rErr := sc.Err(); rErr != nil && ctx.Err() == nil {
 			if errors.Is(rErr, errAIStreamIdle) {
 				streamErr = rErr
-			} else if ctx.Err() == nil {
+			} else {
 				streamErr = fmt.Errorf("读取 AI 分析流中断: %w", rErr)
 			}
 		} else if !sawDone && ctx.Err() == nil {

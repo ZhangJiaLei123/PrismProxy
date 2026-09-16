@@ -18,6 +18,8 @@ func TestNormalizeIgnoreKind(t *testing.T) {
 		"status":  "status",
 		"process": "proc", // 兼容 rules 侧写法
 		" process ": "proc",
+		" host ":  "host", // 规范值带空格也必须 trim 后返回（不得透传带空格值导致服务端 400）
+		" method ": "method",
 		"":        "",
 		"procname": "",
 		"PROCESS": "", // 大小写不做隐式转换（服务端仅小写）
@@ -71,22 +73,37 @@ func TestIdleTimeoutReader_Timeout(t *testing.T) {
 	}
 }
 
-// slowReader 第一次 Read 等待 delay（不超过 timeout），之后返回 EOF。
-type slowReader struct {
-	delay time.Duration
+// pulseReader 前 pulses 次 Read 各等 gap 后返回 1 字节，之后返回 EOF。
+// 用于验证「每次收到数据都重置空闲定时器」：单段 gap < timeout，但累计时长 > timeout。
+type pulseReader struct {
+	gap    time.Duration
+	pulses int
+	n      int
 }
 
-func (s *slowReader) Read(p []byte) (int, error) {
-	time.Sleep(s.delay)
-	return 0, io.EOF
+func (s *pulseReader) Read(p []byte) (int, error) {
+	if s.n >= s.pulses {
+		return 0, io.EOF
+	}
+	s.n++
+	time.Sleep(s.gap)
+	return 1, nil
 }
-func (s *slowReader) Close() error { return nil }
+func (s *pulseReader) Close() error { return nil }
 
-// TestIdleTimeoutReader_ActivityResets 在超时窗口内有数据/返回时不误报空闲超时。
+// TestIdleTimeoutReader_ActivityResets 多次脉冲（间隔 80ms < 300ms 超时，累计 480ms > 300ms）
+// 必须因逐次 Reset 而不触发空闲超时、收齐全部字节；若 n>0 分支未 Reset，
+// 首个 300ms 到期就会关闭连接，ReadAll 得到 errAIStreamIdle 而非完整数据。
 func TestIdleTimeoutReader_ActivityResets(t *testing.T) {
-	r := newIdleTimeoutReader(&slowReader{delay: 20 * time.Millisecond}, 200*time.Millisecond)
+	const timeout, gap = 300 * time.Millisecond, 80 * time.Millisecond
+	const pulses = 6
+	r := newIdleTimeoutReader(&pulseReader{gap: gap, pulses: pulses}, timeout)
 	defer r.Close()
-	if _, err := r.Read(make([]byte, 16)); !errors.Is(err, io.EOF) {
-		t.Fatalf("窗口内结束应得到底层 EOF，实际: %v", err)
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("持续有数据（间隔小于超时）不应报错，实际: %v", err)
+	}
+	if len(data) != pulses {
+		t.Fatalf("应收齐 %d 字节，实际 %d", pulses, len(data))
 	}
 }
