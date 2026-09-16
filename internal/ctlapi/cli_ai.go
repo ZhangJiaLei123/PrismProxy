@@ -121,7 +121,11 @@ func cliAI(c *client, pos []string) (any, error) {
 		return c.post("/ai/test", nil)
 
 	case "chat":
-		return nil, runAIChat(c, args)
+		// runAIChat 自行向 stdout 输出流内容；成功时用 errOutputHandled 跳过分发的 printResult（否则尾部多打 null）。
+		if err := runAIChat(c, args); err != nil {
+			return nil, err
+		}
+		return nil, errOutputHandled
 
 	default:
 		return nil, fmt.Errorf("未知 ai 子命令: %s（config|test|chat）", sub)
