@@ -202,6 +202,10 @@ export function RenameTagApp(arg1, arg2) {
   return window['go']['app']['App']['RenameTagApp'](arg1, arg2);
 }
 
+export function ResetProxyBypass() {
+  return window['go']['app']['App']['ResetProxyBypass']();
+}
+
 export function ReviewAddIgnore(arg1, arg2, arg3) {
   return window['go']['app']['App']['ReviewAddIgnore'](arg1, arg2, arg3);
 }

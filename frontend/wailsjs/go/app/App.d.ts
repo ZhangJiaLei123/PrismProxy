@@ -107,6 +107,8 @@ export function RenameProject(arg1:string,arg2:string):Promise<void>;
 
 export function RenameTagApp(arg1:string,arg2:string):Promise<void>;
 
+export function ResetProxyBypass():Promise<number>;
+
 export function ReviewAddIgnore(arg1:string,arg2:string,arg3:string):Promise<persist.ReviewIgnore>;
 
 export function ReviewDeleteIgnore(arg1:string,arg2:string):Promise<boolean>;
