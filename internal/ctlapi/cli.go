@@ -149,7 +149,7 @@ func printCLIUsage(w io.Writer) {
   tags rename <tagId> --name 新名称
   tags delete <tagId> [--flows]          删除标签（--flows 连带删除归档流）
   tags histogram <tagId> [--scope --buckets]
-  tags ignore list|add --kind host|path|process --value 值 [--note]|rm --kind --value
+  tags ignore list|add --kind host|path|proc|method|status --value 值 [--note]|rm --kind --value
   ai config [get]                        读取 AI 配置掩码视图
   ai config set --file JSON文件|-        部分更新 AI 配置（- 从 stdin；apiKey 空=保持、__clear__=清空）
   ai test                                测试 AI 连通性

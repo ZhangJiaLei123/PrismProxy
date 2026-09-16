@@ -18,7 +18,7 @@ import (
 //	tags delete <tagId> [--flows]              删除标签（--flows 连带删流）
 //	tags histogram <tagId> [--scope --buckets]  密度直方图
 //	tags ignore list                            忽略名单
-//	tags ignore add --kind host|path|process --value 值 [--note 备注]
+//	tags ignore add --kind host|path|proc --value 值 [--note 备注]
 //	tags ignore rm --kind K --value V
 func cliTags(c *client, pos []string) (any, error) {
 	args := pos[1:]
@@ -168,36 +168,51 @@ func cliTagIgnore(c *client, args []string) (any, error) {
 		return c.get("/tags/ignores")
 	case "add":
 		fs := flag.NewFlagSet("tags-ignore-add", flag.ContinueOnError)
-		kind := fs.String("kind", "", "类型：host|path|process")
+		kind := fs.String("kind", "", "类型：host|path|proc|method|status")
 		value := fs.String("value", "", "忽略值（域名/路径/进程名）")
 		note := fs.String("note", "", "备注（可选）")
 		if err := fs.Parse(reorderFlags(args)); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(*kind) == "" || strings.TrimSpace(*value) == "" {
-			return nil, fmt.Errorf("用法: tags ignore add --kind host|path|process --value 值 [--note 备注]")
+		normKind := normalizeIgnoreKind(*kind)
+		if normKind == "" || strings.TrimSpace(*value) == "" {
+			return nil, fmt.Errorf("用法: tags ignore add --kind host|path|proc|method|status --value 值 [--note 备注]")
 		}
-		body := map[string]any{"kind": *kind, "value": *value}
+		body := map[string]any{"kind": normKind, "value": *value}
 		if *note != "" {
 			body["note"] = *note
 		}
 		return c.post("/tags/ignores", body)
 	case "rm", "delete":
 		fs := flag.NewFlagSet("tags-ignore-rm", flag.ContinueOnError)
-		kind := fs.String("kind", "", "类型：host|path|process")
+		kind := fs.String("kind", "", "类型：host|path|proc|method|status")
 		value := fs.String("value", "", "忽略值")
 		if err := fs.Parse(reorderFlags(args)); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(*kind) == "" || strings.TrimSpace(*value) == "" {
-			return nil, fmt.Errorf("用法: tags ignore rm --kind host|path|process --value 值")
+		normKind := normalizeIgnoreKind(*kind)
+		if normKind == "" || strings.TrimSpace(*value) == "" {
+			return nil, fmt.Errorf("用法: tags ignore rm --kind host|path|proc|method|status --value 值")
 		}
 		// value 可能含 "/"（path），走 query。
 		q := url.Values{}
-		q.Set("kind", *kind)
+		q.Set("kind", normKind)
 		q.Set("value", *value)
 		return c.del("/tags/ignores?" + q.Encode())
 	default:
 		return nil, fmt.Errorf("未知 tags ignore 子命令: %s（list|add|rm）", sub)
+	}
+}
+
+// normalizeIgnoreKind 归一化忽略类型到服务端口径（persist.ValidIgnoreKind）：
+// host|path|proc|method|status；兼容 rules 侧的 "process" 写法，其余非法值返空串。
+func normalizeIgnoreKind(k string) string {
+	switch strings.TrimSpace(k) {
+	case "host", "path", "proc", "method", "status":
+		return k
+	case "process":
+		return "proc"
+	default:
+		return ""
 	}
 }

@@ -4,14 +4,80 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
+
+const (
+	// AI SSE 帧间空闲上限：本地大模型单帧思考可能数分钟无输出，取 5 分钟兜底
+	// 半开连接/服务端静默挂死；正常路径的上游看门狗（120s）会更早发 error 帧。
+	aiChatIdleTimeout = 5 * time.Minute
+)
+
+// errAIStreamIdle 标记帧间空闲超时（idleTimeoutReader 到期关闭连接）。
+var errAIStreamIdle = errors.New("AI 分析流空闲超时，连接可能已挂起")
+
+// idleTimeoutReader 给 SSE 响应体加「距上一字节」的帧间空闲超时：
+// 每次成功读到数据就重置定时器；超时则关闭底层连接解除阻塞中的 Read。
+type idleTimeoutReader struct {
+	rc       io.ReadCloser
+	timer    *time.Timer
+	timeout  time.Duration
+	done     chan struct{}
+	stopOnce sync.Once
+	timedOut atomic.Bool
+}
+
+func newIdleTimeoutReader(rc io.ReadCloser, d time.Duration) *idleTimeoutReader {
+	r := &idleTimeoutReader{rc: rc, timeout: d, timer: time.NewTimer(d), done: make(chan struct{})}
+	go func() {
+		select {
+		case <-r.timer.C:
+			r.timedOut.Store(true)
+			_ = rc.Close()
+		case <-r.done:
+		}
+	}()
+	return r
+}
+
+func (r *idleTimeoutReader) Read(p []byte) (int, error) {
+	n, err := r.rc.Read(p)
+	if n > 0 {
+		if !r.timer.Stop() {
+			select {
+			case <-r.timer.C:
+			default:
+			}
+		}
+		r.timer.Reset(r.timeout)
+	}
+	if err != nil && r.timedOut.Load() {
+		return n, fmt.Errorf("%w（%s 无数据）", errAIStreamIdle, r.timeout)
+	}
+	return n, err
+}
+
+func (r *idleTimeoutReader) Close() error {
+	r.stopOnce.Do(func() { close(r.done) })
+	if !r.timer.Stop() {
+		select {
+		case <-r.timer.C:
+		default:
+		}
+	}
+	return r.rc.Close()
+}
 
 // cliAI 处理 `ai` 子命令（HTTP 路由见 ai.go）。
 //
@@ -132,8 +198,15 @@ func runAIChat(c *client, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	// SSE 长连接：无总超时、独立连接（不复用普通 15s client），避免长分析被超时掐断。
-	stream := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	// SSE 长连接：无总超时、独立连接（不复用普通 15s client），避免长分析被超时掐断；
+	// 仅保留连接/响应头级超时，读侧帧间空闲由 idleTimeoutReader 兜底半开/静默挂死。
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	stream := &http.Client{Transport: &http.Transport{
+		DialContext:           dialer.DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		DisableKeepAlives:     true,
+	}}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/ai/chat", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -143,6 +216,9 @@ func runAIChat(c *client, args []string) error {
 	httpReq.Close = true
 	resp, err := stream.Do(httpReq)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil // 用户中断（Ctrl+C），退出码 0
+		}
 		return fmt.Errorf("连接 AI 分析失败: %w", err)
 	}
 	defer resp.Body.Close()
@@ -155,7 +231,11 @@ func runAIChat(c *client, args []string) error {
 		return fmt.Errorf("AI 分析失败: HTTP %d", resp.StatusCode)
 	}
 
-	sc := newSSEScanner(resp.Body)
+	bodyReader := newIdleTimeoutReader(resp.Body, aiChatIdleTimeout)
+	defer bodyReader.Close()
+	sc := newSSEScanner(bodyReader)
+	sawDone := false
+	var streamErr error
 	for sc.Next() {
 		event, data, _ := sc.Block()
 		if event == "" {
@@ -169,10 +249,8 @@ func runAIChat(c *client, args []string) error {
 					fmt.Println(string(b))
 				}
 			}
-			continue
-		}
-		// 人读模式：仅打印答案文本增量；其余帧静默（meta/intent/match 等）。
-		if event == AIEventDelta {
+		} else if event == AIEventDelta {
+			// 人读模式：仅打印答案文本增量；其余帧静默（meta/intent/match 等）。
 			var d struct {
 				Text string `json:"text"`
 			}
@@ -180,15 +258,40 @@ func runAIChat(c *client, args []string) error {
 				fmt.Print(d.Text)
 			}
 		}
-		if event == AIEventError {
-			var d struct{ Message string `json:"message"` }
+		switch event {
+		case AIEventDone:
+			sawDone = true
+		case AIEventError:
+			var d struct {
+				Message string `json:"message"`
+			}
 			if json.Unmarshal(data, &d) == nil {
-				return fmt.Errorf("%s", d.Message)
+				streamErr = fmt.Errorf("%s", d.Message)
+			} else {
+				streamErr = fmt.Errorf("AI 分析流返回错误帧但内容无法解析")
 			}
 		}
 	}
-	if !*raw {
+	// 收尾判定（两模式一致）：error 帧 > 读取错误（排除用户中断）> 缺 done 帧。
+	if streamErr == nil {
+		if rErr := sc.Err(); rErr != nil {
+			if errors.Is(rErr, errAIStreamIdle) {
+				streamErr = rErr
+			} else if ctx.Err() == nil {
+				streamErr = fmt.Errorf("读取 AI 分析流中断: %w", rErr)
+			}
+		} else if !sawDone && ctx.Err() == nil {
+			streamErr = fmt.Errorf("AI 分析流异常结束（未收到完成帧）")
+		}
+	}
+	if !*raw && streamErr == nil {
 		fmt.Println() // 答案收尾换行
 	}
-	return nil
+	if *raw {
+		return streamErr // 脚本模式也以退出码区分成败（帧已透传）
+	}
+	if streamErr != nil {
+		fmt.Println() // 人读模式：错误另起一行，不接在半截答案后
+	}
+	return streamErr
 }
