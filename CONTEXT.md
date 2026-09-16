@@ -7,7 +7,7 @@
 ## 项目概览
 - PrismProxy（棱镜）：Windows 桌面级 HTTP(S) 调试代理（MITM 解密 + 抓包看包），单文件 exe；独立开源工具（`https://github.com/ZhangJiaLei123/PrismProxy.git`），定位/文档/commit/注释**不引入任何具体业务方名称**。
 - 技术栈：Go 1.27（代理引擎，标准库为主 + brotli/zstd + modernc.org/sqlite，核心无 CGO）+ Vue 3 + TS + Naive UI + Pinia + Vite 前端；Wails v2 桥接（WebView2）。
-- 端口：代理默认 9090，控制 API（ctlapi）9595。
+- 端口：代理默认 9090（**当前便携配置为 9091，以 config/settings.json `listenAddr` 为准**），控制 API（ctlapi）9595（token 见 config/ctl-endpoint.json，每次重启重生成）。
 - 前端目录：`frontend/src`（pages/、components/、stores/、composables/、review/）；Wails 绑定在 `frontend/wailsjs/`，前端引用路径为 `../wailsjs/...`（pages 下）或 `../../wailsjs/...`（components 下）。
 - 配置全部走**便携模式**：exe 同级 `config/`（settings.json、ca/、projects/<id>/、domains/、ctl-endpoint.json）；旧 %APPDATA%\PrismProxy 配置一次性自动搬迁不删旧文件。wails dev 下 exe 在 build/bin，配置落在 build/bin/config。
 

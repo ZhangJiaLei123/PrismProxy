@@ -644,6 +644,9 @@ const handlers: Record<string, (...args: any[]) => any> = {
   },
   AdbSetProxy: async (_path: string, _serial: string, _addr: string) => '设备代理已设置（Mock）',
   AdbClearProxy: async (_path: string, _serial: string) => '设备代理已清除（Mock）',
+  AdbInstallSystemCert: async (_path: string, _serial: string) =>
+    '系统证书已注入（9e85ecda.0，Mock）。设备重启后重新点本按钮即可恢复',
+  AdbSystemCertStatus: async (_path: string, _serial: string) => 'installed',
 
   AddDecryptBypass: async (_host: string) => {},
 

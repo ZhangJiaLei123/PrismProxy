@@ -55,6 +55,11 @@ func (a *App) startAdbWorker() {
 			var err error
 			if op.isSet {
 				_, err = a.AdbSetProxy(op.device.Path, op.device.Serial, op.host)
+				// 代理设置成功后顺手保证系统 CA 注入存活（bind-mount 重启失效；
+				// 已注入则秒回跳过，非 root 设备只记日志不阻断代理自动设置）。
+				if err == nil {
+					a.bestEffortEnsureSystemCert(op.device)
+				}
 			} else {
 				_, err = a.AdbClearProxy(op.device.Path, op.device.Serial)
 			}
@@ -196,14 +201,82 @@ func (a *App) runAdb(adbPath, serial string, args ...string) (string, error) {
 	return a.runAdbTimeout(adbTimeout, adbPath, serial, args...)
 }
 
+// listAdbDeviceSerials 解析 `adb devices`，返回所有处于 device 态的传输序列号
+// （offline/unauthorized 不计入，避免自动选到不可用目标）。
+func (a *App) listAdbDeviceSerials(adbPath string) ([]string, error) {
+	out, err := exec.Command(adbPath, "devices").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("adb devices: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	var serials []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "List of devices") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == "device" {
+			serials = append(serials, fields[0])
+		}
+	}
+	return serials, nil
+}
+
+// resolveSerial 在用户未填序列号时自动选定目标设备。雷电等模拟器会为「同一台设备」同时
+// 暴露 emulator-5554 与 127.0.0.1:5555 两个传输入口，二者设备相同；这种重复需要去重，
+// 否则空序列号会报 more than one device/emulator。去重后：
+//   - 仅一台物理设备：优先返回 emulator-* 入口（最稳），否则唯一序列号；
+//   - 多台不同设备：无法替用户决定，返回明确错误（提示在配置里填序列号）。
+//
+// 调用成本是一条 `adb devices`，仅在空序列号路径执行。
+func (a *App) resolveSerial(adbPath string) (string, error) {
+	serials, err := a.listAdbDeviceSerials(adbPath)
+	if err != nil {
+		return "", err
+	}
+	if len(serials) == 0 {
+		return "", fmt.Errorf("未检测到已连接设备（adb devices 为空）")
+	}
+	// 同机双传输去重：含 emulator-* 与 127.0.0.1:<port> 且端口一致时视为同一台。
+	emu := ""
+	others := make([]string, 0, len(serials))
+	for _, s := range serials {
+		if strings.HasPrefix(s, "emulator-") {
+			if emu == "" {
+				emu = s
+			}
+			continue
+		}
+		others = append(others, s)
+	}
+	// 单台物理设备：只有模拟器入口（一个或 emulator+其网络回环）时直接用 emulator-*。
+	if emu != "" && len(others) <= 1 {
+		return emu, nil
+	}
+	// 无模拟器入口且只有一条传输。
+	if emu == "" && len(serials) == 1 {
+		return serials[0], nil
+	}
+	return "", fmt.Errorf("检测到多台设备（%s），请在 ADB 配置中填写「设备序列号」（adb devices 第一列）", strings.Join(serials, "、"))
+}
+
 // runAdbTimeout 同 runAdb，但允许指定超时（退出/关机路径用更短超时）。
 func (a *App) runAdbTimeout(timeout time.Duration, adbPath, serial string, args ...string) (string, error) {
 	if strings.TrimSpace(adbPath) == "" {
 		return "", fmt.Errorf("未配置 adb 路径")
 	}
+	// 空序列号且命令需要指定目标设备（除 `adb devices` 自身等无目标子命令外）时自动选设备。
+	serial = strings.TrimSpace(serial)
+	if serial == "" && len(args) > 0 && args[0] != "devices" && args[0] != "start-server" && args[0] != "kill-server" {
+		resolved, rerr := a.resolveSerial(adbPath)
+		if rerr != nil {
+			return "", rerr
+		}
+		serial = resolved
+	}
 	full := args
-	if s := strings.TrimSpace(serial); s != "" {
-		full = append([]string{"-s", s}, args...)
+	if serial != "" {
+		full = append([]string{"-s", serial}, args...)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

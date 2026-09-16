@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <section class="sec">
     <div class="sec-title">设备侧代理地址</div>
     <div class="form-row">
@@ -36,21 +36,69 @@
         <n-button size="small" :loading="busy['clear-' + rid(c)]" @click="clearProxy(c)">清除代理</n-button>
         <n-button size="small" type="error" quaternary @click="remove(c)">删除</n-button>
       </div>
+      <div class="form-row cert-row">
+        <span class="label">系统证书</span>
+        <n-button
+          size="small"
+          :type="certState(c) === 'missing' ? 'warning' : 'default'"
+          :loading="busy['cert-' + rid(c)]"
+          @click="installCert(c)"
+        >
+          注入系统证书
+        </n-button>
+        <n-tag
+          v-if="certState(c) === 'installed'"
+          size="small"
+          type="success"
+          :bordered="false"
+        >
+          已注入
+        </n-tag>
+        <n-tag
+          v-else-if="certState(c) === 'missing'"
+          size="small"
+          type="warning"
+          :bordered="false"
+        >
+          未注入
+        </n-tag>
+        <span v-else-if="certState(c) === 'checking'" class="cert-hint">检测中…</span>
+        <n-button
+          v-if="certState(c) === 'installed' || certState(c) === 'unknown'"
+          size="tiny"
+          quaternary
+          @click="refreshCert(c)"
+        >
+          {{ certState(c) === 'unknown' ? '检测' : '刷新状态' }}
+        </n-button>
+      </div>
     </div>
 
     <n-button size="small" block secondary style="margin-top: 4px" @click="add">+ 添加配置</n-button>
     <div class="hint">
       「设置代理」需代理已启动；每条配置对应一个模拟器/设备的 adb。单台设备可只填路径；
       同一 adb 下有多台设备（模拟器多开/真机+模拟器）时，必须为每条配置填写对应设备「序列号」，否则 adb 会报 more than one device。
-      「自动设置」勾选后，PrismProxy 启动代理即对该设备写入 http_proxy，停止代理/退出/关机时自动清除。
+      「自动设置」勾选后，PrismProxy 启动代理即对该设备写入 http_proxy 并自动确保系统证书已注入，停止代理/退出/关机时自动清除代理。
+    </div>
+    <div class="hint cert-tip">
+      Android 7 以上 App 只信任系统证书。root 模拟器（如雷电）可用「注入系统证书」一键完成；
+      bind-mount 注入在设备<b>重启后失效</b>，重启模拟器后重新点一次即可（勾选「自动设置」时启动抓包会自动补注入）。
+      注入后已在运行的 App 若仍报证书错误，强制停止后重开。
     </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { reactive } from 'vue'
-import { NInput, NButton, NSwitch, useMessage, useDialog } from 'naive-ui'
-import { PickAdbPath, AdbTest, AdbSetProxy, AdbClearProxy } from '../../../wailsjs/go/app/App'
+import { onMounted, reactive } from 'vue'
+import { NInput, NButton, NSwitch, NTag, useMessage, useDialog } from 'naive-ui'
+import {
+  PickAdbPath,
+  AdbTest,
+  AdbSetProxy,
+  AdbClearProxy,
+  AdbInstallSystemCert,
+  AdbSystemCertStatus,
+} from '../../../wailsjs/go/app/App'
 import type { app, settings } from '../../../wailsjs/go/models'
 
 const props = defineProps<{ form: app.SettingsView }>()
@@ -126,6 +174,42 @@ async function setProxy(c: settings.ADBDevice) {
 async function clearProxy(c: settings.ADBDevice) {
   await wrap('clear-' + rid(c), () => AdbClearProxy(c.path, c.serial ?? ''))
 }
+
+// ---- 系统证书注入状态（installed/missing/unknown/checking），按稳定 rid 存 ----
+type CertState = 'installed' | 'missing' | 'unknown' | 'checking'
+const certStates = reactive<Record<number, CertState>>({})
+function certState(c: settings.ADBDevice): CertState {
+  return certStates[rid(c)] ?? 'unknown'
+}
+
+async function refreshCert(c: settings.ADBDevice) {
+  if (!c.path?.trim()) {
+    certStates[rid(c)] = 'unknown'
+    return
+  }
+  certStates[rid(c)] = 'checking'
+  try {
+    const s = await AdbSystemCertStatus(c.path, c.serial ?? '')
+    certStates[rid(c)] = s === 'installed' ? 'installed' : 'missing'
+  } catch {
+    certStates[rid(c)] = 'unknown'
+  }
+}
+
+async function installCert(c: settings.ADBDevice) {
+  await wrap('cert-' + rid(c), async () => {
+    const msg = await AdbInstallSystemCert(c.path, c.serial ?? '')
+    certStates[rid(c)] = 'installed'
+    return msg
+  })
+}
+
+// 打开设置面板时对已配置 adb 路径的条目探测一次注入状态（失败静默为「未知」）。
+onMounted(() => {
+  for (const c of props.form.adb.configs) {
+    if (c.path?.trim()) void refreshCert(c)
+  }
+})
 </script>
 
 <style scoped>
@@ -143,4 +227,7 @@ async function clearProxy(c: settings.ADBDevice) {
 }
 .autoset-hint { font-size: 11px; opacity: 0.6; }
 .btn-row { margin-bottom: 0; }
+.cert-row { margin-top: 2px; margin-bottom: 0; }
+.cert-hint { font-size: 11px; opacity: 0.55; }
+.cert-tip { margin-top: 6px; }
 </style>

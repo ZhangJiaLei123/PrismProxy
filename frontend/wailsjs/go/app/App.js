@@ -18,8 +18,16 @@ export function AdbClearProxy(arg1, arg2) {
   return window['go']['app']['App']['AdbClearProxy'](arg1, arg2);
 }
 
+export function AdbInstallSystemCert(arg1, arg2) {
+  return window['go']['app']['App']['AdbInstallSystemCert'](arg1, arg2);
+}
+
 export function AdbSetProxy(arg1, arg2, arg3) {
   return window['go']['app']['App']['AdbSetProxy'](arg1, arg2, arg3);
+}
+
+export function AdbSystemCertStatus(arg1, arg2) {
+  return window['go']['app']['App']['AdbSystemCertStatus'](arg1, arg2);
 }
 
 export function AdbTest(arg1) {

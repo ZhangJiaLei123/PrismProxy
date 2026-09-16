@@ -2,11 +2,13 @@
 package mitm
 
 import (
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -73,6 +75,15 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 
 // CertPEMPath / KeyPEMPath 供 /ca 下载页使用
 func (c *CA) CertPEMPath() string { return filepath.Join(c.dir, caCertFile) }
+
+// SubjectHashOld 返回 OpenSSL subject_hash_old（X509_NAME_canonical 的 MD5 前 4 字节小端），
+// 即 Android 系统 CA 目录里的文件名 <hash>.0。Prism 自签 CA 的 Subject 仅含 PrintableString
+// 字段，RawSubject 即为规范编码，直接参与 MD5 与 openssl x509 -subject_hash_old 结果一致
+// （雷电 LDPlayer14 实测 Prism CA = 9e85ecda）。
+func (c *CA) SubjectHashOld() string {
+	sum := md5.Sum(c.Cert.RawSubject)
+	return fmt.Sprintf("%08x", binary.LittleEndian.Uint32(sum[:4]))
+}
 
 func createCA() (*CA, error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)

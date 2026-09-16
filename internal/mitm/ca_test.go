@@ -1,11 +1,14 @@
 package mitm
 
 import (
+	"crypto/md5"
 	"crypto/x509"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"testing"
 )
@@ -145,5 +148,26 @@ func TestCertCacheLRU(t *testing.T) {
 	}
 	if again == first {
 		t.Error("evicted host returned stale cached certificate")
+	}
+}
+
+func TestSubjectHashOld(t *testing.T) {
+	ca, err := LoadOrCreateCA(t.TempDir())
+	if err != nil {
+		t.Fatalf("ca: %v", err)
+	}
+	hash := ca.SubjectHashOld()
+	if !regexp.MustCompile(`^[0-9a-f]{8}$`).MatchString(hash) {
+		t.Fatalf("hash %q not 8 lowercase hex", hash)
+	}
+	// 与定义（MD5(RawSubject) 前 4 字节小端）逐字一致
+	sum := md5.Sum(ca.Cert.RawSubject)
+	want := fmt.Sprintf("%08x", binary.LittleEndian.Uint32(sum[:4]))
+	if hash != want {
+		t.Errorf("hash = %s, want %s", hash, want)
+	}
+	// 幂等：同一 CA 重复计算稳定
+	if ca.SubjectHashOld() != hash {
+		t.Error("SubjectHashOld not stable across calls")
 	}
 }
