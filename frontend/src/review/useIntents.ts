@@ -23,7 +23,7 @@ const autoFill = ref(false)
 const flowEndpoints = new Map<string, string>()
 const endpointFlows = new Map<string, Set<string>>()
 
-/** 端点归一化键：host 与 path 去首尾斜杠并小写 host，query 不参与匹配（方法保留原大小写）。 */
+/** 端点归一化键：host 小写去尾斜杠、method trim 后大写归一、path 去首尾斜杠，query 不参与匹配。 */
 function endpointKey(host: string, method: string, path: string): string {
   const h = host.trim().replace(/\/+$/, '').toLowerCase()
   const p = path.trim().replace(/^\/+/, '').replace(/\/+$/, '')
@@ -119,7 +119,6 @@ export function useIntents() {
     effectiveIntent,
     upsert,
     seed,
-    registerFlows,
     setAutoFill,
     clear,
     runIntent,

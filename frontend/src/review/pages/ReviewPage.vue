@@ -446,7 +446,8 @@ async function syncAutoFill(): Promise<void> {
     const cfg = await api.getAIConfig()
     setAutoFill(!!cfg.autoFillIntent)
   } catch {
-    /* 配置取不到时按关闭处理（默认 false），不影响实判意图展示 */
+    /* 取不到配置时保留当前值不动（首次挂载默认 false）；开关为全局持久化偏好，
+       不影响实判意图展示，仅决定是否允许同端点派生 */
   }
 }
 function onAiCfg(cfg: { autoFillIntent?: boolean }): void {
@@ -1113,7 +1114,7 @@ function initListW() {
 onMounted(() => {
   initListW()
   clearIntents() // 跨项目清理（§7 审计修复）：重挂即换会话上下文，旧项目意图缓存不留存
-  syncAutoFill() // 自动缺省适配开关：从 AI 配置初始化（失败按关闭处理）
+  syncAutoFill() // 自动缺省适配开关：从 AI 配置初始化（失败保留当前值，首次默认 false）
   refreshAll()
 })
 
