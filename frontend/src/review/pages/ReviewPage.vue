@@ -1111,10 +1111,20 @@ function initListW() {
   listW.value = Math.round((bodyEl.value.clientWidth - sidebarW.value - SPLITTER_W * 2) * 0.46)
 }
 
+// 主窗内嵌时顶栏/CLI 热切换项目（project:changed 事后通知）：复盘页不重挂（App.vue 无 :key），
+// 必须显式清意图缓存并重载，否则旧项目已判意图会经同端点派生跨项目继承（1e85a3a 审计修复）。
+// 事件走数据层抽象：仅 wails 形态有桥，http/demo 为 no-op。
+let offProjectChanged: (() => void) | null = null
+function onProjectChanged(): void {
+  clearIntents()
+  void refreshAll()
+}
+
 onMounted(() => {
   initListW()
   clearIntents() // 跨项目清理（§7 审计修复）：重挂即换会话上下文，旧项目意图缓存不留存
   syncAutoFill() // 自动缺省适配开关：从 AI 配置初始化（失败保留当前值，首次默认 false）
+  offProjectChanged = api.onProjectChanged(onProjectChanged)
   refreshAll()
 })
 
@@ -1123,6 +1133,8 @@ onBeforeUnmount(() => {
   if (locateTimer) clearTimeout(locateTimer)
   if (locateRaf) cancelAnimationFrame(locateRaf)
   locateAlive = false
+  offProjectChanged?.()
+  offProjectChanged = null
   window.removeEventListener('pointermove', onDragMove)
   window.removeEventListener('pointerup', onDragEnd)
 })

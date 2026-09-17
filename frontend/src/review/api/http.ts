@@ -158,6 +158,12 @@ export class HttpApi implements ReviewApi {
       : { opened: false, msg: '当前无 GUI 主窗（headless 模式），请直接编辑配置文件中 [ai] 段' }
   }
 
+  // 独立浏览器复盘页（token 打开）无项目切换入口；预留接口 no-op
+  onProjectChanged(cb: () => void): () => void {
+    void cb
+    return () => {}
+  }
+
   // SSE 流式不能走 req()（其 await resp.json()）：首响应先判 ok（400/409 同步错误段），
   // 200 后 getReader 按 \n\n 分帧解析 event:/data: 行逐帧回调；error 帧 reject（与 wails 层同契约，M3 审计修复）。
   // signal 取消时 AbortError 静默收尾。

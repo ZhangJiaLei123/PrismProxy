@@ -417,8 +417,12 @@ const intentRows = computed(() => {
   })
   return out
 })
-// 本页可展示的已标注意图数 vs 全部候选池已标注数：跨页批量后两者可能不等，用于口径提示
-const intentShownCount = computed(() => intentRows.value.length)
+// 本页实判已标注数（不含自动适配派生）vs 全部候选池实判数：两者同口径只认真判，
+// 跨页批量后可能不等，用于「其余请翻页」提示。注意不能用 intentRows.length——
+// 那含 effectiveIntent 派生行，会被同端点适配注水而错误隐藏翻页提示。
+const intentShownCount = computed(
+  () => props.viewFlows.filter((f) => !!intentOf(f.ID)).length,
+)
 const intentTotalCount = computed(() => intentIds.value.filter((id) => !!intentOf(id)).length)
 
 // ===== 文案 =====

@@ -23,10 +23,20 @@ const autoFill = ref(false)
 const flowEndpoints = new Map<string, string>()
 const endpointFlows = new Map<string, Set<string>>()
 
-/** 端点归一化键：host 小写去尾斜杠、method trim 后大写归一、path 去首尾斜杠，query 不参与匹配。 */
+/**
+ * 端点归一化键：host 小写去尾斜杠、method trim 后大写归一、path 去首尾斜杠。
+ * query/fragment 必须先剔除：后端 ReviewFlowMeta.Path 形如 "/p?a=1&b=2"
+ * （dto.toMeta / persist.requestPath 都把 RawQuery 拼进 Path），需求拍板 query 不参与匹配
+ * ——同路径不同 query（分页/时间戳/gcId 等）要能互相继承，故只取 '?'/'#' 之前的路径段。
+ */
 function endpointKey(host: string, method: string, path: string): string {
   const h = host.trim().replace(/\/+$/, '').toLowerCase()
-  const p = path.trim().replace(/^\/+/, '').replace(/\/+$/, '')
+  const p = path
+    .trim()
+    .split('?')[0]
+    .split('#')[0]
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
   return `${h}|${method.trim().toUpperCase()}|${p}`
 }
 

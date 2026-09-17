@@ -180,4 +180,7 @@ export interface ReviewApi {
   /** 空态引导「去主窗设置」：http 形态 POST /ui/settings{tab:'ai'} 唤起主窗；
    * demo/wails 无 HTTP 通道，返回静态提示（opened:false）。 */
   openSettingsAI(): Promise<{ opened: boolean; msg: string }>
+  /** 订阅后端「当前项目已切换」事件（主窗顶栏/CLI 热切换）；返回退订函数。
+   *  仅 wails 形态有事件桥；http/demo 形态复盘页无项目切换入口，返回 no-op。 */
+  onProjectChanged(cb: () => void): () => void
 }

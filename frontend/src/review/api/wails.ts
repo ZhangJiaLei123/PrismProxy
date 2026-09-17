@@ -232,4 +232,9 @@ export class WailsReviewApi implements ReviewApi {
   async openSettingsAI(): Promise<{ opened: boolean; msg: string }> {
     return { opened: false, msg: '请在主窗底部状态栏「设置」→「AI 分析」中配置' }
   }
+
+  // 主窗内嵌复盘：顶栏项目切换器/CLI 热切换均发 project:changed（useProjects 同源事件）
+  onProjectChanged(cb: () => void): () => void {
+    return EventsOn('project:changed', cb)
+  }
 }

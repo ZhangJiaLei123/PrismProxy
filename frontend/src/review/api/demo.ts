@@ -638,6 +638,12 @@ export class DemoApi implements ReviewApi {
     return { opened: false, msg: '演示模式无需配置，AI 分析走内置模拟数据' }
   }
 
+  // demo 数据层为单项目内存样例，无项目切换；预留接口 no-op
+  onProjectChanged(cb: () => void): () => void {
+    void cb
+    return () => {}
+  }
+
   // demo：按路径形态推断接口意图（真实实现由模型输出）
   private demoIntent(f: ReviewFlowMeta, seq: number): IntentResult {
     const p = f.Path.toLowerCase()
