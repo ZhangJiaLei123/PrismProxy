@@ -10,7 +10,7 @@
       :columns="columns"
       :sort-key="sortKey"
       :sort-dir="sortDir"
-      layout-key="prismproxy:flowlist-col-layout-v2"
+      layout-key="prismproxy:flowlist-col-layout-v3"
       :default-widths="DEFAULT_WIDTHS"
       :col-mins="COL_MINS"
       :selected-id="store.selectedId ?? ''"
@@ -55,7 +55,7 @@ import type { app } from '../../wailsjs/go/models'
 const store = useFlowsStore()
 const message = useMessage()
 
-type SortKey = 'time' | 'method' | 'status' | 'host' | 'path' | 'dur' | 'size' | 'proc' | 'tags'
+type SortKey = 'time' | 'method' | 'status' | 'host' | 'path' | 'dur' | 'size' | 'proc' | 'upstream' | 'tags'
 type SortDir = 'asc' | 'desc'
 
 // 状态着色（方法/状态）以 cellCls 形式注入，class 规则在共享组件内
@@ -77,33 +77,76 @@ const columns: FlowColumn[] = [
   { key: 'dur', label: '耗时', cls: 'c-dur', wi: 6 },
   { key: 'size', label: '大小', cls: 'c-size', wi: 7 },
   { key: 'proc', label: '进程', cls: 'c-proc', wi: 8, title: (f) => f.ProcessName + ' (' + f.PID + ')' },
-  // M12：标签列（wi=9），默认可见、排在最后；老用户布局 v1→v2 迁移追加
-  { key: 'tags', label: '标签', cls: 'c-tags', wi: 9, title: (f) => (f.Tags || []).join('、') },
+  // 上游代理入口节点 host:port（空=直连）；wi 必须=数组下标+1（FlowTable 以 columns[wi-1] 反查、colWidths[wi] 取宽）
+  { key: 'upstream', label: '上游代理', cls: 'c-upstream', wi: 9, title: (f) => f.UpstreamAddr || '直连' },
+  // M12：标签列 wi=10（v3 起由旧 wi=9 重编号），默认可见、排在最后
+  { key: 'tags', label: '标签', cls: 'c-tags', wi: 10, title: (f) => (f.Tags || []).join('、') },
 ]
 
-// 列宽（px），首列状态点 22px 固定；null = 1fr 弹性（路径列默认）。共 9 数据列 + 状态列 = 10 元素
-const DEFAULT_WIDTHS: (number | null)[] = [22, 92, 56, 56, 150, null, 66, 64, 100, 110]
-const COL_MINS = [22, 52, 44, 40, 60, 60, 48, 48, 60, 70]
+// 列宽（px），首列状态点 22px 固定；null = 1fr 弹性（路径列默认）。下标=wi：[9]=上游代理132、[10]=标签110。共 10 数据列 + 状态列 = 11 元素
+const DEFAULT_WIDTHS: (number | null)[] = [22, 92, 56, 56, 150, null, 66, 64, 100, 132, 110]
+const COL_MINS = [22, 52, 44, 40, 60, 60, 48, 48, 60, 90, 70]
 
-// ---- 列布局持久化 v1→v2 迁移（v1=8 数据列；迁移成功后由 FlowTable 落 v2 key）----
-// 必须在 FlowTable setup 读 localStorage 之前跑完（父 setup 先于子 setup）
-;(function migrateLayoutV1() {
+// ---- 列布局持久化迁移（必须在 FlowTable setup 读 localStorage 之前跑完：父 setup 先于子 setup）----
+// v1=8 数据列 → v2=9（追加标签列 wi=9）→ v3=10（进程后插入上游代理列占 wi=9，旧标签重编号 wi=10）。
+// 迁移成功后由 FlowTable 落最新 key；保留用户自定义的列顺序/宽度，仅按规则插入/重编号新列。
+;(function migrateLayout() {
+  const V3 = 'prismproxy:flowlist-col-layout-v3'
   const V2 = 'prismproxy:flowlist-col-layout-v2'
   const V1 = 'prismproxy:flowlist-col-layout-v1'
   try {
-    if (localStorage.getItem(V2)) return
-    const old = localStorage.getItem(V1)
-    if (!old) return
-    const v = JSON.parse(old) as { order?: unknown; widths?: unknown }
-    if (!Array.isArray(v.order) || !Array.isArray(v.widths)) return
-    const rest = v.order.slice(1) as unknown[]
-    const okOrder = v.order[0] === 0 && rest.every((n) => Number.isInteger(n) && n >= 1 && n <= 8) && new Set(rest).size === rest.length
-    const okWidths = v.widths.length === 9 && (v.widths as unknown[]).every((w) => w === null || (typeof w === 'number' && w >= 40 && w <= 400))
-    if (!okOrder || !okWidths) return
-    localStorage.setItem(
-      V2,
-      JSON.stringify({ order: [...(v.order as number[]), 9], widths: [...(v.widths as (number | null)[]), DEFAULT_WIDTHS[9]] }),
-    )
+    if (localStorage.getItem(V3)) return
+
+    // 第一步：v1 → v2（无 v2 但有 v1 时）
+    if (!localStorage.getItem(V2)) {
+      const old = localStorage.getItem(V1)
+      if (old) {
+        const v = JSON.parse(old) as { order?: unknown; widths?: unknown }
+        if (Array.isArray(v.order) && Array.isArray(v.widths)) {
+          const rest = v.order.slice(1) as unknown[]
+          const okOrder = v.order[0] === 0 && rest.every((n) => Number.isInteger(n) && n >= 1 && n <= 8) && new Set(rest).size === rest.length
+          const okWidths = v.widths.length === 9 && (v.widths as unknown[]).every((w) => w === null || (typeof w === 'number' && w >= 40 && w <= 400))
+          if (okOrder && okWidths) {
+            localStorage.setItem(
+              V2,
+              JSON.stringify({ order: [...(v.order as number[]), 9], widths: [...(v.widths as (number | null)[]), 110] }),
+            )
+          }
+        }
+      }
+    }
+
+    // 第二步：v2 → v3
+    // v2 的 wi 语义：1..8 原列 + 9=标签。v3 在进程(8) 后插入「上游代理」，故身份重编号：
+    //   上游代理占 wi=9，旧标签 wi=9 → wi=10。
+    // 关键契约（FlowTable）：columns[wi-1] 反查列、colWidths[wi] 取宽——宽度数组【按 wi 下标】存，
+    // 不能按 colOrder 位置切片，否则标签宽与上游宽对调。
+    const v2 = localStorage.getItem(V2)
+    if (v2) {
+      const v = JSON.parse(v2) as { order?: unknown; widths?: unknown }
+      if (Array.isArray(v.order) && Array.isArray(v.widths)) {
+        const order = v.order as number[]
+        const widths = v.widths as (number | null)[]
+        const rest = order.slice(1)
+        const okOrder = order[0] === 0 && rest.every((n) => Number.isInteger(n) && n >= 1 && n <= 9) && new Set(rest).size === rest.length
+        // v2：状态点 + 9 数据列 = 10 元素；标签(wi=9)可能已被用户隐藏（order 不含 9，但 widths 仍长 10）
+        if (okOrder && widths.length === 10 && !order.includes(10)) {
+          // widths 按 wi 下标搬运：[0..8] 不变，[10]=旧标签宽(widths[9])，[9]=新上游默认 132
+          const tagW = widths[9]
+          const newWidths: (number | null)[] = [...widths.slice(0, 9), 132, tagW]
+          let newOrder: number[]
+          if (order.includes(9)) {
+            // 标签可见：在其所在位置把 9 替换为「9(上游),10(标签重编号)」
+            const tagPos = order.indexOf(9)
+            newOrder = [...order.slice(0, tagPos), 9, 10, ...order.slice(tagPos + 1)]
+          } else {
+            // 标签隐藏：新上游列 wi=9 追加到序末（默认在进程后即可，此处置末不影响隐藏的标签）
+            newOrder = [...order, 9]
+          }
+          localStorage.setItem(V3, JSON.stringify({ order: newOrder, widths: newWidths }))
+        }
+      }
+    }
   } catch {
     // JSON 损坏等：保持默认布局
   }
@@ -132,6 +175,7 @@ const valOf: Record<SortKey, (f: app.FlowMeta) => number | string> = {
   dur: (f) => f.DurationMS,
   size: (f) => f.BytesDown,
   proc: (f) => f.ProcessName,
+  upstream: (f) => f.UpstreamAddr,
   // 标签列按标签名字典序（与单元格 tags 分支口径一致）
   tags: (f) => (f.Tags || []).join('、'),
 }

@@ -20,6 +20,10 @@
         <n-descriptions-item label="下行">{{ fmtBytes(meta.BytesDown) }}</n-descriptions-item>
         <n-descriptions-item v-if="showEndpoints" label="客户端">{{ meta.ClientAddr }}</n-descriptions-item>
         <n-descriptions-item v-if="showEndpoints" label="服务端">{{ d?.ServerAddr || meta.Host }}</n-descriptions-item>
+        <n-descriptions-item v-if="showEndpoints" label="上游代理">
+          <span v-if="meta.UpstreamAddr">{{ meta.UpstreamAddr }}</span>
+          <span v-else style="color: rgba(255,255,255,0.35)">直连</span>
+        </n-descriptions-item>
         <n-descriptions-item label="进程">
           {{ meta.ProcessName }} (pid={{ meta.PID }})
           <div v-if="d?.ProcessPath" class="proc-path">{{ d.ProcessPath }}</div>

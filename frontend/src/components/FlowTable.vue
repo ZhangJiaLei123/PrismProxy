@@ -30,6 +30,7 @@
       >
         {{ col.label }}
         <button
+          v-if="col.sortable !== false"
           class="sort-btn"
           :class="{ on: sortKey === col.key }"
           :title="sortKey === col.key ? (sortDir === 'asc' ? '升序（点击切换降序）' : '降序（点击切换升序）') : '点击排序'"
@@ -134,6 +135,8 @@ export interface FlowColumn {
   title?: (f: ReviewFlowMeta) => string
   /** 附加 class（如 m-GET / s-2xx 着色） */
   cellCls?: (f: ReviewFlowMeta) => string
+  /** 是否可排序（默认 true）；复盘走服务端白名单，未支持的列置 false 隐藏排序按钮 */
+  sortable?: boolean
 }
 
 /** 行右键可忽略的列维度；主窗实时忽略仅 host/path/proc，复盘额外支持 method/status */
@@ -429,6 +432,7 @@ function cellText(col: FlowColumn, f: ReviewFlowMeta): string {
     case 'dur': return fmtDuration(f.DurationMS)
     case 'size': return fmtBytes(f.BytesDown)
     case 'proc': return f.ProcessName
+    case 'upstream': return f.UpstreamAddr || '直连'
     case 'tags': return (f.Tags || []).join('、')
     default: return ''
   }
@@ -440,7 +444,7 @@ function cellTitle(col: FlowColumn, f: ReviewFlowMeta): string {
 }
 
 function cellCls(col: FlowColumn, f: ReviewFlowMeta): string {
-  const ellipsis = ['host', 'path', 'proc', 'tags'].includes(col.key)
+  const ellipsis = ['host', 'path', 'proc', 'upstream', 'tags'].includes(col.key)
   const base = col.cls + (ellipsis ? ' ellipsis' : '')
   if (col.cellCls) return base + ' ' + col.cellCls(f)
   return base

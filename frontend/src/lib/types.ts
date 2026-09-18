@@ -32,6 +32,7 @@ export interface ReviewFlowMeta {
   ProcessName: string
   PID: number
   ClientAddr: string
+  UpstreamAddr: string
   StartedAt: number
   Err: string
   Pinned: boolean

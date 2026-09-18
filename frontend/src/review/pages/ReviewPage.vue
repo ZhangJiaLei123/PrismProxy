@@ -287,7 +287,7 @@
                   :columns="columns"
                   :sort-key="sortKey"
                   :sort-dir="sortDir"
-                  layout-key="prismproxy:review-col-layout-v1"
+                  layout-key="prismproxy:review-col-layout-v2"
                   :default-widths="TABLE_DEFAULT_WIDTHS"
                   :col-mins="TABLE_COL_MINS"
                   :selected-id="selectedFlow"
@@ -536,10 +536,38 @@ const columns: FlowColumn[] = [
     text: (f) => f.ProcessName || '·',
     title: (f) => (f.ProcessName ? f.ProcessName + (f.PID ? ' (' + f.PID + ')' : '') : ''),
   },
+  // 上游代理入口节点 host:port（空=直连）；复盘走服务端排序白名单不含此列，禁排序按钮
+  { key: 'upstream', label: '上游代理', cls: 'c-upstream', wi: 8, sortable: false, text: (f) => f.UpstreamAddr || '直连', title: (f) => f.UpstreamAddr || '直连' },
 ]
-// 状态点列（22px 固定）+ 7 数据列；路径列 1fr 弹性
-const TABLE_DEFAULT_WIDTHS: (number | null)[] = [22, 56, 50, null, null, 86, 70, null]
-const TABLE_COL_MINS = [22, 44, 40, 80, 100, 60, 48, 70]
+// 状态点列（22px 固定）+ 8 数据列；路径列 1fr 弹性
+const TABLE_DEFAULT_WIDTHS: (number | null)[] = [22, 56, 50, null, null, 86, 70, null, 140]
+const TABLE_COL_MINS = [22, 44, 40, 80, 100, 60, 48, 70, 90]
+
+// ---- 列布局持久化 v1→v2 迁移（v1=7 数据列；v2 末尾追加上游代理列 wi=8）----
+// 必须在 FlowTable setup 读 localStorage 之前跑完（父 setup 先于子 setup）
+;(function migrateReviewLayout() {
+  const V2 = 'prismproxy:review-col-layout-v2'
+  const V1 = 'prismproxy:review-col-layout-v1'
+  try {
+    if (localStorage.getItem(V2)) return
+    const old = localStorage.getItem(V1)
+    if (!old) return
+    const v = JSON.parse(old) as { order?: unknown; widths?: unknown }
+    if (!Array.isArray(v.order) || !Array.isArray(v.widths)) return
+    const order = v.order as number[]
+    const widths = v.widths as (number | null)[]
+    const rest = order.slice(1)
+    // v1：状态点 + 7 数据列（wi 1..7）= 8 元素
+    const okOrder = order[0] === 0 && rest.every((n) => Number.isInteger(n) && n >= 1 && n <= 7) && new Set(rest).size === rest.length
+    if (!okOrder || widths.length !== 8 || order.includes(8)) return
+    localStorage.setItem(
+      V2,
+      JSON.stringify({ order: [...order, 8], widths: [...widths, 140] }),
+    )
+  } catch {
+    // JSON 损坏等：保持默认布局
+  }
+})()
 
 // 默认时间倒序（最新在顶部），与 FlowList 及服务端 flowOrderBy 默认一致
 const sortKey = ref<ReviewSortKey>('time')
