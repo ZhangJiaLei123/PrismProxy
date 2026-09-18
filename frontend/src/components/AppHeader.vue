@@ -18,11 +18,38 @@
         {{ view === 'review' ? '返回抓包' : '数据复盘' }}
       </span>
     </n-button>
+    <!-- 抓包列表搜索（口径与复盘页一致：域名 / 路径 / 方法）；复盘视图隐藏 -->
+    <div v-if="view === 'capture'" class="search-group">
+      <n-input
+        v-model:value="store.filter.keyword"
+        size="small"
+        clearable
+        placeholder="筛选域名 / 路径 / 方法…"
+        class="kw-input"
+      >
+        <template #prefix>
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" style="opacity: 0.6">
+            <path d="M11.7 10.3l3 3-1.4 1.4-3-3a6 6 0 1 1 1.4-1.4zm-5.2.7a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9z" />
+          </svg>
+        </template>
+      </n-input>
+      <n-button
+        size="small"
+        :type="store.filter.regex ? 'primary' : 'default'"
+        :secondary="!store.filter.regex"
+        :class="{ 'regex-invalid': regexInvalid }"
+        title="正则匹配（不区分大小写；非法正则降级为子串）"
+        @click="store.filter.regex = !store.filter.regex"
+      >.*</n-button>
+      <span v-if="filterActive" class="list-count">{{ store.filtered.length }}/{{ store.flows.length }}</span>
+    </div>
     <span style="flex: 1"></span>
-    <span :style="{ opacity: store.paused ? 0.95 : 0.7, fontSize: '12px', color: store.paused ? '#e8c864' : undefined }">
+    <!-- 以下为实时抓包（capture）专用控件：复盘视图隐藏，避免隐藏的 filter 残留静默影响归档禁用态 -->
+    <span v-if="view === 'capture'" :style="{ opacity: store.paused ? 0.95 : 0.7, fontSize: '12px', color: store.paused ? '#e8c864' : undefined }">
       {{ store.flows.length }} 条流{{ store.paused ? '（已暂停刷新）' : '' }}
     </span>
     <n-button
+      v-if="view === 'capture'"
       size="small"
       secondary
       :type="store.paused ? 'warning' : 'default'"
@@ -40,6 +67,7 @@
     </n-button>
     <!-- M12：给当前过滤可见流打标签并归档（清空按钮左侧）；可见流为 0 时禁用 -->
     <n-button
+      v-if="view === 'capture'"
       size="small"
       secondary
       aria-label="归档"
@@ -52,6 +80,7 @@
       </svg>
     </n-button>
     <n-button
+      v-if="view === 'capture'"
       size="small"
       secondary
       aria-label="清空流列表"
@@ -73,8 +102,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { NLayoutHeader, NButton } from 'naive-ui'
+import { computed, ref } from 'vue'
+import { NLayoutHeader, NButton, NInput } from 'naive-ui'
 import ProjectSwitcher from './ProjectSwitcher.vue'
 import TagMarkDialog from './TagMarkDialog.vue'
 import { useFlowsStore } from '../stores/flows'
@@ -84,6 +113,19 @@ const store = useFlowsStore()
 const { view, setView } = useAppView()
 
 const markShow = ref(false)
+
+// 搜索组派生状态：计数只反映搜索组自身（keyword/regex）；方法/状态过滤的计数归底栏唯一展示
+const keywordTrim = computed(() => store.filter.keyword.trim())
+const filterActive = computed(() => !!(keywordTrim.value || store.filter.regex))
+const regexInvalid = computed(() => {
+  if (!store.filter.regex || !keywordTrim.value) return false
+  try {
+    new RegExp(keywordTrim.value)
+    return false
+  } catch {
+    return true
+  }
+})
 
 const GITHUB_URL = 'https://github.com/ZhangJiaLei123/PrismProxy'
 function openGithub() {
@@ -97,3 +139,11 @@ function openGithub() {
 }
 
 </script>
+
+<style scoped>
+/* 搜索组：贴在左侧切换控件之后（flex:1 占位推到右侧按钮组），宽度可随窗口收缩 */
+.search-group { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.kw-input { flex: 0 1 240px; min-width: 140px; max-width: 240px; }
+.list-count { font-size: 11px; color: rgba(255, 255, 255, 0.45); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.regex-invalid { color: #e88080 !important; }
+</style>

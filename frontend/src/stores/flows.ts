@@ -48,9 +48,15 @@ export const useFlowsStore = defineStore('flows', {
           if (!statuses.includes(bucket)) return false
         }
         if (kw) {
-          // 关键字口径对齐复盘：method / host / path 三列子串（OR，不区分大小写）
-          const hay = m.Method + ' ' + m.Host + ' ' + (m.Path || m.URL)
-          if (re ? !re.test(hay) : !hay.toLowerCase().includes(kw)) return false
+          // 关键字口径严格对齐复盘 buildFlowQuery：method / host / path 逐列 OR 匹配
+          // （不拼接，避免带空格或跨列边界的关键字产生复盘搜不到的命中）
+          const target = m.Path || m.URL
+          const hit = re
+            ? re.test(m.Method) || re.test(m.Host) || re.test(target)
+            : m.Method.toLowerCase().includes(kw) ||
+              m.Host.toLowerCase().includes(kw) ||
+              target.toLowerCase().includes(kw)
+          if (!hit) return false
         }
         return true
       })

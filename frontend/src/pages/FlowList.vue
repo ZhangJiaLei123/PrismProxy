@@ -4,31 +4,7 @@
     表格本体（虚拟滚动/列布局/双击复制/右键菜单）在 components/FlowTable.vue，与复盘列表共用。
   -->
   <div class="list-wrap">
-    <!-- 列表工具栏：搜索（口径与复盘页一致：域名 / 路径 / 方法）+ 正则开关 + 命中计数 -->
-    <div class="list-toolbar">
-      <n-input
-        v-model:value="store.filter.keyword"
-        size="small"
-        clearable
-        placeholder="筛选域名 / 路径 / 方法…"
-        class="kw-input"
-      >
-        <template #prefix>
-          <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" style="opacity: 0.6">
-            <path d="M11.7 10.3l3 3-1.4 1.4-3-3a6 6 0 1 1 1.4-1.4zm-5.2.7a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9z" />
-          </svg>
-        </template>
-      </n-input>
-      <n-button
-        size="small"
-        :type="store.filter.regex ? 'primary' : 'default'"
-        :secondary="!store.filter.regex"
-        :class="{ 'regex-invalid': regexInvalid }"
-        title="正则匹配（不区分大小写；非法正则降级为子串）"
-        @click="store.filter.regex = !store.filter.regex"
-      >.*</n-button>
-      <span v-if="filterActive" class="list-count">{{ store.filtered.length }}/{{ store.flows.length }}</span>
-    </div>
+    <!-- 搜索框位于顶部工具栏 AppHeader；此处仅保留搜索无结果空态 -->
     <flow-table
       :rows="sortedFlows"
       :columns="columns"
@@ -69,7 +45,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useMessage, NTag, NInput, NButton } from 'naive-ui'
+import { useMessage, NTag, NButton } from 'naive-ui'
 import FlowTable from '../components/FlowTable.vue'
 import type { FlowColumn } from '../components/FlowTable.vue'
 import { useFlowsStore } from '../stores/flows'
@@ -176,22 +152,6 @@ const sortedFlows = computed(() => {
 
 const keywordTrim = computed(() => store.filter.keyword.trim())
 
-// 过滤激活（关键字/方法/状态任一非空）时顶栏显示 命中/总数
-const filterActive = computed(
-  () => !!(keywordTrim.value || store.filter.methods.filter(Boolean).length || store.filter.statuses.filter(Boolean).length),
-)
-
-// 非法正则红色提示（匹配逻辑自动降级为子串）
-const regexInvalid = computed(() => {
-  if (!store.filter.regex || !keywordTrim.value) return false
-  try {
-    new RegExp(keywordTrim.value)
-    return false
-  } catch {
-    return true
-  }
-})
-
 // FlowTable 内置空态：仅在"非关键字无结果"时显示（关键字空态由外层 kw-empty 承担，带清除按钮）
 const innerEmptyText = computed(() => {
   if (!store.flows.length) return '暂无流量 —— 将系统代理指向 9090 端口或配置应用代理后开始抓包'
@@ -239,28 +199,12 @@ const actions = {
   flex-direction: column;
   position: relative;
   min-height: 0;
-  /* 工具栏高度：8*2 padding + 28px(small 控件) + 1px 边框 = 45px；空态定位引用，避免魔法数 */
-  --toolbar-h: 45px;
 }
 .list-table { flex: 1; min-height: 0; }
-/* 列表工具栏：与复盘页 .list-toolbar 同款（padding 8/10、gap 10、发丝线下边框、高 45px） */
-.list-toolbar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-/* 理想 280px，左面板拖窄时可收缩（下限 140px），不与正则按钮/计数重叠 */
-.kw-input { flex: 0 1 280px; min-width: 140px; max-width: 280px; }
-.list-count { font-size: 11px; color: rgba(255, 255, 255, 0.45); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.regex-invalid { color: #e88080 !important; }
-/* 搜索无结果空态：覆盖表格体区域（顶栏 33px 之下），对齐复盘 list-empty */
+/* 搜索无结果空态：搜索框在顶部 AppHeader，空态只需落在 28px 列表表头之下 */
 .kw-empty {
   position: absolute;
-  /* 落在工具栏 + 28px 表头之下，避免盖住列头/排序入口 */
-  top: calc(var(--toolbar-h) + 28px);
+  top: 28px;
   left: 0;
   right: 0;
   bottom: 0;
