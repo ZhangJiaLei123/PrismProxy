@@ -1,21 +1,6 @@
 <template>
-  <!-- 底部工具栏：过滤搜索（验收 #8） + 代理状态/快捷开关 + 设置入口 -->
+  <!-- 底部工具栏：方法/状态过滤（关键字搜索已上移到列表顶部工具栏） + 代理状态/快捷开关 + 设置入口 -->
   <n-layout-footer bordered style="height: 28px; display: flex; align-items: center; padding: 0 8px; gap: 6px; font-size: 12px">
-    <n-input
-      v-model:value="store.filter.keyword"
-      size="tiny"
-      clearable
-      placeholder="过滤：域名 / URL 关键字"
-      style="width: 180px"
-    />
-    <n-button
-      size="tiny"
-      :type="store.filter.regex ? 'primary' : 'default'"
-      :secondary="!store.filter.regex"
-      :class="{ 'regex-invalid': regexInvalid }"
-      title="正则匹配（不区分大小写；非法正则降级为子串）"
-      @click="store.filter.regex = !store.filter.regex"
-    >.*</n-button>
     <n-select
       :value="store.filter.methods"
       class="filter-sel"
@@ -47,14 +32,23 @@
     <!-- 代理状态与快捷开关（自顶栏迁入） -->
     <n-tag
       size="small"
-      :type="status.Running ? 'success' : 'error'"
+      :type="status.Running ? (poolDegraded ? 'warning' : 'success') : 'error'"
       class="status-tag"
-      title="点击打开代理设置"
+      :title="poolDegraded ? '代理池已降级为直连，当前流量使用本机真实 IP' : '点击打开代理设置'"
       @click="openProxySettings"
     >
       {{ status.Running ? `代理运行中 ${status.Addr}` : '代理已停止' }}
     </n-tag>
     <n-tag v-if="status.Running" size="small" type="info">{{ status.Mode }}</n-tag>
+    <!-- 代理池出口 IP + 到期：pool 模式运行中且未降级时显示（降级=流量走直连，显示会误导）；点击打开 IP 代理页签 -->
+    <n-tag
+      v-if="poolExitAddr"
+      size="small"
+      class="status-tag exit-ip"
+      :class="{ 'exit-ip-danger': poolRemainSec > 0 && poolRemainSec < 60 }"
+      :title="poolExitTitle"
+      @click="openPoolSettings"
+    >出口 {{ poolExitAddr }}{{ poolRemainText ? ' · ' + poolRemainText : '' }}</n-tag>
     <span class="hdr-switch" title="启动/停止代理监听">
       <span class="hdr-label">监听</span>
       <n-switch size="small" :value="status.Running" :loading="listenBusy" @update:value="toggleListen" />
@@ -68,11 +62,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { NLayoutFooter, NTag, NButton, NInput, NSelect, NSwitch } from 'naive-ui'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { NLayoutFooter, NTag, NButton, NSelect, NSwitch } from 'naive-ui'
 import { useFlowsStore } from '../stores/flows'
-import { GetProxyStatus, StartProxy, StopProxy, GetSystemProxyStatus, SetSystemProxy, GetSettings } from '../../wailsjs/go/app/App'
+import { GetProxyStatus, StartProxy, StopProxy, GetSystemProxyStatus, SetSystemProxy, GetSettings, ProxyPoolStatus } from '../../wailsjs/go/app/App'
 import type { app } from '../../wailsjs/go/models'
+import { onPoolStatusEvent } from '../composables/usePoolStatusEvent'
 
 // 打开设置抽屉：tab 为设置面板标签（'general' | 'network'）
 // error：replace=true 表示用户开关动作刚失败（覆盖显示最新错误）；否则为 StartError 轮询兜底（不覆盖已显示错误）
@@ -92,6 +87,47 @@ const listenBusy = ref(false)
 const sysBusy = ref(false)
 // 底栏系统代理开关可见性（设置-常规-工具栏，默认显示）
 const showSysSwitch = ref(true)
+// 代理池降级警示：pool 模式且 degraded 时状态点变黄色（设计 §9.3 顶栏状态点）
+const poolDegraded = ref(false)
+// 代理池出口展示：仅 pool 模式运行中且未降级时有值（空串=不渲染出口 tag）
+const poolExitAddr = ref('')
+const poolExitRegion = ref('')
+// 出口到期：expireAt 为 unix 秒（0=未知）；本地 1s 递减，事件/刷新到达时重新锚定
+const poolExpireAt = ref(0)
+const nowSec = ref(Math.floor(Date.now() / 1000))
+let tickTimer: ReturnType<typeof setInterval> | null = null
+
+const poolRemainSec = computed(() =>
+  poolExitAddr.value && poolExpireAt.value > 0 ? Math.max(0, poolExpireAt.value - nowSec.value) : 0,
+)
+const poolRemainText = computed(() => {
+  if (!poolRemainSec.value) return ''
+  const m = Math.floor(poolRemainSec.value / 60)
+  const s = poolRemainSec.value % 60
+  return `剩 ${m}:${String(s).padStart(2, '0')}`
+})
+const poolExitTitle = computed(() => {
+  const base = `当前代理池出口${poolExitRegion.value ? '（' + poolExitRegion.value + '）' : ''}`
+  const exp = poolExpireAt.value > 0 ? `，${new Date(poolExpireAt.value * 1000).toTimeString().slice(0, 8)} 到期` : ''
+  return `${base}${exp}，点击打开 IP 代理设置`
+})
+
+// 读取池降级态与出口 IP/到期；仅在 pool 模式下有意义，非 pool/未运行/降级/读取失败一律复位
+async function refreshPoolStatus() {
+  try {
+    const s = await ProxyPoolStatus()
+    poolDegraded.value = s.mode === 'pool' && !!s.status?.degraded
+    const cur = s.mode === 'pool' && s.running && !s.status?.degraded ? s.status?.current : null
+    poolExitAddr.value = cur?.addr ?? ''
+    poolExitRegion.value = cur?.region ?? ''
+    poolExpireAt.value = poolExitAddr.value ? (s.status?.expireAt ?? 0) : 0
+  } catch {
+    poolDegraded.value = false
+    poolExitAddr.value = ''
+    poolExitRegion.value = ''
+    poolExpireAt.value = 0
+  }
+}
 
 function errText(e: unknown) {
   return e instanceof Error ? e.message : String(e)
@@ -119,6 +155,7 @@ async function refreshStatus() {
     }
   }
   if (sys.status === 'fulfilled') sysState.value = sys.value.state
+  void refreshPoolStatus()
 }
 
 // 刷新工具栏偏好（系统代理开关可见性）；仅挂载时与设置保存后需要，不进开关热路径
@@ -174,6 +211,10 @@ function openProxySettings() {
   emit('open-settings', 'network')
 }
 
+function openPoolSettings() {
+  emit('open-settings', 'pool')
+}
+
 function openSettings() {
   emit('open-settings', 'general')
 }
@@ -200,36 +241,39 @@ function pickFilterValues(kind: 'methods' | 'statuses', v: string[]) {
   store.filter[kind] = next
 }
 
+// 仅方法/状态过滤激活时显示命中计数（关键字过滤已上移到列表工具栏，那里有自己的计数）
 const filterActive = computed(
   () =>
     !!(
-      store.filter.keyword.trim() ||
       store.filter.methods.filter((m) => m !== ALL_SENTINEL).length ||
       store.filter.statuses.filter((s) => s !== ALL_SENTINEL).length
     ),
 )
-// 非法正则红色提示（匹配逻辑自动降级为子串）
-const regexInvalid = computed(() => {
-  if (!store.filter.regex || !store.filter.keyword.trim()) return false
-  try {
-    new RegExp(store.filter.keyword.trim())
-    return false
-  } catch {
-    return true
-  }
-})
 
 // refresh：挂载/设置保存后全量刷新（含工具栏偏好）；refreshStatus：事件与开关动作后只刷代理状态
 defineExpose({ refresh, refreshStatus })
 
 onMounted(() => {
   void refresh()
+  // 出口到期倒计时本地锚点（1s 精度足够，事件到达时由 expireAt 重新锚定）
+  tickTimer = setInterval(() => { nowSec.value = Math.floor(Date.now() / 1000) }, 1000)
+})
+
+// 池状态事件（提取/轮换/热重启级频率）：走进程级单订阅，抽屉关闭不会连带注销底栏监听（审计 M4）。
+// 事件载荷不含 mode，故重拉全量。
+onPoolStatusEvent(() => void refreshPoolStatus())
+
+onUnmounted(() => {
+  if (tickTimer) clearInterval(tickTimer)
 })
 </script>
 
 <style scoped>
-.regex-invalid { color: #e88080 !important; }
 .status-tag { cursor: pointer; }
+/* 出口 IP 动态变化：等宽数字防布局抖动 */
+.exit-ip { font-variant-numeric: tabular-nums; }
+/* 到期临近（<60s）红色警示，与设置页状态卡 danger 同色 */
+.exit-ip-danger { color: #e88080 !important; }
 .hdr-switch { display: flex; align-items: center; gap: 4px; }
 .hdr-label { font-size: 12px; opacity: 0.8; }
 /* 底栏 28px 固定高度：多选 tag 单行排列、溢出裁剪，禁止换行把 footer 撑高 */

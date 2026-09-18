@@ -55,11 +55,12 @@ func migrateLegacyConfig(dir string) {
 	}
 }
 
-// 上游代理模式（方案 §4.5）
+// 上游代理模式（方案 §4.5；pool 见代理池设计 §5.1）
 const (
 	UpstreamDirect = "direct" // 直连（默认）
 	UpstreamManual = "manual" // 手动 HTTP 代理
 	UpstreamSystem = "system" // 跟随系统代理（跳过自身，防环路）
+	UpstreamPool   = "pool"   // 动态代理池（配置见 pool.go；生效唯一以本字段为准，无 Enabled 双源）
 )
 
 // GlobalSettings 全局（环境类）配置 + 项目清单与当前指针（项目配置设计 §4.1）。
@@ -98,6 +99,12 @@ type GlobalSettings struct {
 	// apiKey 不进 SettingsView 全量 DTO（独立 /ai/config 接口读写，掩码+哨兵语义）；
 	// 旧配置 JSON 无 ai 字段时反序列化为零值，读取侧一律经 AIConfig.WithDefaults 兜底。
 	AI AIConfig `json:"ai"`
+
+	// ProxyPool 动态代理池配置（代理池设计 §5.2）：环境类、跨项目共享。
+	// secret/password 敏感：增改删走独立 CRUD 路径（仿 SaveAIConfigPatch），不经
+	// SaveSettings 全量表单；旧配置 JSON 无 proxyPool 字段时零值兼容，读取侧经
+	// ProxyPoolSettings.WithDefaults 兜底。
+	ProxyPool ProxyPoolSettings `json:"proxyPool"`
 
 	// Projects 项目清单（顺序即展示顺序）；CurrentProject 当前项目 id。
 	Projects       []ProjectMeta `json:"projects"`
@@ -425,7 +432,8 @@ func DefaultGlobal() *GlobalSettings {
 			MaxKB:       64,
 			Redact:      true,
 		},
-		Projects: []ProjectMeta{},
+		ProxyPool: DefaultProxyPool(), // 代理池设计 §5.2 默认子值（无账号；读取侧另有 WithDefaults 兜底）
+		Projects:  []ProjectMeta{},
 	}
 }
 
@@ -502,6 +510,12 @@ func (g *GlobalSettings) ValidateEnv() error {
 			return fmt.Errorf("上游代理地址 %q 非法: %v", g.UpstreamProxy, err)
 		}
 	case UpstreamSystem:
+	case UpstreamPool:
+		// 代理池设计 §5.5：先兜底再校验（只认非法值，不惩罚缺省）；
+		// CRUD 独立路径合并原密钥后同样走该校验。
+		if err := g.ProxyPool.WithDefaults().Validate(); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("非法上游模式 %q", g.UpstreamMode)
 	}

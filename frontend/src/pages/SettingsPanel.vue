@@ -17,6 +17,11 @@
           <network-tab :form="form" />
         </n-tab-pane>
 
+        <!-- ============ IP 代理：动态代理池账号 / 运行状态 / 白名单（全局） ============ -->
+        <n-tab-pane name="pool" tab="上游代理">
+          <proxy-pool-tab :form="form" />
+        </n-tab-pane>
+
         <!-- ============ ADB 代理：模拟器/真机一键设置 http_proxy（全局） ============ -->
         <n-tab-pane name="adb" tab="ADB 代理">
           <adb-tab :form="form" />
@@ -63,6 +68,7 @@ import { onUnmounted, ref, watch } from 'vue'
 import { NDrawer, NDrawerContent, NTabs, NTabPane, NButton, NAlert, useMessage } from 'naive-ui'
 import GeneralTab from './settings/GeneralTab.vue'
 import NetworkTab from './settings/NetworkTab.vue'
+import ProxyPoolTab from './settings/ProxyPoolTab.vue'
 import AdbTab from './settings/AdbTab.vue'
 import AiTab from './settings/AiTab.vue'
 import DecryptTab from './settings/DecryptTab.vue'

@@ -1,15 +1,19 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"prismproxy/internal/mitm"
 	"prismproxy/internal/proxy"
+	"prismproxy/internal/proxypool"
 	"prismproxy/internal/rules"
 	"prismproxy/internal/settings"
 	"prismproxy/internal/sysproxy"
@@ -35,15 +39,23 @@ func (a *App) startProxy(addr string) error {
 	if addr == "" {
 		addr = a.gcfg.ListenAddr
 	}
-	upstreamMode, upstreamProxy := a.gcfg.UpstreamMode, a.gcfg.UpstreamProxy
+	up := upstreamDesc{Mode: a.gcfg.UpstreamMode, Manual: a.gcfg.UpstreamProxy, Pool: a.gcfg.ProxyPool}
 	a.projMu.Unlock()
-	return a.startProxySnap(addr, upstreamMode, upstreamProxy)
+	return a.startProxySnap(addr, up)
+}
+
+// upstreamDesc 上游配置快照（startProxySnap 入参；代理池设计 §8.1：改为描述结构，
+// 不再扩字符串参数）。Pool 仅 Mode==pool 时消费（WithDefaults 在 ensure 内统一做）。
+type upstreamDesc struct {
+	Mode   string
+	Manual string
+	Pool   settings.ProxyPoolSettings
 }
 
 // startProxySnap 用调用方给定的环境快照启动代理（不发布 status）。拆出独立变体是因
 // 为 SaveSettings 热重启在已持 projMu 的调用栈内启动代理——projMu 非重入锁，重取即自
 // 死锁（旧代理已停、新代理永不启动、控制 API 全线超时）；持锁方必须经本方法传入快照。
-func (a *App) startProxySnap(addr, upstreamMode, upstreamProxy string) error {
+func (a *App) startProxySnap(addr string, up upstreamDesc) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.srv != nil {
@@ -63,10 +75,23 @@ func (a *App) startProxySnap(addr, upstreamMode, upstreamProxy string) error {
 	if err != nil {
 		return fmt.Errorf("监听 %s 失败：%w（端口可能被占用，可在「设置」中更换监听地址/端口）", addr, err)
 	}
-	srv, err := proxy.NewServerOpts(addr, a.rec, ca, &proxy.Options{
-		UpstreamProxy: resolveUpstream(upstreamMode, upstreamProxy, addr),
-		Engine:        a.eng,
-	})
+	opts := &proxy.Options{Engine: a.eng}
+	if up.Mode == settings.UpstreamPool {
+		// pool 模式：Manager 构造/复用（首提异步——Start 内部 go 补池，
+		// 本持锁路径不执行任何厂商网络 I/O，设计 §8.1 B1）
+		mgr, err := a.ensureProxyManagerLocked(up.Pool)
+		if err != nil {
+			ln.Close()
+			return err
+		}
+		a.poolCur.Store(mgr)
+		opts.UpstreamResolver = a.poolResolve
+		opts.OnBadEntry = a.poolReportBad
+		opts.RotateUpstream = a.poolRotate
+	} else {
+		opts.UpstreamProxy = resolveUpstream(up.Mode, up.Manual, addr)
+	}
+	srv, err := proxy.NewServerOpts(addr, a.rec, ca, opts)
 	if err != nil {
 		ln.Close()
 		return err
@@ -113,6 +138,12 @@ func (a *App) stopProxyWithOpt(autoClear bool) error {
 	}
 	err := a.srv.Close()
 	a.srv = nil
+	// 停代理即停池 Manager（设计 §6.1：简化起见停代理即 Stop，重新启动重新提取）；
+	// 锁内仅取出指针置空，Stop 的 cancel+wait 放锁外（守 B1：持锁路径不碰厂商 I/O 等待）。
+	poolMgr := a.poolMgr
+	a.poolMgr = nil
+	a.poolSnap = settings.ProxyPoolSettings{}
+	a.poolCur.Store(nil)
 	gen := uint64(0)
 	if autoClear {
 		// 代际自增：热重启时紧接的 start 会再自增，本批 clear 因旧代际被 worker 丢弃；
@@ -120,6 +151,9 @@ func (a *App) stopProxyWithOpt(autoClear bool) error {
 		gen = a.adbGen.Add(1)
 	}
 	a.mu.Unlock()
+	if poolMgr != nil {
+		poolMgr.Stop()
+	}
 	// 代理已停：清除 AutoSet 设备的 http_proxy，避免设备仍指向失效代理导致断网。
 	// 异步入队（goroutine 等解锁后拿快照），worker 串行执行；退出路径另在 Shutdown
 	// 中同步清除（stopProxyNoHooks 不再触发本挂钩）。
@@ -161,6 +195,87 @@ func resolveUpstream(mode, manual, selfAddr string) string {
 		return sysproxy.UpstreamFromSystem(selfAddr)
 	}
 	return ""
+}
+
+// ---------- 动态代理池装配（代理池设计 §6/§8.1） ----------
+
+// ensureProxyManagerLocked 构造/复用池 Manager（调用方持 a.mu）。
+// 配置快照未变则复用（池内 IP 不丢）；变更则新建并停旧（配置变更 rebuild，§6.1）。
+// 首提异步：Manager.Start 内部 go 补池，本路径不执行任何厂商网络 I/O（B1 铁律）。
+func (a *App) ensureProxyManagerLocked(conf settings.ProxyPoolSettings) (*proxypool.Manager, error) {
+	conf = conf.WithDefaults()
+	if a.poolMgr != nil && reflect.DeepEqual(a.poolSnap, conf) {
+		return a.poolMgr, nil
+	}
+	mgr, err := proxypool.NewManager(conf)
+	if err != nil {
+		return nil, err
+	}
+	mgr.SetOnStatusChange(func(st proxypool.PoolStatus) {
+		// 代际过滤（审计 M3）：旧 Manager 的 dispatcher 不被 Stop 等待，其队列里滞留的
+		// 停机帧可能在新 Manager 启动后才回调；以原子 poolCur 为代际基准，非当前代一律丢弃，
+		// 杜绝 running:false 跨代伪帧覆盖新池 running:true。
+		if a.poolCur.Load() != mgr {
+			return
+		}
+		a.onPoolStatus(st)
+	})
+	// 先切换代际基准，再停旧（此刻新 srv 尚未构造、无连接会 resolve，故提前 Store 安全）：
+	// 旧 dispatcher 任何延迟帧执行时 poolCur 已指向 mgr，必被上面的过滤丢弃。
+	if a.poolMgr != nil {
+		a.poolCur.Store(mgr)
+		// Stop 仅 cancel+wait 业务协程（在途提取尊重 ctx 即时返回，无厂商 I/O 等待，B1 不破）
+		a.poolMgr.Stop()
+	}
+	mgr.Start()
+	a.poolMgr = mgr
+	a.poolSnap = conf
+	a.poolCur.Store(mgr) // 与首启路径（startProxySnap）统一：确保返回后 poolCur 指向当前代
+	return mgr, nil
+}
+
+// poolResolve 引擎 UpstreamResolver 的 App 薄适配（proxypool 不反向依赖 proxy 包，§7）。
+// 经 poolCur 原子指针间接取当前代 Manager：池配置 CRUD 由 persistPoolLocked 整代理
+// 热重启（stopProxy→startProxySnap→ensureProxyManagerLocked 装配新代），重启后引擎
+// 自然解析到新 Manager；原子间接同时保证回调代际过滤与停机窗口的无锁读取。
+func (a *App) poolResolve(ctx context.Context) (*proxy.UpstreamEndpoint, error) {
+	mgr := a.poolCur.Load()
+	if mgr == nil {
+		return nil, errors.New("代理池未就绪")
+	}
+	ep, err := mgr.Resolver()(ctx)
+	if ep == nil || err != nil {
+		return nil, err
+	}
+	return &proxy.UpstreamEndpoint{Addr: ep.Addr, Username: ep.Username, Password: ep.Password}, nil
+}
+
+// poolReportBad 引擎坏点上报 → Manager.ReportBad（迟报由 Manager 内部按 current 过滤）
+func (a *App) poolReportBad(addr string) {
+	if mgr := a.poolCur.Load(); mgr != nil {
+		mgr.ReportBad(addr)
+	}
+}
+
+// poolRotate 引擎 407 轮换回调 → Manager.Rotate（错误静默：下次 resolve 会重走补池）
+func (a *App) poolRotate(ctx context.Context) {
+	if mgr := a.poolCur.Load(); mgr != nil {
+		_ = mgr.Rotate(ctx)
+	}
+}
+
+// onPoolStatus Manager 状态变化回调（Manager 保证锁外执行）：
+// 推 SSE proxypool 频道 + Wails proxypool:status 事件（频率为提取/轮换级，无需合帧）。
+func (a *App) onPoolStatus(st proxypool.PoolStatus) {
+	a.mu.Lock()
+	hub := a.ctlHub()
+	a.mu.Unlock()
+	if hub != nil {
+		hub.Publish("proxypool", st)
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "proxypool:status", st)
+	}
 }
 
 // rebuildEngine 按当前项目规则重编译规则引擎并热替换（Holder 原子替换）。

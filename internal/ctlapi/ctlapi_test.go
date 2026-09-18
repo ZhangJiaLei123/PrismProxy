@@ -59,6 +59,17 @@ type fakeService struct {
 	aiTestErr  error                  // AITestConnection 同步错误
 	chatReq    AIChatRequest          // 最近一次 StreamAIChat 请求
 	chatScript func(AIChatEmit) error // 自定义帧脚本；nil=默认 meta→delta→done
+
+	// 代理池桩状态（P3-6/P3-8）
+	poolErr     error          // 非 nil 时各 PoolXxx 方法统一返回（错误码映射测试用）
+	poolSaveRaw []byte         // 最近一次 PoolSaveProvider 请求体
+	poolTestRaw []byte         // 最近一次 PoolTestProvider 请求体
+	poolID      string         // 最近一次 use/delete 的 id
+	poolMode    string         // 最近一次 PoolSetMode 的 mode
+	poolOnEmpty string         // 最近一次 PoolSetOnEmpty 的策略
+	poolWlIP    string         // 最近一次白名单增删的 ip
+	poolWlAuto  bool           // 最近一次 PoolAddWhitelist 的 auto
+	poolWlYes   bool           // 最近一次 PoolAddWhitelist 的 yes
 }
 
 func (f *fakeService) Status() map[string]any {
@@ -312,6 +323,121 @@ func (f *fakeService) StreamAIChat(ctx context.Context, req AIChatRequest, emit 
 		return err
 	}
 	return emit(AIEventDone, map[string]any{"finishReason": "stop", "truncated": false})
+}
+
+// ---------- 代理池桩（P3-6/P3-8） ----------
+
+func (f *fakeService) PoolStatus() (any, error) {
+	if f.poolErr != nil {
+		return nil, f.poolErr
+	}
+	return map[string]any{"mode": "direct", "activeProvider": "", "running": false}, nil
+}
+
+func (f *fakeService) PoolVendors() any {
+	return []any{map[string]any{"id": "91http", "name": "91HTTP",
+		"supportUserPass": true, "supportWhitelist": true, "supportRegion": true}}
+}
+
+func (f *fakeService) PoolProviders() (any, error) {
+	if f.poolErr != nil {
+		return nil, f.poolErr
+	}
+	return []any{}, nil
+}
+
+func (f *fakeService) PoolSaveProvider(raw json.RawMessage) (any, error) {
+	f.mu.Lock()
+	f.poolSaveRaw = append([]byte(nil), raw...)
+	f.mu.Unlock()
+	if f.poolErr != nil {
+		return nil, f.poolErr
+	}
+	return map[string]any{"provider": map[string]any{"id": "p1"}, "restarted": false}, nil
+}
+
+func (f *fakeService) PoolDeleteProvider(id string) (any, error) {
+	f.mu.Lock()
+	f.poolID = id
+	f.mu.Unlock()
+	if f.poolErr != nil {
+		return nil, f.poolErr
+	}
+	return map[string]any{"restarted": false}, nil
+}
+
+func (f *fakeService) PoolUseProvider(id string) (any, error) {
+	f.mu.Lock()
+	f.poolID = id
+	f.mu.Unlock()
+	if f.poolErr != nil {
+		return nil, f.poolErr
+	}
+	return map[string]any{"status": map[string]any{"mode": "pool"}, "restarted": false}, nil
+}
+
+func (f *fakeService) PoolSetMode(mode string) (any, error) {
+	f.mu.Lock()
+	f.poolMode = mode
+	f.mu.Unlock()
+	if f.poolErr != nil {
+		return nil, f.poolErr
+	}
+	return map[string]any{"status": map[string]any{"mode": mode}, "restarted": false}, nil
+}
+
+func (f *fakeService) PoolSetOnEmpty(onEmpty string) (any, error) {
+	f.mu.Lock()
+	f.poolOnEmpty = onEmpty
+	f.mu.Unlock()
+	if f.poolErr != nil {
+		return nil, f.poolErr
+	}
+	return map[string]any{"status": map[string]any{"onEmpty": onEmpty}, "restarted": false}, nil
+}
+
+func (f *fakeService) PoolTestProvider(raw json.RawMessage) (any, error) {
+	f.mu.Lock()
+	f.poolTestRaw = append([]byte(nil), raw...)
+	f.mu.Unlock()
+	if f.poolErr != nil {
+		return nil, f.poolErr
+	}
+	return map[string]any{"addr": "1.2.3.4:8080", "count": 1, "withAuth": false}, nil
+}
+
+func (f *fakeService) PoolRotate() (any, error) {
+	if f.poolErr != nil {
+		return nil, f.poolErr
+	}
+	return map[string]any{"running": true}, nil
+}
+
+func (f *fakeService) PoolWhitelist() (any, error) {
+	if f.poolErr != nil {
+		return nil, f.poolErr
+	}
+	return []any{"1.2.3.4"}, nil
+}
+
+func (f *fakeService) PoolAddWhitelist(ip string, auto, yes bool) (any, error) {
+	f.mu.Lock()
+	f.poolWlIP, f.poolWlAuto, f.poolWlYes = ip, auto, yes
+	f.mu.Unlock()
+	if f.poolErr != nil {
+		return nil, f.poolErr
+	}
+	return []any{"1.2.3.4"}, nil
+}
+
+func (f *fakeService) PoolDelWhitelist(ip string) (any, error) {
+	f.mu.Lock()
+	f.poolWlIP = ip
+	f.mu.Unlock()
+	if f.poolErr != nil {
+		return nil, f.poolErr
+	}
+	return []any{}, nil
 }
 
 func startTestServer(t *testing.T, svc Service) (*Server, string, string) {

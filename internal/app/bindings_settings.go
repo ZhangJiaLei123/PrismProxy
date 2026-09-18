@@ -207,7 +207,7 @@ func (a *App) SaveSettings(nu *SettingsView) (*SaveSettingsResult, error) {
 		if err := a.stopProxy(); err != nil {
 			a.publishStatusHoldingProj()
 			warns = append(warns, fmt.Sprintf("监听/上游已保存，但停止旧代理失败: %v", err))
-		} else if err := a.startProxySnap(g.ListenAddr, g.UpstreamMode, g.UpstreamProxy); err != nil {
+		} else if err := a.startProxySnap(g.ListenAddr, upstreamDesc{Mode: g.UpstreamMode, Manual: g.UpstreamProxy, Pool: g.ProxyPool}); err != nil {
 			a.publishStatusHoldingProj()
 			warns = append(warns, fmt.Sprintf("监听/上游已保存，但代理重启失败（可在顶栏手动启动）: %v", err))
 		} else {

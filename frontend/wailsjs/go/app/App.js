@@ -178,6 +178,10 @@ export function ListProjects() {
   return window['go']['app']['App']['ListProjects']();
 }
 
+export function ListProxyVendors() {
+  return window['go']['app']['App']['ListProxyVendors']();
+}
+
 export function ListSystemProcesses() {
   return window['go']['app']['App']['ListSystemProcesses']();
 }
@@ -192,6 +196,54 @@ export function PickAdbPath() {
 
 export function ProbeURLImport(arg1) {
   return window['go']['app']['App']['ProbeURLImport'](arg1);
+}
+
+export function ProxyPoolAddWhitelist(arg1, arg2) {
+  return window['go']['app']['App']['ProxyPoolAddWhitelist'](arg1, arg2);
+}
+
+export function ProxyPoolDelWhitelist(arg1, arg2) {
+  return window['go']['app']['App']['ProxyPoolDelWhitelist'](arg1, arg2);
+}
+
+export function ProxyPoolDeleteProvider(arg1) {
+  return window['go']['app']['App']['ProxyPoolDeleteProvider'](arg1);
+}
+
+export function ProxyPoolProviders() {
+  return window['go']['app']['App']['ProxyPoolProviders']();
+}
+
+export function ProxyPoolRotate() {
+  return window['go']['app']['App']['ProxyPoolRotate']();
+}
+
+export function ProxyPoolSaveProvider(arg1) {
+  return window['go']['app']['App']['ProxyPoolSaveProvider'](arg1);
+}
+
+export function ProxyPoolSetMode(arg1) {
+  return window['go']['app']['App']['ProxyPoolSetMode'](arg1);
+}
+
+export function ProxyPoolSetOnEmpty(arg1) {
+  return window['go']['app']['App']['ProxyPoolSetOnEmpty'](arg1);
+}
+
+export function ProxyPoolStatus() {
+  return window['go']['app']['App']['ProxyPoolStatus']();
+}
+
+export function ProxyPoolTestFetch(arg1) {
+  return window['go']['app']['App']['ProxyPoolTestFetch'](arg1);
+}
+
+export function ProxyPoolUseProvider(arg1) {
+  return window['go']['app']['App']['ProxyPoolUseProvider'](arg1);
+}
+
+export function ProxyPoolWhitelist(arg1) {
+  return window['go']['app']['App']['ProxyPoolWhitelist'](arg1);
 }
 
 export function RenameProject(arg1, arg2) {

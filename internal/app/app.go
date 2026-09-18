@@ -18,6 +18,7 @@ import (
 	"prismproxy/internal/mitm"
 	"prismproxy/internal/persist"
 	"prismproxy/internal/proxy"
+	"prismproxy/internal/proxypool"
 	"prismproxy/internal/rules"
 	"prismproxy/internal/settings"
 	"prismproxy/internal/store"
@@ -51,6 +52,13 @@ type App struct {
 	noMITM   bool
 	startErr string         // 启动自动抓包失败原因（GetProxyStatus 暴露给前端，事件竞态兜底）
 	ctl      *ctlapi.Server // M8 本地控制 API（cli 子命令连接目标；GUI/headless 均启动）
+
+	// 动态代理池（代理池设计 §6/§8.1）：Manager 与代理实例同生命周期——pool 模式启动
+	// 代理时 ensureProxyManager 构造/复用，停止代理时 Stop。poolCur 原子指针是引擎
+	// resolver 的间接层：CRUD 重建 Manager 后运行中代理下一连接自动切换（热更新不重启）。
+	poolMgr  *proxypool.Manager                 // a.mu 保护
+	poolSnap settings.ProxyPoolSettings         // a.mu 保护（构造快照，配置变更则 rebuild）
+	poolCur  atomic.Pointer[proxypool.Manager] // resolver 间接层快路径（原子读）
 
 	// M7 SQLite 持久化（方案 §4.11）：pmu 保护 writer 生命周期；落盘为旁路异步队列。
 	// M9 起 writer 带所属项目 id/gen 打标（persistOwner，见 persist_wiring.go）。

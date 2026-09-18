@@ -21,6 +21,7 @@
         style="width: 190px"
       />
     </div>
+    <div v-if="form.upstreamMode === 'pool'" class="hint pool-hint">代理池账号与运行状态在「IP 代理」页签管理。</div>
     <div class="form-row">
       <span class="label">存储上限</span>
       <n-input-number v-model:value="form.maxFlows" :min="100" :max="100000" style="width: 140px">
@@ -98,6 +99,7 @@ const upstreamModes = [
   { label: '直连', value: 'direct' },
   { label: '手动代理', value: 'manual' },
   { label: '跟随系统', value: 'system' },
+  { label: '动态代理池', value: 'pool' },
 ]
 </script>
 
@@ -108,5 +110,6 @@ const upstreamModes = [
 .form-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .label { width: 56px; flex: none; opacity: 0.7; }
 .hint { opacity: 0.5; font-size: 11px; margin-top: 4px; }
+.pool-hint { margin: -2px 0 8px 64px; }
 .hint.break { word-break: break-all; }
 </style>

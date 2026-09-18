@@ -199,6 +199,7 @@ export namespace app {
 	    ProcessName: string;
 	    PID: number;
 	    ClientAddr: string;
+	    UpstreamAddr: string;
 	    StartedAt: number;
 	    Err: string;
 	    Pinned: boolean;
@@ -239,6 +240,7 @@ export namespace app {
 	        this.ProcessName = source["ProcessName"];
 	        this.PID = source["PID"];
 	        this.ClientAddr = source["ClientAddr"];
+	        this.UpstreamAddr = source["UpstreamAddr"];
 	        this.StartedAt = source["StartedAt"];
 	        this.Err = source["Err"];
 	        this.Pinned = source["Pinned"];
@@ -293,6 +295,7 @@ export namespace app {
 	    ProcessName: string;
 	    PID: number;
 	    ClientAddr: string;
+	    UpstreamAddr: string;
 	    StartedAt: number;
 	    Err: string;
 	    Pinned: boolean;
@@ -323,6 +326,7 @@ export namespace app {
 	        this.ProcessName = source["ProcessName"];
 	        this.PID = source["PID"];
 	        this.ClientAddr = source["ClientAddr"];
+	        this.UpstreamAddr = source["UpstreamAddr"];
 	        this.StartedAt = source["StartedAt"];
 	        this.Err = source["Err"];
 	        this.Pinned = source["Pinned"];
@@ -364,6 +368,167 @@ export namespace app {
 	        this.err = source["err"];
 	    }
 	}
+	export class ProviderView {
+	    id: string;
+	    name: string;
+	    vendor: string;
+	    tradeNo: string;
+	    protocol?: string;
+	    fetchNum: number;
+	    province?: string;
+	    city?: string;
+	    isp?: string;
+	    filterUsed?: boolean;
+	    authMode: string;
+	    username?: string;
+	    hasSecret: boolean;
+	    hasPassword: boolean;
+	    active: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProviderView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.vendor = source["vendor"];
+	        this.tradeNo = source["tradeNo"];
+	        this.protocol = source["protocol"];
+	        this.fetchNum = source["fetchNum"];
+	        this.province = source["province"];
+	        this.city = source["city"];
+	        this.isp = source["isp"];
+	        this.filterUsed = source["filterUsed"];
+	        this.authMode = source["authMode"];
+	        this.username = source["username"];
+	        this.hasSecret = source["hasSecret"];
+	        this.hasPassword = source["hasPassword"];
+	        this.active = source["active"];
+	    }
+	}
+	export class PoolProviderResult {
+	    provider: ProviderView;
+	    restarted: boolean;
+	    warnings?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PoolProviderResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = this.convertValues(source["provider"], ProviderView);
+	        this.restarted = source["restarted"];
+	        this.warnings = source["warnings"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PoolStatusView {
+	    mode: string;
+	    activeProvider: string;
+	    onEmpty: string;
+	    running: boolean;
+	    status?: proxypool.PoolStatus;
+	
+	    static createFrom(source: any = {}) {
+	        return new PoolStatusView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.activeProvider = source["activeProvider"];
+	        this.onEmpty = source["onEmpty"];
+	        this.running = source["running"];
+	        this.status = this.convertValues(source["status"], proxypool.PoolStatus);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PoolUseResult {
+	    status: PoolStatusView;
+	    restarted: boolean;
+	    warnings?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PoolUseResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.status = this.convertValues(source["status"], PoolStatusView);
+	        this.restarted = source["restarted"];
+	        this.warnings = source["warnings"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PoolWriteResult {
+	    restarted: boolean;
+	    warnings?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PoolWriteResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.restarted = source["restarted"];
+	        this.warnings = source["warnings"];
+	    }
+	}
+	
 	export class ProxyStatus {
 	    Running: boolean;
 	    Addr: string;
@@ -382,6 +547,26 @@ export namespace app {
 	        this.Mode = source["Mode"];
 	        this.FlowCount = source["FlowCount"];
 	        this.StartError = source["StartError"];
+	    }
+	}
+	export class ProxyTestResult {
+	    addr: string;
+	    region?: string;
+	    expireAt?: number;
+	    withAuth: boolean;
+	    count: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProxyTestResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.addr = source["addr"];
+	        this.region = source["region"];
+	        this.expireAt = source["expireAt"];
+	        this.withAuth = source["withAuth"];
+	        this.count = source["count"];
 	    }
 	}
 	export class SaveSettingsResult {
@@ -926,6 +1111,99 @@ export namespace persist {
 
 }
 
+export namespace proxypool {
+	
+	export class EndpointView {
+	    addr: string;
+	    region: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EndpointView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.addr = source["addr"];
+	        this.region = source["region"];
+	    }
+	}
+	export class PoolStatus {
+	    running: boolean;
+	    vendor: string;
+	    providerName: string;
+	    current?: EndpointView;
+	    expireAt: number;
+	    remainSec: number;
+	    poolSize: number;
+	    surplusTotal: number;
+	    lastFetchAt: number;
+	    lastError: string;
+	    onEmpty: string;
+	    fetching: boolean;
+	    degraded: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new PoolStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.running = source["running"];
+	        this.vendor = source["vendor"];
+	        this.providerName = source["providerName"];
+	        this.current = this.convertValues(source["current"], EndpointView);
+	        this.expireAt = source["expireAt"];
+	        this.remainSec = source["remainSec"];
+	        this.poolSize = source["poolSize"];
+	        this.surplusTotal = source["surplusTotal"];
+	        this.lastFetchAt = source["lastFetchAt"];
+	        this.lastError = source["lastError"];
+	        this.onEmpty = source["onEmpty"];
+	        this.fetching = source["fetching"];
+	        this.degraded = source["degraded"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class VendorMeta {
+	    id: string;
+	    name: string;
+	    supportUserPass: boolean;
+	    supportWhitelist: boolean;
+	    supportRegion: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new VendorMeta(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.supportUserPass = source["supportUserPass"];
+	        this.supportWhitelist = source["supportWhitelist"];
+	        this.supportRegion = source["supportRegion"];
+	    }
+	}
+
+}
+
 export namespace rules {
 	
 	export class DecryptRule {
@@ -1177,6 +1455,44 @@ export namespace settings {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.name = source["name"];
+	    }
+	}
+	export class ProxyProviderConf {
+	    id: string;
+	    name: string;
+	    vendor: string;
+	    tradeNo: string;
+	    secret: string;
+	    protocol?: string;
+	    fetchNum?: number;
+	    province?: string;
+	    city?: string;
+	    isp?: string;
+	    filterUsed?: boolean;
+	    authMode?: string;
+	    username?: string;
+	    password?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProxyProviderConf(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.vendor = source["vendor"];
+	        this.tradeNo = source["tradeNo"];
+	        this.secret = source["secret"];
+	        this.protocol = source["protocol"];
+	        this.fetchNum = source["fetchNum"];
+	        this.province = source["province"];
+	        this.city = source["city"];
+	        this.isp = source["isp"];
+	        this.filterUsed = source["filterUsed"];
+	        this.authMode = source["authMode"];
+	        this.username = source["username"];
+	        this.password = source["password"];
 	    }
 	}
 

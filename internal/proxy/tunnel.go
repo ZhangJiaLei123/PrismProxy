@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"bufio"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -92,10 +94,23 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	var upstream net.Conn
 	var err error
-	if s.upstream != "" {
+	// 统一上游解析（§7.3）：resolver 优先 nil 直连、err 回 502；静态 upstream 兜底
+	ep, rerr := s.resolveUpstream(r.Context())
+	switch {
+	case rerr != nil:
+		err = rerr
+	case ep != nil:
 		// 上游代理级联：向上游发 CONNECT 建隧道（方案 §4.5）
-		upstream, err = dialViaUpstream(s.upstream, target, 15*time.Second)
-	} else {
+		flow.UpstreamAddr = ep.Addr
+		upstream, err = dialViaUpstream(ep, target, 15*time.Second)
+		if err != nil && s.resolver != nil {
+			// 坏点埋点（§6.3 S1）：级联失败按当前 entry 计数；407 额外触发换 IP
+			s.reportBad(ep.Addr)
+			if errors.Is(err, errUpstreamAuth) && s.rotate != nil {
+				s.rotate(r.Context())
+			}
+		}
+	default:
 		upstream, err = net.DialTimeout("tcp", target, 15*time.Second)
 	}
 	if err != nil {
@@ -155,9 +170,13 @@ func closeWrite(c net.Conn) {
 	}
 }
 
-// dialViaUpstream 经上游 HTTP 代理对 target 发 CONNECT 建立隧道（盲透传路径的级联，方案 §4.5）
-func dialViaUpstream(proxyAddr, target string, timeout time.Duration) (net.Conn, error) {
-	c, err := net.DialTimeout("tcp", proxyAddr, timeout)
+// errUpstreamAuth 上游 407 鉴权失败：账密错误或白名单未生效（§7.3；协议错误不无限重试）
+var errUpstreamAuth = errString("上游代理要求鉴权(407)：账密错误或白名单未生效")
+
+// dialViaUpstream 经上游 HTTP 代理对 target 发 CONNECT 建立隧道（盲透传路径的级联，方案 §4.5）；
+// ep.Username 非空时预置 Proxy-Authorization: Basic（与 net/http 同口径的原始 user:pass base64）。
+func dialViaUpstream(ep *UpstreamEndpoint, target string, timeout time.Duration) (net.Conn, error) {
+	c, err := net.DialTimeout("tcp", ep.Addr, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -167,6 +186,9 @@ func dialViaUpstream(proxyAddr, target string, timeout time.Duration) (net.Conn,
 		URL:    &url.URL{Opaque: target}, // Opaque 使请求行为 "CONNECT host:port HTTP/1.1"
 		Host:   target,
 		Header: make(http.Header),
+	}
+	if ep.Username != "" {
+		req.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(ep.Username+":"+ep.Password)))
 	}
 	if err := req.Write(c); err != nil {
 		c.Close()
@@ -179,6 +201,10 @@ func dialViaUpstream(proxyAddr, target string, timeout time.Duration) (net.Conn,
 		return nil, err
 	}
 	resp.Body.Close()
+	if resp.StatusCode == http.StatusProxyAuthRequired {
+		c.Close()
+		return nil, fmt.Errorf("%w: %s", errUpstreamAuth, resp.Status)
+	}
 	if resp.StatusCode != http.StatusOK {
 		c.Close()
 		return nil, fmt.Errorf("上游代理 CONNECT %s 失败: %s", target, resp.Status)

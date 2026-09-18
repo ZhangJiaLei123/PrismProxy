@@ -23,7 +23,7 @@ import (
 const DefaultAddr = "127.0.0.1:9595"
 
 // UISettingsTabs 合法的设置面板 tab（cli ui settings 校验用）
-var UISettingsTabs = []string{"general", "network", "adb", "decrypt", "capture", "domains", "ai"}
+var UISettingsTabs = []string{"general", "network", "pool", "adb", "decrypt", "capture", "domains", "ai"}
 
 // Service 控制面服务层：接线层（main 包）实现，ctlapi 不依赖 Wails/具体业务包。
 // 返回值以可 JSON 序列化类型为主；error 非空时 HTTP 响应 4xx/5xx。
@@ -101,6 +101,21 @@ type Service interface {
 	SaveAIConfig(raw json.RawMessage) (any, error)                              // 部分更新，返回更新后掩码视图
 	AITestConnection() (any, error)                                             // 连通探测 {ok,model,latencyMs,message}
 	StreamAIChat(ctx context.Context, req AIChatRequest, emit AIChatEmit) error // SSE 编排（实现层含并发闸门）
+	// 代理池（P3-6，代理池设计 §8.4）：与 Wails 绑定（app/pool_bridge.go）同源适配；
+	// 错误经 poolErrCode 映射 400/404/409/502
+	PoolStatus() (any, error)                                 // 池状态视图（配置态+运行态）
+	PoolVendors() any                                         // 已注册厂商清单
+	PoolProviders() (any, error)                              // 账号掩码清单
+	PoolSaveProvider(raw json.RawMessage) (any, error)        // 新增（id 空）/PUT 整体替换（id 已注入，哨兵生效）
+	PoolDeleteProvider(id string) (any, error)                // 删除（当前账号→模式回退 direct）
+	PoolUseProvider(id string) (any, error)                   // 切换生效账号，返回最新状态
+	PoolSetMode(mode string) (any, error)                     // 切上游模式（direct|manual|system|pool）
+	PoolSetOnEmpty(onEmpty string) (any, error)               // 池耗尽策略（direct=本地直连 | error=断开服务）
+	PoolTestProvider(raw json.RawMessage) (any, error)        // 试提取不落盘（body 带 id 或完整 conf；缺省当前生效账号）
+	PoolRotate() (any, error)                                 // 立即换 IP，返回新状态
+	PoolWhitelist() (any, error)                              // 当前生效账号白名单
+	PoolAddWhitelist(ip string, auto, yes bool) (any, error)  // ip 空=自动本机 IP（须 auto 且 yes 确认）
+	PoolDelWhitelist(ip string) (any, error)                  // 移出白名单（ip 必填）
 }
 
 // Server 控制 API HTTP 服务（仅回环）
@@ -231,6 +246,18 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/v1/projects", s.auth(s.handleProjects))
 	mux.HandleFunc("/api/v1/ui/", s.auth(s.handleUI))
 	mux.HandleFunc("/api/v1/proxy", s.auth(s.handleProxy))
+	// 代理池（P3-6，设计 §8.4）：子路径全部显式注册（ServeMux 精确模式不匹配子路径铁律）；
+	// /providers 与 /providers/{id} 分别注册，{id} handler 内 parts 防御 404
+	mux.HandleFunc("/api/v1/proxy/pool/status", s.auth(s.handlePoolStatus))
+	mux.HandleFunc("/api/v1/proxy/pool/vendors", s.auth(s.handlePoolVendors))
+	mux.HandleFunc("/api/v1/proxy/pool/providers", s.auth(s.handlePoolProviders))
+	mux.HandleFunc("/api/v1/proxy/pool/providers/", s.auth(s.handlePoolProviderSub))
+	mux.HandleFunc("/api/v1/proxy/pool/use", s.auth(s.handlePoolUse))
+	mux.HandleFunc("/api/v1/proxy/pool/mode", s.auth(s.handlePoolMode))
+	mux.HandleFunc("/api/v1/proxy/pool/onempty", s.auth(s.handlePoolOnEmpty))
+	mux.HandleFunc("/api/v1/proxy/pool/test", s.auth(s.handlePoolTest))
+	mux.HandleFunc("/api/v1/proxy/pool/rotate", s.auth(s.handlePoolRotate))
+	mux.HandleFunc("/api/v1/proxy/pool/whitelist", s.auth(s.handlePoolWhitelist))
 	mux.HandleFunc("/api/v1/ca/install", s.auth(s.handleCA))
 	mux.HandleFunc("/api/v1/adb", s.auth(s.handleADB))
 	mux.HandleFunc("/api/v1/adb/", s.auth(s.handleADB))
@@ -278,7 +305,7 @@ func (s *Server) auth(next http.HandlerFunc, allowQuery ...bool) http.HandlerFun
 }
 
 // allowedChannels 本期支持的 SSE 频道白名单
-var allowedChannels = map[string]bool{"flows": true, "status": true}
+var allowedChannels = map[string]bool{"flows": true, "status": true, "proxypool": true}
 
 // handleEvents SSE 实时推送：GET /api/v1/events?channels=flows,status&filter=<子串>
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {

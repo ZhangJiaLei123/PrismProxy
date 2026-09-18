@@ -4,6 +4,7 @@ import {ctlapi} from '../models';
 import {app} from '../models';
 import {capture} from '../models';
 import {settings} from '../models';
+import {proxypool} from '../models';
 import {persist} from '../models';
 import {jsontext} from '../models';
 
@@ -95,6 +96,8 @@ export function ListFlows():Promise<Array<app.FlowMeta>>;
 
 export function ListProjects():Promise<Array<settings.ProjectMeta>>;
 
+export function ListProxyVendors():Promise<Array<proxypool.VendorMeta>>;
+
 export function ListSystemProcesses():Promise<Array<string>>;
 
 export function ListTags():Promise<Array<app.TagInfo>>;
@@ -102,6 +105,30 @@ export function ListTags():Promise<Array<app.TagInfo>>;
 export function PickAdbPath():Promise<string>;
 
 export function ProbeURLImport(arg1:string):Promise<app.URLImportProbe>;
+
+export function ProxyPoolAddWhitelist(arg1:string,arg2:string):Promise<Array<string>>;
+
+export function ProxyPoolDelWhitelist(arg1:string,arg2:string):Promise<Array<string>>;
+
+export function ProxyPoolDeleteProvider(arg1:string):Promise<app.PoolWriteResult>;
+
+export function ProxyPoolProviders():Promise<Array<app.ProviderView>>;
+
+export function ProxyPoolRotate():Promise<proxypool.PoolStatus>;
+
+export function ProxyPoolSaveProvider(arg1:settings.ProxyProviderConf):Promise<app.PoolProviderResult>;
+
+export function ProxyPoolSetMode(arg1:string):Promise<app.PoolUseResult>;
+
+export function ProxyPoolSetOnEmpty(arg1:string):Promise<app.PoolUseResult>;
+
+export function ProxyPoolStatus():Promise<app.PoolStatusView>;
+
+export function ProxyPoolTestFetch(arg1:settings.ProxyProviderConf):Promise<app.ProxyTestResult>;
+
+export function ProxyPoolUseProvider(arg1:string):Promise<app.PoolUseResult>;
+
+export function ProxyPoolWhitelist(arg1:string):Promise<Array<string>>;
 
 export function RenameProject(arg1:string,arg2:string):Promise<void>;
 

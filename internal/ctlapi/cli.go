@@ -131,6 +131,29 @@ func printCLIUsage(w io.Writer) {
                                          （upsert/evict/status/reset），断线自动重连
   proxy start|stop                       启动/停止代理监听（sysproxy on 会隐式启动）
   proxy reset-bypass                     清空因 TLS 握手失败降级为盲隧道的 host（证书补注入后的手动兜底）
+  proxy pool [status]                    代理池状态（模式/生效账号/当前出口/降级原因）
+  proxy pool vendors                     已注册厂商清单（id/名称/能力位）
+  proxy pool providers                   账号清单（secret/password 永不回显）
+  proxy pool add --name 名称 --vendor 厂商 [--trade-no 编号] [--fetch-num N]
+        [--province 省] [--city 市] [--isp 0|1|2|3] [--filter-used]
+        [--auth auto|userpass|whitelist] [--username U] [--password P]
+        [--secret 密钥 | --secret - | --secret-file 路径] [--use]
+                                         新增账号；--use 同时切为生效账号
+                                         （--secret 直传仅本地调试，会进进程列表/shell 历史；
+                                         --secret - 从 stdin 读取，AI/脚本推荐）
+  proxy pool update <id|名称> [同 add 的 flag]
+                                         部分更新（只改出现的 flag；secret/password 空=保持、__clear__=清空）
+  proxy pool delete <id|名称>            删除账号（生效账号被删则池自动停用回退）
+  proxy pool use <id|名称>               切换生效账号（空池代理自动回退兜底，不会断流）
+  proxy pool test [id|名称]              试拉取一次（不落盘；无参测当前生效账号）
+  proxy pool rotate                      更新提取 IP 并立即生效（备用池优先，缺货时向厂商新提取；返回新状态含 current/expireAt）
+  proxy pool mode [direct|manual|system|pool]
+                                         查/切上游模式（pool 无可用出口自动回退兜底，不会断流）
+  proxy pool onempty [direct|error]      查/切池耗尽策略：direct=本地直连（降级，走真实 IP，默认）；
+                                         error=断开服务（拒绝出站，转发/CONNECT 回 502，不暴露真实 IP）
+  proxy pool whitelist list              当前生效账号白名单（IP + 来源标注）
+  proxy pool whitelist add [ip] [--yes]  加白：带 ip 直接加；无 ip 自动取公网 IP（须 --yes 确认）
+  proxy pool whitelist delete <ip>       移出白名单（操作当前生效账号）
   ca install                             安装根证书到当前用户受信根存储（免管理员）
   adb devices                            已配置的 ADB 设备清单（名称/path/serial/autoSet）
   adb test [--adb 路径]                   测试 adb 连通性并列出已连接设备
@@ -185,7 +208,7 @@ func printCLIUsage(w io.Writer) {
   settings get                           读取全部配置（JSON）
   settings set <key> <value>             改单项配置（maxFlows/listenAddr/upstreamMode 等）
   ui clear                               清除 GUI 记录列表（headless 下仅清数据）
-  ui settings [tab]                      打开 GUI 设置面板（tab: general|network|adb|decrypt|capture|domains）
+  ui settings [tab]                      打开 GUI 设置面板（tab: general|network|pool|adb|decrypt|capture|domains|ai）
 
 全局参数:
   --pretty      人类可读缩进输出（默认单行 JSON，便于 AI/脚本解析）
@@ -519,8 +542,369 @@ func cliProxy(c *client, pos []string) (any, error) {
 	case "reset-bypass":
 		// 清空因 TLS 握手失败降级为盲隧道的 host（证书注入成功后通常已自动调用，此为手动兜底）
 		return c.post("/proxy", map[string]any{"action": "reset-bypass"})
+	case "pool":
+		return cliProxyPool(c, args[1:])
 	default:
-		return nil, fmt.Errorf("未知 proxy 子命令: %s（start|stop|reset-bypass）", action)
+		return nil, fmt.Errorf("未知 proxy 子命令: %s（start|stop|reset-bypass|pool）", action)
+	}
+}
+
+// ---------- 动态代理池（P3-7，设计 §8.3；HTTP 路由薄封装） ----------
+
+func cliProxyPool(c *client, args []string) (any, error) {
+	// `proxy pool` 与 `proxy pool status` 等价（§8.3）
+	sub := "status"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = args[0]
+		args = args[1:]
+	}
+	switch sub {
+	case "status", "":
+		return c.get("/proxy/pool/status")
+	case "vendors":
+		return c.get("/proxy/pool/vendors")
+	case "providers":
+		return c.get("/proxy/pool/providers")
+	case "add":
+		return cliPoolAdd(c, args)
+	case "update":
+		return cliPoolUpdate(c, args)
+	case "delete", "rm":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("用法: proxy pool delete <id|名称>")
+		}
+		return c.del("/proxy/pool/providers/" + urlEncode(strings.Join(args, " ")))
+	case "use":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("用法: proxy pool use <id|名称>")
+		}
+		return c.post("/proxy/pool/use", map[string]any{"id": strings.Join(args, " ")})
+	case "test":
+		// test [id|名称]：不带 id 用当前生效账号（body {}）
+		body := map[string]any{}
+		if len(args) > 0 {
+			body["id"] = strings.Join(args, " ")
+		}
+		return c.post("/proxy/pool/test", body)
+	case "rotate":
+		return c.post("/proxy/pool/rotate", nil)
+	case "mode":
+		// mode [direct|manual|system|pool]：无参查当前模式（返回池状态视图）
+		if len(args) < 1 {
+			return c.get("/proxy/pool/status")
+		}
+		m := strings.ToLower(strings.TrimSpace(args[0]))
+		switch m {
+		case "direct", "manual", "system", "pool":
+		default:
+			return nil, fmt.Errorf("非法上游模式 %q（direct|manual|system|pool）", m)
+		}
+		return c.post("/proxy/pool/mode", map[string]any{"mode": m})
+	case "onempty":
+		// onempty [direct|error]：无参查当前策略（返回池状态视图）。
+		// direct=池耗尽本地直连（降级，暴露真实 IP）；error=池耗尽断开服务（拒绝出站，回 502）
+		if len(args) < 1 {
+			return c.get("/proxy/pool/status")
+		}
+		p := strings.ToLower(strings.TrimSpace(args[0]))
+		switch p {
+		case "direct", "error":
+		default:
+			return nil, fmt.Errorf("非法池耗尽策略 %q（direct=本地直连 | error=断开服务）", p)
+		}
+		return c.post("/proxy/pool/onempty", map[string]any{"onEmpty": p})
+	case "whitelist", "wl":
+		return cliPoolWhitelist(c, args)
+	default:
+		return nil, fmt.Errorf("未知 proxy pool 子命令: %s（status|vendors|providers|add|update|delete|use|test|rotate|mode|onempty|whitelist）", sub)
+	}
+}
+
+// resolvePoolSecret 密钥入参通道（§8.3 G8）：--secret-file 读文件、--secret - 读 stdin
+// （必备通道，与 ai config set --file 同信任级）；--secret 直传仅本地调试。两者互斥。
+func resolvePoolSecret(secret, secretFile string) (string, error) {
+	if secret != "" && secretFile != "" {
+		return "", fmt.Errorf("--secret 与 --secret-file 互斥，请只选一种")
+	}
+	if secretFile != "" {
+		data, err := os.ReadFile(secretFile)
+		if err != nil {
+			return "", fmt.Errorf("读取密钥文件失败: %w", err)
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	if secret == "-" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", fmt.Errorf("从 stdin 读取密钥失败: %w", err)
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	return secret, nil
+}
+
+// checkPoolShapeFlags CLI 侧预检（isp/auth 值域；app 层仍有完整校验，此处提前报错更友好）
+func checkPoolShapeFlags(isp, auth string) error {
+	switch isp {
+	case "", "0", "1", "2", "3":
+	default:
+		return fmt.Errorf("--isp 须为 0|1|2|3（0=不筛选 1=电信 2=移动 3=联通）")
+	}
+	switch auth {
+	case "", "auto", "userpass", "whitelist":
+	default:
+		return fmt.Errorf("--auth 须为 auto|userpass|whitelist")
+	}
+	return nil
+}
+
+// cliPoolAdd 新增账号（--use 时成功后接着切为当前生效，返回最新池状态）
+func cliPoolAdd(c *client, args []string) (any, error) {
+	fs := flag.NewFlagSet("pool-add", flag.ContinueOnError)
+	name := fs.String("name", "", "账号别名（缺省=厂商-tradeNo尾4位）")
+	vendor := fs.String("vendor", "", "厂商 id（如 91http；proxy pool vendors 查看）")
+	tradeNo := fs.String("trade-no", "", "业务编号")
+	secret := fs.String("secret", "", "业务密钥（仅本地调试，会进入进程列表/shell 历史，脚本勿用；值为 - 时从 stdin 读取）")
+	secretFile := fs.String("secret-file", "", "业务密钥文件路径（推荐，脚本/AI 使用）")
+	fetchNum := fs.Int("fetch-num", 0, "单次提取数量 1-100（默认 1）")
+	province := fs.String("province", "", "省份筛选（可选）")
+	city := fs.String("city", "", "城市筛选（可选）")
+	isp := fs.String("isp", "", "运营商：0=不筛选 1=电信 2=移动 3=联通")
+	filterUsed := fs.Bool("filter-used", false, "过滤今日已提取")
+	auth := fs.String("auth", "", "鉴权方式：auto|userpass|whitelist（默认 auto）")
+	username := fs.String("username", "", "代理账密用户名（一般由厂商自动获取，手填兜底）")
+	password := fs.String("password", "", "代理账密密码（手填兜底）")
+	use := fs.Bool("use", false, "新增后同时切为当前生效账号")
+	if err := fs.Parse(reorderFlags(args)); err != nil {
+		return nil, err
+	}
+	if rem := fs.Args(); len(rem) > 0 {
+		return nil, fmt.Errorf("add 不接受位置参数: %s", strings.Join(rem, " "))
+	}
+	if err := checkPoolShapeFlags(*isp, *auth); err != nil {
+		return nil, err
+	}
+	sec, err := resolvePoolSecret(*secret, *secretFile)
+	if err != nil {
+		return nil, err
+	}
+	conf := map[string]any{
+		"name": *name, "vendor": *vendor, "tradeNo": *tradeNo, "secret": sec,
+		"province": *province, "city": *city, "isp": *isp,
+		"filterUsed": *filterUsed, "authMode": *auth,
+		"username": *username, "password": *password,
+	}
+	if *fetchNum > 0 {
+		conf["fetchNum"] = *fetchNum
+	}
+	out, err := c.post("/proxy/pool/providers", conf)
+	if err != nil {
+		return nil, err
+	}
+	if !*use {
+		return out, nil
+	}
+	// --use：从新增结果取 id 接着切生效（解析失败兜底返回 add 结果）
+	if raw, ok := out.(json.RawMessage); ok {
+		var res struct {
+			Provider struct {
+				ID string `json:"id"`
+			} `json:"provider"`
+		}
+		if json.Unmarshal(raw, &res) == nil && res.Provider.ID != "" {
+			return c.post("/proxy/pool/use", map[string]any{"id": res.Provider.ID})
+		}
+	}
+	return out, nil
+}
+
+// poolProviderView CLI 侧账号掩码视图（update 读-改-写用；secret/password 永不回传）
+type poolProviderView struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Vendor     string `json:"vendor"`
+	TradeNo    string `json:"tradeNo"`
+	Protocol   string `json:"protocol"`
+	FetchNum   int    `json:"fetchNum"`
+	Province   string `json:"province"`
+	City       string `json:"city"`
+	ISP        string `json:"isp"`
+	FilterUsed bool   `json:"filterUsed"`
+	AuthMode   string `json:"authMode"`
+	Username   string `json:"username"`
+}
+
+// resolvePoolProvider CLI 侧 id|名称寻址（与 app 层 resolveProviderIdx 同语义：
+// id 精确 > 名称唯一 > 重名报错列候选强制用 id）
+func resolvePoolProvider(list []poolProviderView, key string) (poolProviderView, error) {
+	key = strings.TrimSpace(key)
+	for _, p := range list {
+		if p.ID == key {
+			return p, nil
+		}
+	}
+	var named []poolProviderView
+	for _, p := range list {
+		if p.Name == key {
+			named = append(named, p)
+		}
+	}
+	switch len(named) {
+	case 1:
+		return named[0], nil
+	case 0:
+		return poolProviderView{}, fmt.Errorf("账号 %q 不存在", key)
+	default:
+		ids := make([]string, 0, len(named))
+		for _, p := range named {
+			ids = append(ids, p.ID)
+		}
+		return poolProviderView{}, fmt.Errorf("名称 %q 命中 %d 个账号（id: %s），请改用 id",
+			key, len(named), strings.Join(ids, ", "))
+	}
+}
+
+// cliPoolUpdate 改账号：「只改出现的 flag」部分语义 = CLI 读-改-写后 PUT 整体提交
+// （§8.4：HTTP 层无 PATCH；secret/password 未出现=空串保持哨兵，`__clear__`=清空）。
+func cliPoolUpdate(c *client, args []string) (any, error) {
+	fs := flag.NewFlagSet("pool-update", flag.ContinueOnError)
+	name := fs.String("name", "", "账号别名")
+	tradeNo := fs.String("trade-no", "", "业务编号")
+	secret := fs.String("secret", "", "业务密钥（仅本地调试；值为 - 从 stdin 读取；__clear__ 清空）")
+	secretFile := fs.String("secret-file", "", "业务密钥文件路径（推荐）")
+	fetchNum := fs.Int("fetch-num", 0, "单次提取数量 1-100")
+	province := fs.String("province", "", "省份筛选（空串=清除）")
+	city := fs.String("city", "", "城市筛选（空串=清除）")
+	isp := fs.String("isp", "", "运营商：0=不筛选 1=电信 2=移动 3=联通")
+	filterUsed := fs.Bool("filter-used", false, "过滤今日已提取：true|false")
+	auth := fs.String("auth", "", "鉴权方式：auto|userpass|whitelist")
+	username := fs.String("username", "", "代理账密用户名（空串=清除）")
+	password := fs.String("password", "", "代理账密密码（__clear__ 清空）")
+	if err := fs.Parse(reorderFlags(args)); err != nil {
+		return nil, err
+	}
+	rem := fs.Args()
+	if len(rem) < 1 {
+		return nil, fmt.Errorf("用法: proxy pool update <id|名称> [--name/--trade-no/--secret-file/...]")
+	}
+	key := strings.Join(rem, " ")
+	if err := checkPoolShapeFlags(*isp, *auth); err != nil {
+		return nil, err
+	}
+	// 只覆盖命令行实际出现的 flag
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	// 读：掩码清单按 id|名称寻址（名称重复报错列候选）
+	out, err := c.get("/proxy/pool/providers")
+	if err != nil {
+		return nil, err
+	}
+	raw, _ := out.(json.RawMessage)
+	var list []poolProviderView
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, fmt.Errorf("账号清单解析失败: %w", err)
+	}
+	old, err := resolvePoolProvider(list, key)
+	if err != nil {
+		return nil, err
+	}
+
+	// 改：现有值打底，只覆盖出现的 flag
+	conf := map[string]any{
+		"id": old.ID, "name": old.Name, "vendor": old.Vendor, "tradeNo": old.TradeNo,
+		"protocol": old.Protocol, "fetchNum": old.FetchNum,
+		"province": old.Province, "city": old.City, "isp": old.ISP,
+		"filterUsed": old.FilterUsed, "authMode": old.AuthMode, "username": old.Username,
+	}
+	if set["name"] {
+		conf["name"] = *name
+	}
+	if set["trade-no"] {
+		conf["tradeNo"] = *tradeNo
+	}
+	if set["fetch-num"] {
+		conf["fetchNum"] = *fetchNum
+	}
+	if set["province"] {
+		conf["province"] = *province
+	}
+	if set["city"] {
+		conf["city"] = *city
+	}
+	if set["isp"] {
+		conf["isp"] = *isp
+	}
+	if set["filter-used"] {
+		conf["filterUsed"] = *filterUsed
+	}
+	if set["auth"] {
+		conf["authMode"] = *auth
+	}
+	if set["username"] {
+		conf["username"] = *username
+	}
+	// 敏感字段：未出现则不放入 body（空串=保持哨兵）；出现则采用（__clear__=清空）
+	if set["secret"] || set["secret-file"] {
+		sec, err := resolvePoolSecret(*secret, *secretFile)
+		if err != nil {
+			return nil, err
+		}
+		conf["secret"] = sec
+	}
+	if set["password"] {
+		conf["password"] = *password
+	}
+
+	// 写：PUT 整体替换（路径用精确 id）
+	body, _ := json.Marshal(conf)
+	rawPut, err := c.put("/proxy/pool/providers/"+urlEncode(old.ID), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	return rawMessage(rawPut), nil
+}
+
+// cliPoolWhitelist 白名单（操作当前生效账号）：list|add [ip] [--yes]|delete <ip>
+func cliPoolWhitelist(c *client, args []string) (any, error) {
+	sub := "list"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = args[0]
+		args = args[1:]
+	}
+	switch sub {
+	case "list", "":
+		return c.get("/proxy/pool/whitelist")
+	case "add":
+		fs := flag.NewFlagSet("pool-wl-add", flag.ContinueOnError)
+		yes := fs.Bool("yes", false, "确认自动获取本机公网出口 IP 加白（ip 缺省时必填）")
+		if err := fs.Parse(reorderFlags(args)); err != nil {
+			return nil, err
+		}
+		rem := fs.Args()
+		if len(rem) > 1 {
+			return nil, fmt.Errorf("用法: proxy pool whitelist add [ip] [--yes]")
+		}
+		body := map[string]any{}
+		if len(rem) == 1 {
+			body["ip"] = rem[0] // 指定 ip 直接加
+		} else {
+			// 自动取公网 IP 属对外账号写操作，CLI 非交互不弹确认，须显式 --yes（§8.3）
+			if !*yes {
+				return nil, fmt.Errorf("自动获取本机公网 IP 加白须显式 --yes 确认；或直接指定 ip: proxy pool whitelist add <ip>")
+			}
+			body["auto"] = true
+			body["yes"] = true
+		}
+		return c.post("/proxy/pool/whitelist", body)
+	case "delete", "del", "rm":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("用法: proxy pool whitelist delete <ip>")
+		}
+		// ip 可含点号，走 query（与 review ignores 同约定，§8.4）
+		return c.del("/proxy/pool/whitelist?ip=" + url.QueryEscape(args[0]))
+	default:
+		return nil, fmt.Errorf("未知 whitelist 子命令: %s（list|add|delete）", sub)
 	}
 }
 

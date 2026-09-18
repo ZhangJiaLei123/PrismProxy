@@ -12,26 +12,27 @@ import (
 
 // FlowMeta 列表行：事件增量推送与 ListFlows 全量共用
 type FlowMeta struct {
-	ID          string
-	State       string
-	Scheme      string
-	Method      string
-	Host        string
-	Path        string
-	URL         string
-	Status      int
-	DurationMS  int64
-	BytesUp     int64
-	BytesDown   int64
-	ProcessName string
-	PID         uint32
-	ClientAddr  string
-	StartedAt   int64 // unix 毫秒
-	Err         string
-	Pinned      bool     // M5 置顶：固定顶部、不参与淘汰、Clear 保留（会话内不持久化）
-	Source      string   // capture | composer（M6 调试重发标记）| history（M7 历史库加载）
-	Historical  bool     // M7：是否为从 SQLite 历史库加载的历史流（正文惰性回查 DB）
-	Tags        []string // M12：该流所属标签名列表（会话态，由 App tagIndex COW 快照注入，不来自 flows.data）
+	ID           string
+	State        string
+	Scheme       string
+	Method       string
+	Host         string
+	Path         string
+	URL          string
+	Status       int
+	DurationMS   int64
+	BytesUp      int64
+	BytesDown    int64
+	ProcessName  string
+	PID          uint32
+	ClientAddr   string
+	UpstreamAddr string // 本次回源实际使用的上游代理入口 host:port；空=直连
+	StartedAt    int64  // unix 毫秒
+	Err          string
+	Pinned       bool     // M5 置顶：固定顶部、不参与淘汰、Clear 保留（会话内不持久化）
+	Source       string   // capture | composer（M6 调试重发标记）| history（M7 历史库加载）
+	Historical   bool     // M7：是否为从 SQLite 历史库加载的历史流（正文惰性回查 DB）
+	Tags         []string // M12：该流所属标签名列表（会话态，由 App tagIndex COW 快照注入，不来自 flows.data）
 	// AI 意图解析结果（M13 §7）：复盘链路由归档库 flow_intents 批量注入；
 	// AIIntent 空=未解析。主窗实时列表恒为空（意图仅复盘 AI 链路产生）。
 	AIIntent     string
@@ -114,18 +115,19 @@ type SettingsView struct {
 // （零锁；未命中索引视为无标签，列表热路径不查 DB，设计 §4.5）。
 func (a *App) toMeta(f *capture.Flow) FlowMeta {
 	m := FlowMeta{
-		ID:         string(f.ID),
-		State:      string(f.State),
-		Scheme:     f.Scheme,
-		Host:       f.ServerAddr,
-		BytesUp:    f.BytesUp,
-		BytesDown:  f.BytesDown,
-		ClientAddr: f.ClientAddr,
-		Err:        f.Err,
-		Pinned:     f.Pinned,
-		Source:     f.Source,
-		Historical: f.Source == capture.SourceHistory,
-		Tags:       a.tagsOf(string(f.ID)),
+		ID:           string(f.ID),
+		State:        string(f.State),
+		Scheme:       f.Scheme,
+		Host:         f.ServerAddr,
+		BytesUp:      f.BytesUp,
+		BytesDown:    f.BytesDown,
+		ClientAddr:   f.ClientAddr,
+		UpstreamAddr: f.UpstreamAddr,
+		Err:          f.Err,
+		Pinned:       f.Pinned,
+		Source:       f.Source,
+		Historical:   f.Source == capture.SourceHistory,
+		Tags:         a.tagsOf(string(f.ID)),
 	}
 	if f.Timing != nil {
 		m.StartedAt = f.Timing.Start.UnixMilli()
