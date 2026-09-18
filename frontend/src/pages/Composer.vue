@@ -85,6 +85,7 @@ import { GetFlowBody, GetFlowDetail, SendComposed } from '../../wailsjs/go/app/A
 import type { app } from '../../wailsjs/go/models'
 import { useFlowsStore } from '../stores/flows'
 import { b64ToBytes, bytesToText } from '../lib/format'
+import { expandEditableHeaders } from '../lib/composer'
 
 const store = useFlowsStore()
 const message = useMessage()
@@ -103,12 +104,6 @@ const sending = ref(false)
 const resp = ref<app.FlowDetail | null>(null)
 
 const methodOptions = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((m) => ({ label: m, value: m }))
-
-// 预填时剥离的逐跳/自动派生首部（Go 侧也会兜底剥离，前端预填先去掉避免误导）
-const HOP_HEADERS = new Set([
-  'connection', 'proxy-connection', 'proxy-authenticate', 'proxy-authorization',
-  'keep-alive', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length',
-])
 
 // 打开 Composer：从指定流预填 method/URL/headers/body（文本）
 watch(

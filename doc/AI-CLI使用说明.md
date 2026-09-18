@@ -44,6 +44,12 @@ CLI 与实例之间通过**本地回环控制 API**（默认 `127.0.0.1:9595`，
   flows watch [--filter 子串] [--status] [--format ndjson|sse]
                                          实时推送流变更/状态（SSE 长连接，持续运行）
   proxy start|stop                       启动/停止代理监听（sysproxy on 会隐式启动）
+  proxy pool status                      池状态：当前出口 current.addr、到期 expireAt/remainSec（与无参 proxy pool 等价）
+  proxy pool rotate                      更新提取 IP 并立即生效（备用池优先，缺货时向厂商新提取；返回新状态）
+  proxy pool mode [direct|manual|system|pool]
+                                         查/切上游模式（切 pool 需先配置生效账号）
+  proxy pool providers|use|add|update|delete|test|whitelist
+                                         账号管理 / 切换生效 / 试拉取 / 白名单（详见 §3.14）
   ca install                             安装根证书到当前用户受信根存储（免管理员）
   adb devices                            已配置的 ADB 设备清单（名称/path/serial/autoSet）
   adb test [--adb 路径]                   测试 adb 连通性并列出已连接设备
@@ -76,7 +82,7 @@ CLI 与实例之间通过**本地回环控制 API**（默认 `127.0.0.1:9595`，
   settings set <key> <value>             改单项配置（读-改-写，自动热应用）
   ui clear                               清除记录列表（headless 下仅清数据）
   ui settings [tab]                      打开 GUI 设置面板
-                                         （tab: general|network|adb|decrypt|capture|domains）
+                                         （tab: general|network|pool|adb|decrypt|capture|domains|ai）
 ```
 
 全局参数可放在子命令前或后：
@@ -384,6 +390,55 @@ PrismProxy.exe cli processes
 ```
 
 - 枚举当前系统运行中的进程名（去重、按名排序），用于发现 `rules ignore process <进程名>` 的候选目标——先枚举拿到准确进程名，再快捷忽略，收敛噪声流量。
+
+### 3.14 proxy pool — 动态代理池（短效 IP 出站）
+
+抓包流量可经厂商短效代理 IP 出站（上游模式 `pool`）。AI 最常用的两件事：**更新提取 IP** 与 **查询当前代理 IP / 到期时间**：
+
+```bat
+PrismProxy.exe cli proxy pool status     :: 查询当前代理 IP 与到期时间
+PrismProxy.exe cli proxy pool rotate     :: 更新提取 IP，立即生效
+```
+
+status 输出示例（`--pretty`）：
+
+```json
+{
+  "mode": "pool",
+  "activeProvider": "1789625948995-1",
+  "onEmpty": "direct",
+  "running": true,
+  "status": {
+    "running": true,
+    "vendor": "91http",
+    "providerName": "91短效测试",
+    "current": { "addr": "1.2.3.4:8899", "region": "中国 江苏 南京" },
+    "expireAt": 1789630800,
+    "remainSec": 285,
+    "poolSize": 1,
+    "surplusTotal": 9850,
+    "lastFetchAt": 1789630515,
+    "fetching": false,
+    "lastError": "",
+    "onEmpty": "direct",
+    "degraded": false
+  }
+}
+```
+
+- **当前代理 IP**：`status.current.addr`（含端口），`status.current.region` 为地区；`status.current` 为 null 表示暂无可用出口。
+- **到期时间**：`status.expireAt`（unix 秒，0=厂商未告知）与 `status.remainSec`（剩余秒数）。到期前实例会自动续期，无需 AI 干预。
+- **提取过程字段**：`status.fetching=true` 表示正在向厂商提取（status/rotate 轮询时可据此等待）；`status.lastFetchAt` 为最近一次成功提取的 unix 秒（0=从未成功）；`status.lastError` 为最近一次提取失败原因（已脱敏，不含 secret；空串=无错误）。
+- **套餐余量**：`status.surplusTotal`；**-1 表示厂商未返回余量（未知）**，并非欠费或无限量，脚本不要把 -1 当数值余量比较。
+- **更新提取 IP**：`proxy pool rotate` 丢弃当前出口并立即切换（备用池有货直接切，无货则向厂商新提取，最长等待约 30s），返回**新状态对象**（同 status 的 status 段），单轮即可拿到新 `current.addr` 与 `expireAt`。
+- **前置条件**：rotate 要求 ① 上游模式为 pool（`proxy pool mode pool` 切换，切前须有生效账号）② 代理监听运行中（`proxy start`）。否则返回 409「代理未运行或当前非代理池模式」。
+- **池耗尽策略**：`proxy pool onempty`（无参=查询，返回状态视图）查/切池空且提取失败时的兜底：
+  - `proxy pool onempty direct`：**本地直连**（默认）。池空时该连接回退本机直连，`status.degraded=true`，**流量走真实 IP**，不断流。
+  - `proxy pool onempty error`：**断开服务**。池空时拒绝出站，HTTP 转发/CONNECT 回 502，**不暴露真实 IP**；待池恢复（rotate/自动续提）后自动恢复。
+  - 切换在 pool 模式且代理运行中时热重启生效（返回 `restarted:true`，新 Manager 会重新首提取）；顶层 `onEmpty` 为配置态，代理未运行（无 `status` 段）也能回显，`status.onEmpty` 为运行态。
+- **降级判读**：`status.degraded=true` 表示池空已回退直连（池空策略 direct），**此时流量走本机真实 IP**；需要代理出站时应先 rotate 或等自动恢复，并确认 degraded 消失。策略为 error 时池空不降级而是直接失败，故不会出现 degraded。
+- **旁路注意**：AI 分析与 compose 重发为旁路出站，**不经过代理池**，pool 模式下仍使用本机 IP。
+- 账号管理（厂商凭据 tradeNo/secret 的增删改、白名单）命令全集见 `cli --help` 的 pool 段；密钥类入参推荐 `--secret -`（stdin）或 `--secret-file`，避免进进程列表。
 
 ---
 

@@ -135,6 +135,120 @@ const state = {
   aiKey: '' as string, // M13：AI API Key（内存态，刷新即重置）
 }
 
+// ---- M-P3 代理池（内存模拟；与 Go DTO json 小驼形态对齐）----
+// raw 存全量（含 secret/password 明文），view 投影时掩码为 hasSecret/hasPassword
+interface MockPoolProvider {
+  id: string
+  name: string
+  vendor: string
+  tradeNo: string
+  secret: string
+  protocol: string
+  fetchNum: number
+  province: string
+  city: string
+  isp: string
+  filterUsed: boolean
+  authMode: string
+  username: string
+  password: string
+}
+const POOL_VENDORS = [{ id: '91http', name: '91HTTP', supportUserPass: true, supportWhitelist: true, supportRegion: true }]
+const poolState = {
+  providers: [
+    {
+      id: 'mock-pool-91demo',
+      name: '91HTTP-演示',
+      vendor: '91http',
+      tradeNo: 'T20260001demo',
+      secret: 'mock-secret',
+      protocol: 'http',
+      fetchNum: 1,
+      province: '',
+      city: '',
+      isp: '',
+      filterUsed: false,
+      authMode: 'auto',
+      username: '',
+      password: '',
+    },
+  ] as MockPoolProvider[],
+  activeProvider: '',
+  mode: 'direct',
+  onEmpty: 'direct',
+  whitelist: new Map<string, string[]>([['mock-pool-91demo', ['203.0.113.8']]]),
+  current: { addr: '203.0.113.10:8899', region: '中国 江苏 南京' },
+  rotateSeq: 0,
+}
+
+function poolProviderView(c: MockPoolProvider) {
+  return {
+    id: c.id,
+    name: c.name,
+    vendor: c.vendor,
+    tradeNo: c.tradeNo,
+    protocol: c.protocol,
+    fetchNum: c.fetchNum,
+    province: c.province,
+    city: c.city,
+    isp: c.isp,
+    filterUsed: c.filterUsed,
+    authMode: c.authMode,
+    username: c.username,
+    hasSecret: !!c.secret,
+    hasPassword: !!c.password,
+    active: c.id === poolState.activeProvider,
+  }
+}
+
+// id 精确 → 名称唯一；与 Go resolveProviderIdx 寻址语义一致（重名报错提示用 id）
+function poolResolve(idOrName: string): MockPoolProvider {
+  const key = (idOrName || '').trim()
+  const byID = poolState.providers.find((p) => p.id === key)
+  if (byID) return byID
+  const byName = poolState.providers.filter((p) => p.name === key)
+  if (byName.length === 1) return byName[0]
+  if (byName.length > 1) throw new Error('存在同名账号，请改用 id：' + byName.map((p) => p.id).join('、'))
+  throw new Error('代理账号不存在：' + key)
+}
+
+// PoolStatus（proxypool.PoolStatus json 形态）：非 pool 模式/未运行时给空态
+function poolStatus(): any {
+  const running = state.proxyRunning && poolState.mode === 'pool'
+  const active = poolState.providers.find((p) => p.id === poolState.activeProvider)
+  const nowSec = Math.floor(now() / 1000)
+  return {
+    running,
+    vendor: active?.vendor ?? '',
+    providerName: active?.name ?? '',
+    current: running ? { ...poolState.current } : null,
+    expireAt: running ? nowSec + 295 : 0,
+    remainSec: running ? 295 : 0,
+    poolSize: running ? 3 : 0,
+    surplusTotal: running ? 128 : -1,
+    lastFetchAt: running ? nowSec - 60 : 0,
+    lastError: '',
+    onEmpty: poolState.onEmpty,
+    fetching: false,
+    degraded: false,
+  }
+}
+
+function poolStatusView(): any {
+  const running = state.proxyRunning && poolState.mode === 'pool'
+  return {
+    mode: poolState.mode,
+    activeProvider: poolState.activeProvider,
+    onEmpty: poolState.onEmpty,
+    running: state.proxyRunning,
+    status: running ? poolStatus() : null,
+  }
+}
+
+function emitPoolStatus() {
+  later(() => emit('proxypool:status', poolStatus()))
+}
+
 function currentProject() {
   return state.projects.find((p) => p.id === state.currentProjectId) ?? null
 }
@@ -414,6 +528,151 @@ const handlers: Record<string, (...args: any[]) => any> = {
   },
   InstallRootCA: async () => {
     await delay(300)
+  },
+
+  // --- 代理池（P3；与 pool_bridge.go 的 12 个 Wails 绑定对齐） ---
+  ListProxyVendors: async () => POOL_VENDORS.map((v) => ({ ...v })),
+  ProxyPoolProviders: async () => poolState.providers.map(poolProviderView),
+  // 新增（id 空）/更新整体替换；secret/password 哨兵：空串=保持、__clear__=清空；name 空=保持
+  ProxyPoolSaveProvider: async (conf: any) => {
+    if (!conf?.vendor || !POOL_VENDORS.some((v) => v.id === conf.vendor)) throw new Error('未注册的厂商：' + (conf?.vendor ?? ''))
+    if (conf.fetchNum != null && (conf.fetchNum < 1 || conf.fetchNum > 100)) throw new Error('fetchNum 需在 1-100 之间')
+    if (conf.authMode && !['auto', 'userpass', 'whitelist'].includes(conf.authMode)) throw new Error('authMode 非法：' + conf.authMode)
+    let saved: MockPoolProvider
+    if (!conf.id) {
+      saved = {
+        id: nextID(),
+        name: conf.name || `${conf.vendor}-尾${(conf.tradeNo || 'demo').slice(-4)}`,
+        vendor: conf.vendor,
+        tradeNo: conf.tradeNo ?? '',
+        secret: conf.secret ?? '',
+        protocol: conf.protocol || 'http',
+        fetchNum: conf.fetchNum || 1,
+        province: conf.province ?? '',
+        city: conf.city ?? '',
+        isp: conf.isp ?? '',
+        filterUsed: !!conf.filterUsed,
+        authMode: conf.authMode || 'auto',
+        username: conf.username ?? '',
+        password: conf.password ?? '',
+      }
+      poolState.providers.push(saved)
+    } else {
+      const cur = poolResolve(conf.id)
+      const keepOr = (v: any, old: string) => (v === '' || v == null ? old : v === '__clear__' ? '' : String(v))
+      saved = {
+        ...cur,
+        name: conf.name || cur.name,
+        vendor: conf.vendor,
+        tradeNo: conf.tradeNo ?? cur.tradeNo,
+        secret: keepOr(conf.secret, cur.secret),
+        protocol: conf.protocol || cur.protocol,
+        fetchNum: conf.fetchNum || cur.fetchNum,
+        province: conf.province ?? cur.province,
+        city: conf.city ?? cur.city,
+        isp: conf.isp ?? cur.isp,
+        filterUsed: !!conf.filterUsed,
+        authMode: conf.authMode || cur.authMode,
+        username: conf.username ?? cur.username,
+        password: keepOr(conf.password, cur.password),
+      }
+      Object.assign(cur, saved)
+    }
+    // 改动生效账号且 pool 模式中 → 模拟热重启
+    const restarted = saved.id === poolState.activeProvider && poolState.mode === 'pool' && state.proxyRunning
+    if (restarted) emitPoolStatus()
+    return { provider: poolProviderView(saved), restarted, warnings: [] }
+  },
+  // 删当前生效账号 → ActiveProvider 清空 + 模式回退 direct（对齐 Go 语义）
+  ProxyPoolDeleteProvider: async (idOrName: string) => {
+    const cur = poolResolve(idOrName)
+    const wasActive = cur.id === poolState.activeProvider
+    poolState.providers = poolState.providers.filter((p) => p.id !== cur.id)
+    poolState.whitelist.delete(cur.id)
+    let modeChanged = false
+    if (wasActive) {
+      poolState.activeProvider = ''
+      if (poolState.mode === 'pool') {
+        poolState.mode = 'direct'
+        modeChanged = true
+      }
+    }
+    const restarted = (wasActive || modeChanged) && state.proxyRunning
+    if (restarted) emitPoolStatus()
+    return { restarted, warnings: [] }
+  },
+  ProxyPoolUseProvider: async (idOrName: string) => {
+    const cur = poolResolve(idOrName)
+    if (!cur.tradeNo || !cur.secret) throw new Error('生效账号缺少 tradeNo/secret，请先完善凭据')
+    poolState.activeProvider = cur.id
+    const restarted = poolState.mode === 'pool' && state.proxyRunning
+    if (restarted) emitPoolStatus()
+    return { status: poolStatusView(), restarted, warnings: [] }
+  },
+  ProxyPoolSetMode: async (mode: string) => {
+    if (!['direct', 'manual', 'system', 'pool'].includes(mode)) throw new Error('非法上游模式：' + mode)
+    if (mode === 'pool') {
+      if (!poolState.activeProvider) throw new Error('未选择生效代理账号，无法切换代理池模式')
+      const cur = poolState.providers.find((p) => p.id === poolState.activeProvider)
+      if (!cur?.tradeNo || !cur?.secret) throw new Error('生效账号缺少 tradeNo/secret，请先完善凭据')
+    }
+    const changed = poolState.mode !== mode
+    poolState.mode = mode
+    const restarted = changed && state.proxyRunning
+    if (restarted) emitPoolStatus()
+    return { status: poolStatusView(), restarted, warnings: [] }
+  },
+  ProxyPoolSetOnEmpty: async (onEmpty: string) => {
+    if (!['direct', 'error'].includes(onEmpty)) throw new Error('非法池耗尽策略：' + onEmpty)
+    const changed = poolState.onEmpty !== onEmpty
+    poolState.onEmpty = onEmpty
+    const restarted = changed && poolState.mode === 'pool' && state.proxyRunning
+    if (restarted) emitPoolStatus()
+    return { status: poolStatusView(), restarted, warnings: [] }
+  },
+  // 不保存的提取测试：tradeNo 含 error 模拟厂商失败
+  ProxyPoolTestFetch: async (conf: any) => {
+    await delay(400)
+    if (!conf?.tradeNo || !(conf.secret || poolState.providers.find((p) => p.id === conf.id)?.secret)) {
+      throw new Error('厂商返回错误：tradeNo/secret 无效（Mock）')
+    }
+    if (String(conf.tradeNo).includes('error')) throw new Error('厂商接口请求失败：HTTP 500（Mock）')
+    return {
+      addr: '203.0.113.10:8899',
+      region: '中国 江苏 南京',
+      expireAt: Math.floor((now() + 300_000) / 1000),
+      withAuth: (conf.authMode || 'auto') !== 'whitelist',
+      count: conf.fetchNum || 1,
+    }
+  },
+  ProxyPoolStatus: async () => poolStatusView(),
+  ProxyPoolRotate: async () => {
+    if (!(state.proxyRunning && poolState.mode === 'pool')) throw new Error('代理未运行或当前非代理池模式')
+    poolState.rotateSeq += 1
+    poolState.current = { addr: `203.0.113.${10 + (poolState.rotateSeq % 20)}:8899`, region: '中国 江苏 南京' }
+    emitPoolStatus()
+    return poolStatus()
+  },
+  ProxyPoolWhitelist: async (idOrName: string) => {
+    const cur = poolResolve(idOrName)
+    return [...(poolState.whitelist.get(cur.id) ?? [])]
+  },
+  // ip 空 = 自动添加本机出口 IP（Mock 固定 203.0.113.8）
+  ProxyPoolAddWhitelist: async (idOrName: string, ip: string) => {
+    const cur = poolResolve(idOrName)
+    const v = (ip || '').trim() || '203.0.113.8'
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(v)) throw new Error('非法 IP：' + v)
+    const list = poolState.whitelist.get(cur.id) ?? []
+    if (!list.includes(v)) list.push(v)
+    poolState.whitelist.set(cur.id, list)
+    return [...list]
+  },
+  ProxyPoolDelWhitelist: async (idOrName: string, ip: string) => {
+    const cur = poolResolve(idOrName)
+    if (!(ip || '').trim()) throw new Error('请指定要删除的 IP')
+    const list = (poolState.whitelist.get(cur.id) ?? []).filter((x) => x !== ip.trim())
+    poolState.whitelist.set(cur.id, list)
+    return [...list]
   },
 
   // --- 设置 ---

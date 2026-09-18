@@ -154,6 +154,10 @@
       即使开启，URL、参数名与部分正文仍会发送到所选服务商。
     </div>
   </section>
+
+  <div class="hint sub" style="margin-top: 12px">
+    AI 分析与 Composer 重发为旁路出站：不经过代理池，pool 模式下仍使用本机真实 IP。
+  </div>
 </template>
 
 <script setup lang="ts">
