@@ -380,16 +380,24 @@ function scrollToTop() {
 }
 // 数据行变短（清空列表 / 关键字筛选 / 忽略生效 / 切标签 reset）后，旧 scrollTop 可能已越过
 // 新内容高度，虚拟列表停在大片空白区——这里在行数变化后自动回滚到顶部。
-// 判定用「行数 × 固定行高」而非 el.scrollHeight：useVirtualList 内部是 post-flush watch，
-// nextTick 时 wrapper 占位高仍是旧值（曾据此漏判，随后虚拟列表渲染 0 行卡死空白）；
-// 用行高直接换算不依赖 DOM 更新时序。正常滚动/内容变长不触发（scrollTop 不超新内容底）；
-// 翻页父级本就显式滚顶，此处条件也不会命中。
+// 判定用行数同步换算而非 el.scrollHeight：本 watcher 在 pre 阶段跑，此刻 wrapper 尚未按新行数
+// patch，读 scrollHeight 拿到的是旧占位高（曾据此漏判，且 useVirtualList 在越界区间会渲染 0 行、
+// 须靠一次真实 scroll 事件才恢复）；用固定行高直接换算不依赖 DOM 更新时序。
+// 内容真实总高 = N×H + 行下边框：.item 是 content-box 且 border-bottom:1px，但虚拟列表只渲染
+// 约「可视行数 + 2×overscan」行，边框只随渲染行数（有界、约几十 px）增加，不随 N 累积，
+// 故用渲染窗口上界作边框修正，不能写成 N×(H+1)（长列表会高估几百 px 反而永不触发）。
+// 正常滚动/内容变长不触发（scrollTop 不超新内容底）；翻页父级本就显式滚顶，条件也不会命中。
+const VIRTUAL_OVERSCAN = 15
 watch(
   () => props.rows.length,
   () => {
     const el = listBody.value
     if (!el) return
-    const maxScroll = Math.max(0, props.rows.length * props.itemHeight - el.clientHeight)
+    const n = props.rows.length
+    // 渲染窗口行数上界 = 可视行数 + 前后各 overscan（= 2×overscan），即边框 1px 累计的上限
+    const renderedCap = Math.ceil(el.clientHeight / props.itemHeight) + VIRTUAL_OVERSCAN * 2
+    const borderAllowance = Math.min(n, renderedCap)
+    const maxScroll = Math.max(0, n * props.itemHeight + borderAllowance - el.clientHeight)
     if (el.scrollTop > maxScroll + 1) scrollToTop()
   },
 )

@@ -801,7 +801,8 @@ async function loadFlows(reset = false, restoreOnError = false): Promise<boolean
     // FlowTable 内 watch 仅兜底「变短越界」，此处覆盖「重置但内容仍超过一屏」
     if (reset) {
       await nextTick()
-      tableRef.value?.scrollToTop()
+      // nextTick 期间若有更新的请求介入则放弃本次回顶，避免过期请求把新列表位置错误归零
+      if (my === flowSeq) tableRef.value?.scrollToTop()
     }
     return true
   } catch (e) {
