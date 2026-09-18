@@ -378,6 +378,21 @@ function scrollToTop() {
   if (scrollRaf) { cancelAnimationFrame(scrollRaf); scrollRaf = 0 }
   listBody.value && (listBody.value.scrollTop = 0)
 }
+// 数据行变短（清空列表 / 关键字筛选 / 忽略生效 / 切标签 reset）后，旧 scrollTop 可能已越过
+// 新内容高度，虚拟列表停在大片空白区——这里在行数变化后自动回滚到顶部。
+// 判定用「行数 × 固定行高」而非 el.scrollHeight：useVirtualList 内部是 post-flush watch，
+// nextTick 时 wrapper 占位高仍是旧值（曾据此漏判，随后虚拟列表渲染 0 行卡死空白）；
+// 用行高直接换算不依赖 DOM 更新时序。正常滚动/内容变长不触发（scrollTop 不超新内容底）；
+// 翻页父级本就显式滚顶，此处条件也不会命中。
+watch(
+  () => props.rows.length,
+  () => {
+    const el = listBody.value
+    if (!el) return
+    const maxScroll = Math.max(0, props.rows.length * props.itemHeight - el.clientHeight)
+    if (el.scrollTop > maxScroll + 1) scrollToTop()
+  },
+)
 // 外部定位（AI 意图/定位点击）：滚动虚拟列表使目标行尽量居中；id 不在当前页或容器缺失返回 false。
 // useVirtualList 的 scrollTo(index) 默认贴顶；这里按固定行高自行换算居中偏移，
 // 负值（目标在首屏内）交浏览器钳到 0。

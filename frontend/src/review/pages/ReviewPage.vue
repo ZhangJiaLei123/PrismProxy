@@ -257,7 +257,7 @@
                       type="primary"
                       ghost
                       style="margin-top: 6px"
-                      @click="scope = 'all'; onScopeChange('all')"
+                      @click="onScopeChange('all')"
                     >
                       查看全部数据（{{ totalFlows }} 条自动保存流量）
                     </n-button>
@@ -266,7 +266,7 @@
                     <div class="le-icon">📭</div>
                     <div>暂无归档数据</div>
                     <div class="le-sub">库内存在自动保存但未打标的流量，可切换「全部数据」查看</div>
-                    <n-button size="small" type="primary" ghost style="margin-top: 6px" @click="scope = 'all'; onScopeChange('all')">
+                    <n-button size="small" type="primary" ghost style="margin-top: 6px" @click="onScopeChange('all')">
                       切换到全部数据
                     </n-button>
                   </template>
@@ -796,6 +796,13 @@ async function loadFlows(reset = false, restoreOnError = false): Promise<boolean
     flows.value = resp.flows
     total.value = resp.total
     seedIntents(resp.flows) // M13 §7：回填归档库持久化意图（仅缓存缺失时写入）
+    // reset 类重拉（切标签/scope/时间窗/关键字/排序/刷新）回到第 1 页：
+    // 行渲染后滚回顶部（新结果集仍很长时越界兜底不会触发，须显式滚）；
+    // FlowTable 内 watch 仅兜底「变短越界」，此处覆盖「重置但内容仍超过一屏」
+    if (reset) {
+      await nextTick()
+      tableRef.value?.scrollToTop()
+    }
     return true
   } catch (e) {
     if (my !== flowSeq) return false // 过期错误不弹 fatal、不回滚
