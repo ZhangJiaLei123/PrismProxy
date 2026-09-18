@@ -14,9 +14,10 @@ export const useFlowsStore = defineStore('flows', {
     composerShow: false,
     composerPrefillId: '',
     // 展示过滤（方案验收 #8）：与 Go 侧捕获规则相互独立，仅影响列表显示
-    // methods/statuses 为多选数组：空数组 = 全部；选中多项时命中任一即通过
+    // methods/statuses/processes 为多选数组：空数组 = 全部；选中多项时命中任一即通过
+    // processes：进程名多选（不区分大小写精确匹配；选项来自当前列表出现过的进程）
     // keyword：列表顶部搜索框（口径对齐复盘：host/path/method 子串）；regex 为底栏正则开关
-    filter: { keyword: '', regex: false, methods: [] as string[], statuses: [] as string[] },
+    filter: { keyword: '', regex: false, methods: [] as string[], statuses: [] as string[], processes: [] as string[] },
     // 暂停列表刷新：true 时丢弃 flow:upsert/flow:evict 事件（后端抓包继续，恢复后不补发）
     paused: false,
   }),
@@ -39,9 +40,12 @@ export const useFlowsStore = defineStore('flows', {
       // 过滤空哨兵（「全部」项值为 ''，正常交互下不会进入数组，这里兜底剔除）
       const methods = f.methods.filter(Boolean)
       const statuses = f.statuses.filter(Boolean)
+      const procs = new Set(f.processes.filter(Boolean).map((p) => p.toLowerCase()))
       return s.flows.filter((m) => {
         // 多选方法：选中集合非空且当前方法不在集合内则排除
         if (methods.length && !methods.includes(m.Method)) return false
+        // 多选进程：不区分大小写精确匹配；进程未知的流（ProcessName 空）在筛选激活时排除
+        if (procs.size && !procs.has((m.ProcessName || '').toLowerCase())) return false
         if (statuses.length) {
           // 状态归类：error 流 → 'error'；正常流按百位 → 'Nxx'
           const bucket = m.State === 'error' ? 'error' : Math.floor(m.Status / 100) + 'xx'
@@ -60,6 +64,17 @@ export const useFlowsStore = defineStore('flows', {
         }
         return true
       })
+    },
+    // 进程筛选项：当前列表中出现过的进程名（不区分大小写去重、保留首次出现的原始大小写、按名称排序）
+    processNames(s): string[] {
+      const seen = new Map<string, string>()
+      for (const f of s.flows) {
+        const n = (f.ProcessName || '').trim()
+        if (!n) continue
+        const k = n.toLowerCase()
+        if (!seen.has(k)) seen.set(k, n)
+      }
+      return [...seen.values()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
     },
   },
   actions: {

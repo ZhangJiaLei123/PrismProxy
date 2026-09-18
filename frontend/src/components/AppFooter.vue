@@ -1,5 +1,5 @@
 <template>
-  <!-- 底部工具栏：方法/状态过滤（关键字搜索已上移到列表顶部工具栏） + 代理状态/快捷开关 + 设置入口 -->
+  <!-- 底部工具栏：方法/状态/进程过滤（关键字搜索已上移到列表顶部工具栏） + 代理状态/快捷开关 + 设置入口 -->
   <n-layout-footer bordered style="height: 28px; display: flex; align-items: center; padding: 0 8px; gap: 6px; font-size: 12px">
     <n-select
       :value="store.filter.methods"
@@ -24,6 +24,19 @@
       placeholder="状态"
       style="width: 104px"
       @update:value="(v: string[]) => pickFilterValues('statuses', v)"
+    />
+    <n-select
+      :value="store.filter.processes"
+      class="filter-sel"
+      size="tiny"
+      multiple
+      clearable
+      filterable
+      max-tag-count="responsive"
+      :options="procOptions"
+      placeholder="进程"
+      style="width: 140px"
+      @update:value="(v: string[]) => pickFilterValues('processes', v)"
     />
     <span v-if="filterActive" style="opacity: 0.6; white-space: nowrap">
       {{ store.filtered.length }}/{{ store.flows.length }}
@@ -230,9 +243,15 @@ const statusOptions = [
   ...['2xx', '3xx', '4xx', '5xx'].map((s) => ({ label: s, value: s })),
   { label: '错误', value: 'error' },
 ]
+// 进程选项：当前列表中出现过的进程（store.processNames），首项「全部进程」哨兵与另两个过滤一致；
+// 可输入过滤（filterable），选项随列表流量动态更新
+const procOptions = computed(() => [
+  { label: '全部进程', value: ALL_SENTINEL },
+  ...store.processNames.map((p) => ({ label: p, value: p })),
+])
 
 // 多选值处理：点「全部」→ 清空为全部；点具体项 → 去掉哨兵只留具体值；全清空 → 全部
-function pickFilterValues(kind: 'methods' | 'statuses', v: string[]) {
+function pickFilterValues(kind: 'methods' | 'statuses' | 'processes', v: string[]) {
   let next = v
   if (v.includes(ALL_SENTINEL)) {
     // 上一态已含哨兵（点的是具体项）→ 去哨兵留具体值；否则（点的是「全部」）→ 全部
@@ -241,12 +260,13 @@ function pickFilterValues(kind: 'methods' | 'statuses', v: string[]) {
   store.filter[kind] = next
 }
 
-// 仅方法/状态过滤激活时显示命中计数（关键字过滤已上移到列表工具栏，那里有自己的计数）
+// 仅方法/状态/进程过滤激活时显示命中计数（关键字过滤已上移到列表工具栏，那里有自己的计数）
 const filterActive = computed(
   () =>
     !!(
       store.filter.methods.filter((m) => m !== ALL_SENTINEL).length ||
-      store.filter.statuses.filter((s) => s !== ALL_SENTINEL).length
+      store.filter.statuses.filter((s) => s !== ALL_SENTINEL).length ||
+      store.filter.processes.filter((p) => p !== ALL_SENTINEL).length
     ),
 )
 
