@@ -3,22 +3,49 @@
     主窗抓包列表：FlowTable 的薄封装（实时 store + 客户端排序 + 置顶/快捷忽略/主窗 Composer）。
     表格本体（虚拟滚动/列布局/双击复制/右键菜单）在 components/FlowTable.vue，与复盘列表共用。
   -->
-  <flow-table
-    :rows="sortedFlows"
-    :columns="columns"
-    :sort-key="sortKey"
-    :sort-dir="sortDir"
-    layout-key="prismproxy:flowlist-col-layout-v2"
-    :default-widths="DEFAULT_WIDTHS"
-    :col-mins="COL_MINS"
-    :selected-id="store.selectedId ?? ''"
-    :actions="actions"
-    :empty-text="emptyText"
-    @select="(id) => store.select(id)"
-    @sort="toggleSort"
-    @action-error="(m) => message.error(m, { duration: 6000, closable: true })"
-    @curl-omitted="onCurlOmitted"
-  >
+  <div class="list-wrap">
+    <!-- 列表工具栏：搜索（口径与复盘页一致：域名 / 路径 / 方法）+ 正则开关 + 命中计数 -->
+    <div class="list-toolbar">
+      <n-input
+        v-model:value="store.filter.keyword"
+        size="small"
+        clearable
+        placeholder="筛选域名 / 路径 / 方法…"
+        class="kw-input"
+      >
+        <template #prefix>
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" style="opacity: 0.6">
+            <path d="M11.7 10.3l3 3-1.4 1.4-3-3a6 6 0 1 1 1.4-1.4zm-5.2.7a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9z" />
+          </svg>
+        </template>
+      </n-input>
+      <n-button
+        size="small"
+        :type="store.filter.regex ? 'primary' : 'default'"
+        :secondary="!store.filter.regex"
+        :class="{ 'regex-invalid': regexInvalid }"
+        title="正则匹配（不区分大小写；非法正则降级为子串）"
+        @click="store.filter.regex = !store.filter.regex"
+      >.*</n-button>
+      <span v-if="filterActive" class="list-count">{{ store.filtered.length }}/{{ store.flows.length }}</span>
+    </div>
+    <flow-table
+      :rows="sortedFlows"
+      :columns="columns"
+      :sort-key="sortKey"
+      :sort-dir="sortDir"
+      layout-key="prismproxy:flowlist-col-layout-v2"
+      :default-widths="DEFAULT_WIDTHS"
+      :col-mins="COL_MINS"
+      :selected-id="store.selectedId ?? ''"
+      :actions="actions"
+      :empty-text="innerEmptyText"
+      class="list-table"
+      @select="(id) => store.select(id)"
+      @sort="toggleSort"
+      @action-error="(m) => message.error(m, { duration: 6000, closable: true })"
+      @curl-omitted="onCurlOmitted"
+    >
     <!-- 域名列：置顶图标 + 历史徽标（主窗特有） -->
     <template #cell-host="{ flow: f }">
       <svg v-if="f.Pinned" class="pin-ic" viewBox="0 0 24 24" title="已置顶"><path fill="currentColor" d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"/></svg><span v-if="f.Historical" class="hist-badge" title="从本地数据库加载的历史流量">历史</span>{{ f.Host }}
@@ -30,12 +57,19 @@
         <span v-if="f.Tags.length > 2" class="tag-more">+{{ f.Tags.length - 2 }}</span>
       </template>
     </template>
-  </flow-table>
+    </flow-table>
+    <!-- 搜索无结果空态（对齐复盘页：🔍 + 关键字 + 清除按钮）；本无数据时沿用 FlowTable 内置文案 -->
+    <div v-if="!sortedFlows.length && store.flows.length && keywordTrim" class="kw-empty">
+      <div class="kw-empty-icon">🔍</div>
+      <div>没有匹配「{{ keywordTrim }}」的流量</div>
+      <n-button size="tiny" quaternary @click="store.filter.keyword = ''">清除关键字</n-button>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useMessage, NTag } from 'naive-ui'
+import { useMessage, NTag, NInput, NButton } from 'naive-ui'
 import FlowTable from '../components/FlowTable.vue'
 import type { FlowColumn } from '../components/FlowTable.vue'
 import { useFlowsStore } from '../stores/flows'
@@ -140,9 +174,29 @@ const sortedFlows = computed(() => {
   })
 })
 
-const emptyText = computed(() =>
-  store.flows.length ? '无匹配流量 —— 调整底部过滤条件' : '暂无流量 —— 将系统代理指向 9090 端口或配置应用代理后开始抓包',
+const keywordTrim = computed(() => store.filter.keyword.trim())
+
+// 过滤激活（关键字/方法/状态任一非空）时顶栏显示 命中/总数
+const filterActive = computed(
+  () => !!(keywordTrim.value || store.filter.methods.filter(Boolean).length || store.filter.statuses.filter(Boolean).length),
 )
+
+// 非法正则红色提示（匹配逻辑自动降级为子串）
+const regexInvalid = computed(() => {
+  if (!store.filter.regex || !keywordTrim.value) return false
+  try {
+    new RegExp(keywordTrim.value)
+    return false
+  } catch {
+    return true
+  }
+})
+
+// FlowTable 内置空态：仅在"非关键字无结果"时显示（关键字空态由外层 kw-empty 承担，带清除按钮）
+const innerEmptyText = computed(() => {
+  if (!store.flows.length) return '暂无流量 —— 将系统代理指向 9090 端口或配置应用代理后开始抓包'
+  return keywordTrim.value ? '' : '无匹配流量 —— 调整底栏方法 / 状态过滤条件'
+})
 
 function onCurlOmitted() {
   message.info('请求体为二进制或超过 64KB，未内联到 cURL（请手动补充）', { duration: 5000, closable: true })
@@ -179,6 +233,49 @@ const actions = {
 </script>
 
 <style scoped>
+.list-wrap {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+  /* 工具栏高度：8*2 padding + 28px(small 控件) + 1px 边框 = 45px；空态定位引用，避免魔法数 */
+  --toolbar-h: 45px;
+}
+.list-table { flex: 1; min-height: 0; }
+/* 列表工具栏：与复盘页 .list-toolbar 同款（padding 8/10、gap 10、发丝线下边框、高 45px） */
+.list-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+/* 理想 280px，左面板拖窄时可收缩（下限 140px），不与正则按钮/计数重叠 */
+.kw-input { flex: 0 1 280px; min-width: 140px; max-width: 280px; }
+.list-count { font-size: 11px; color: rgba(255, 255, 255, 0.45); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.regex-invalid { color: #e88080 !important; }
+/* 搜索无结果空态：覆盖表格体区域（顶栏 33px 之下），对齐复盘 list-empty */
+.kw-empty {
+  position: absolute;
+  /* 落在工具栏 + 28px 表头之下，避免盖住列头/排序入口 */
+  top: calc(var(--toolbar-h) + 28px);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 20px;
+  text-align: center;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+}
+.kw-empty-icon { font-size: 30px; opacity: 0.7; }
+
 /* 具名插槽内容在父组件渲染，FlowTable 的 scoped 样式命中不了，这里仅放插槽内元素样式 */
 .pin-ic { width: 11px; height: 11px; margin-right: 3px; vertical-align: -1px; color: #e5c07b; flex: none; }
 .hist-badge { flex: none; margin-right: 4px; padding: 0 4px; border-radius: 3px; font-size: 10px; line-height: 16px; color: #56b6c2; background: rgba(86, 182, 194, 0.14); }

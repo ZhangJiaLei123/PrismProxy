@@ -15,6 +15,7 @@ export const useFlowsStore = defineStore('flows', {
     composerPrefillId: '',
     // 展示过滤（方案验收 #8）：与 Go 侧捕获规则相互独立，仅影响列表显示
     // methods/statuses 为多选数组：空数组 = 全部；选中多项时命中任一即通过
+    // keyword：列表顶部搜索框（口径对齐复盘：host/path/method 子串）；regex 为底栏正则开关
     filter: { keyword: '', regex: false, methods: [] as string[], statuses: [] as string[] },
     // 暂停列表刷新：true 时丢弃 flow:upsert/flow:evict 事件（后端抓包继续，恢复后不补发）
     paused: false,
@@ -47,7 +48,8 @@ export const useFlowsStore = defineStore('flows', {
           if (!statuses.includes(bucket)) return false
         }
         if (kw) {
-          const hay = m.Host + ' ' + m.URL
+          // 关键字口径对齐复盘：method / host / path 三列子串（OR，不区分大小写）
+          const hay = m.Method + ' ' + m.Host + ' ' + (m.Path || m.URL)
           if (re ? !re.test(hay) : !hay.toLowerCase().includes(kw)) return false
         }
         return true
