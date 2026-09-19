@@ -21,8 +21,12 @@ var assets embed.FS
 func main() {
 	// M8：cli 子命令模式——控制运行中的实例（不启动 GUI/代理），须在 flag.Parse 前拦截
 	if len(os.Args) >= 2 && os.Args[1] == "cli" {
+		attachParentConsole() // windowsgui exe 从 cmd 直接启动时无 std 句柄，先接回父控制台
 		os.Exit(ctlapi.RunCLI(settings.DefaultConfigDir(), os.Args[2:]))
 	}
+	// prism-cli.exe（-tags prismcli 的 console 构建）到此说明没带 CLI 参数，拦截并引导；
+	// 正常 GUI 构建下是空操作
+	guardNonCLILaunch()
 
 	headless := flag.Bool("headless", false, "run as CLI proxy (no UI)")
 	addr := flag.String("addr", "", "listen address (empty = use saved settings)")
