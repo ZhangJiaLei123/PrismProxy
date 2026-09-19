@@ -34,7 +34,7 @@ type Service interface {
 	GetFlow(id string) (any, error)
 	GetFlowBody(id, which string) (any, error)
 	ClearFlows() int // 返回清除条数（置顶保留）
-	// 规则（过滤规则组 / 解密规则）；project 空=当前项目，否则按 id|名称解析（设计 §6.3）
+	// 规则（过滤规则组 / 解密规则）；project 必填，按 id|名称解析（设计 §6.3）
 	ListRules(project string) (any, error)
 	RuleIgnore(project, target, value string) (bool, error) // target=host|path|process；added=false 表示幂等已存在
 	RuleGroupSetEnabled(project, id string, enabled bool) error
@@ -43,13 +43,12 @@ type Service interface {
 	SysProxy(action string) (string, error) // action=on|off|status → 返回 state
 	GetSettings(project string) (any, error)
 	SaveSettings(project string, raw json.RawMessage) (warnings []string, err error)
-	// 项目（M9，设计 §6.3）
+	// 项目（M9，设计 §6.3；doc/CLI项目操作显式化设计.md）
+	// SwitchProject/CloseProject 已移除：CLI/HTTP 不再变更全局当前项目（切换/关闭仅 GUI）。
 	ListProjects() any
-	SwitchProject(idOrName string) (any, error)
-	CreateProject(name, from string) (any, error) // from 非空=从该项目复制规则+域名组
+	CreateProject(name, from string) (any, error) // 新建项目（不切换）；from 非空=从该项目复制规则+域名组
 	RenameProject(idOrName, name string) (any, error)
-	DeleteProject(idOrName string) error
-	CloseProject() error // M11：关闭当前项目进入无打开项目态（欢迎页）
+	DeleteProject(idOrName string) error // 拒绝删除当前项目（删当前会触发隐藏切换）
 	// UI 控制（第二步）：仅 GUI 模式真正生效
 	UIClear() (cleared int, ui bool)
 	UISettings(tab string) (ui bool)
@@ -69,7 +68,7 @@ type Service interface {
 	AdbInstallSystemCert(adbPath, serial string) (string, error)
 	// AdbSystemCertStatus 返回 installed|missing（只读探测，不产生 adb root 副作用）。
 	AdbSystemCertStatus(adbPath, serial string) (string, error)
-	// 域名组（M10 补面）；project 空=当前项目，非当前项目写文件不热切换
+	// 域名组（M10 补面）；project 必填，非当前项目写文件不热切换
 	ListDomainGroups(project string) (any, error)
 	GetDomainGroup(project, id string) (any, error) // 返回 {id,text}
 	SaveDomainGroup(project, id, content string) (any, error)
@@ -860,8 +859,22 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	http.FileServer(http.FS(s.staticFS)).ServeHTTP(w, r)
 }
 
+// requireProject 读取并校验 query 中的 project 参数（doc/CLI项目操作显式化设计.md）。
+// 缺失时向 w 写出 400 错误响应并返回 ("", false)；调用方在 false 时须立即 return。
+func (s *Server) requireProject(w http.ResponseWriter, r *http.Request) (string, bool) {
+	project := strings.TrimSpace(r.URL.Query().Get("project"))
+	if project == "" {
+		writeErr(w, http.StatusBadRequest, "缺少 project 参数（目标项目 id|名称；CLI/HTTP 不再默认作用于当前项目，可先 project list 查看可用项目）")
+		return "", false
+	}
+	return project, true
+}
+
 func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
-	project := r.URL.Query().Get("project")
+	project, ok := s.requireProject(w, r)
+	if !ok {
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		v, err := s.svc.ListRules(project)
@@ -907,7 +920,10 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRulesSub(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/rules/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
-	project := r.URL.Query().Get("project")
+	project, ok := s.requireProject(w, r)
+	if !ok {
+		return
+	}
 
 	// /rules/export?embed=1  → GET，返回规则 JSON 文件原文（供 CLI 重定向保存）
 	if len(parts) == 1 && parts[0] == "export" {
@@ -1004,7 +1020,10 @@ func (s *Server) handleSysProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
-	project := r.URL.Query().Get("project")
+	project, ok := s.requireProject(w, r)
+	if !ok {
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		v, err := s.svc.GetSettings(project)
@@ -1030,15 +1049,16 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleProjects 项目 CRUD（M9，设计 §6.3）：GET 列表；POST action=switch|create|rename|delete
+// handleProjects 项目 CRUD（M9，设计 §6.3；doc/CLI项目操作显式化设计.md）：
+// GET 列表；POST action=create|rename|delete。switch/close 已移除（切换/关闭仅 GUI）。
 func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, s.svc.ListProjects())
 	case http.MethodPost:
 		var req struct {
-			Action string `json:"action"` // switch | create | rename | delete
-			ID     string `json:"id"`     // switch/rename/delete 目标（id|名称）
+			Action string `json:"action"` // create | rename | delete
+			ID     string `json:"id"`     // rename/delete 目标（id|名称）
 			Name   string `json:"name"`   // create/rename 名称
 			From   string `json:"from"`   // create 复制源（id|名称，可空）
 		}
@@ -1047,13 +1067,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch req.Action {
-		case "switch":
-			v, err := s.svc.SwitchProject(req.ID)
-			if err != nil {
-				writeErr(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "current": v})
+		case "switch", "close":
+			writeErr(w, http.StatusBadRequest, "CLI/HTTP 已移除 project "+req.Action+"：切换/关闭项目请在 GUI 顶栏操作；规则与配置操作请显式携带 project 参数指定目标项目")
 		case "create":
 			v, err := s.svc.CreateProject(req.Name, req.From)
 			if err != nil {
@@ -1074,14 +1089,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-		case "close":
-			if err := s.svc.CloseProject(); err != nil {
-				writeErr(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		default:
-			writeErr(w, http.StatusBadRequest, "action 须为 switch|create|rename|delete|close")
+			writeErr(w, http.StatusBadRequest, "action 须为 create|rename|delete（switch/close 已移除，切换/关闭项目请在 GUI 操作）")
 		}
 	default:
 		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET/POST")
@@ -1227,7 +1236,10 @@ func (s *Server) handleADB(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/domains")
 	id := strings.Trim(rest, "/")
-	project := r.URL.Query().Get("project")
+	project, ok := s.requireProject(w, r)
+	if !ok {
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:

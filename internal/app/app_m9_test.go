@@ -256,10 +256,11 @@ func TestNoProjectStateGuards(t *testing.T) {
 	}
 }
 
-// TestCtlSaveSettingsNoProjectEnvOnly M11 审计回归：CLI/HTTP 桥接在无项目态
-// 保存环境字段（端口/上游等）应放行走标准路径（环境热应用照常），不得被
-// resolveProjectIDLocked 的「尚未打开任何项目」提前拦截；显式指定不存在项目仍报错。
-func TestCtlSaveSettingsNoProjectEnvOnly(t *testing.T) {
+// TestCtlSaveSettingsNoProject 项目操作显式化回归（doc/CLI项目操作显式化设计.md）：
+// M11「无项目态免 project 保存环境字段」放行分支已随服务端 requireProject 必填校验移除
+// （CLI/HTTP 路径 project="" 在 HTTP 层即被 400 拦截，不再到达 bridge）；bridge 侧
+// project="" 在无项目态仍按「尚未打开任何项目」报错，显式指定不存在的项目同样报错。
+func TestCtlSaveSettingsNoProject(t *testing.T) {
 	a := newTestApp(t)
 	a.gcfg.Projects = nil
 	a.gcfg.CurrentProject = ""
@@ -269,18 +270,137 @@ func TestCtlSaveSettingsNoProjectEnvOnly(t *testing.T) {
 	a.eng.Set(nil)
 	svc := newCtlService(a)
 
-	// 无项目态 + 不指定目标项目：环境字段保存成功（视图含完整环境字段，与 CLI settings set 合并后形态一致）
-	_, err := svc.SaveSettings("", []byte(`{"listenAddr":"127.0.0.1:9090","upstreamMode":"direct","maxFlows":1234}`))
-	if err != nil {
-		t.Fatalf("无项目态保存环境字段应放行: %v", err)
-	}
-	if a.gcfg.MaxFlows != 1234 {
-		t.Fatalf("环境字段应落盘全局: MaxFlows=%d", a.gcfg.MaxFlows)
+	// 无项目态 + project=""：报错（M11 放行分支已移除，仅剩防御意义）
+	if _, err := svc.SaveSettings("", []byte(`{"listenAddr":"127.0.0.1:9090","upstreamMode":"direct","maxFlows":1234}`)); err == nil {
+		t.Fatal("无项目态 project=\"\" 应报错（M11 放行分支已移除）")
 	}
 
 	// 无项目态 + 显式指定不存在的项目：仍报错
 	if _, err := svc.SaveSettings("ghost", []byte(`{"listenAddr":"127.0.0.1:9090","maxFlows":1}`)); err == nil {
 		t.Fatal("显式指定不存在项目应报错")
+	}
+}
+
+// TestCtlDeleteProjectRejectsBecameCurrent 项目操作显式化回归（doc/CLI项目操作显式化设计.md §5.3）：
+// 桥接删除须拿锁后「现判现删」——resolve、拒删当前项目校验与删除在同一 projMu 临界区
+// 内完成；锁被 GUI 持有期间目标被切为当前项目时，CLI 获锁后必须拒绝而非按旧快照执行删除。
+func TestCtlDeleteProjectRejectsBecameCurrent(t *testing.T) {
+	a := newTestApp(t)
+	a.gcfg.Projects = []settings.ProjectMeta{
+		{ID: "default", Name: "A"},
+		{ID: "pb", Name: "B"},
+	}
+	a.gcfg.CurrentProject = "default"
+	pb := settings.DefaultProjectConfig("pb", "B")
+	if err := settings.SaveProjectConfig(a.cfgDir, pb); err != nil {
+		t.Fatal(err)
+	}
+	svc := newCtlService(a)
+
+	// 非当前项目：可删，且不动当前项目、不推进代际（无隐藏切换）
+	genBefore := a.projGen.Load()
+	if err := svc.DeleteProject("pb"); err != nil {
+		t.Fatalf("非当前项目应可删: %v", err)
+	}
+	if a.projGen.Load() != genBefore {
+		t.Fatal("删非当前项目不得推进代际")
+	}
+	if _, err := os.Stat(settings.ProjectDir(a.cfgDir, "pb")); !os.IsNotExist(err) {
+		t.Fatalf("删除后目录应清除: err=%v", err)
+	}
+
+	// 重建 pb（清单 + 目录），占住 projMu 后再发起 CLI 删除：
+	// CLI 阻塞在锁上期间，把 pb 切为当前项目（模拟 GUI 抢先切换）；
+	// CLI 获锁后 resolve 看到目标已是当前项目 → 必须拒绝
+	pb2 := settings.DefaultProjectConfig("pb", "B")
+	if err := settings.SaveProjectConfig(a.cfgDir, pb2); err != nil {
+		t.Fatal(err)
+	}
+	a.projMu.Lock()
+	a.gcfg.Projects = append(a.gcfg.Projects, settings.ProjectMeta{ID: "pb", Name: "B"})
+	done := make(chan error, 1)
+	go func() { done <- svc.DeleteProject("pb") }()
+	a.proj = pb2
+	a.gcfg.CurrentProject = "pb"
+	a.projMu.Unlock()
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "不能通过 CLI/HTTP 删除当前项目") {
+		t.Fatalf("目标已变为当前项目时删除必须被拒绝: err=%v", err)
+	}
+	if _, err := os.Stat(settings.ProjectDir(a.cfgDir, "pb")); err != nil {
+		t.Fatalf("被拒绝的删除不应移除项目目录: err=%v", err)
+	}
+	if len(a.gcfg.Projects) != 2 {
+		t.Fatalf("被拒绝的删除不应改动清单: %#v", a.gcfg.Projects)
+	}
+}
+
+// TestCtlDeleteProjectConcurrentSwitch CLI 删除与 GUI 当前项目变更并发（TOCTOU 回归）：
+// 不变量——svc.DeleteProject 结果只能是「拒绝（目标为当前项目）」或「删除成功且
+// 不推进代际、不隐藏切换」；删非当前项目全程不得触碰 projGen 与当前项目归属。
+func TestCtlDeleteProjectConcurrentSwitch(t *testing.T) {
+	a := newTestApp(t)
+	a.gcfg.Projects = []settings.ProjectMeta{
+		{ID: "default", Name: "A"},
+		{ID: "pb", Name: "B"},
+	}
+	a.gcfg.CurrentProject = "default"
+	projDefault, projPb := a.proj, settings.DefaultProjectConfig("pb", "B")
+	if err := settings.SaveProjectConfig(a.cfgDir, projPb); err != nil {
+		t.Fatal(err)
+	}
+	svc := newCtlService(a)
+
+	// 高频翻转当前项目（模拟 GUI 切换的当前项目变更；不推进代际——代际只允许删除
+	// 路径的隐藏切换触碰，从而 gen 差值可归因于删除）
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			a.projMu.Lock()
+			if a.proj != nil && a.proj.ID == "pb" {
+				a.proj, a.gcfg.CurrentProject = projDefault, "default"
+			} else {
+				a.proj, a.gcfg.CurrentProject = projPb, "pb"
+			}
+			a.projMu.Unlock()
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		// 确保目标在清单中且目录存在（上一轮可能已删）
+		a.projMu.Lock()
+		found := false
+		for _, m := range a.gcfg.Projects {
+			if m.ID == "pb" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			a.gcfg.Projects = append(a.gcfg.Projects, settings.ProjectMeta{ID: "pb", Name: "B"})
+		}
+		a.projMu.Unlock()
+		if err := settings.SaveProjectConfig(a.cfgDir, projPb); err != nil {
+			t.Fatal(err)
+		}
+
+		genBefore := a.projGen.Load()
+		err := svc.DeleteProject("pb")
+		switch {
+		case err == nil:
+			if a.projGen.Load() != genBefore {
+				t.Fatal("删非当前项目不得推进代际（出现隐藏切换，TOCTOU 回归）")
+			}
+		case strings.Contains(err.Error(), "不能通过 CLI/HTTP 删除当前项目"):
+			// 目标已是当前项目：合法拒绝
+		default:
+			t.Fatalf("第 %d 轮非法结果: err=%v", i, err)
+		}
 	}
 }
 

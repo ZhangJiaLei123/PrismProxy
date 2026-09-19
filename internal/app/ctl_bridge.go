@@ -160,35 +160,23 @@ func (s *ctlService) ListProjects() any {
 	return map[string]any{"projects": metas, "currentProject": a.gcfg.CurrentProject}
 }
 
-// SwitchProject 切换当前项目（等价 GUI 热切换；idOrName 按 §6.3 解析）
-func (s *ctlService) SwitchProject(idOrName string) (any, error) {
-	a := s.app
-	a.projMu.Lock()
-	id, err := a.resolveProjectIDLocked(idOrName)
-	a.projMu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	if err := a.SwitchProject(id); err != nil {
-		return nil, err
-	}
-	return a.GetCurrentProject()
-}
-
-// CreateProject 新建项目并切换；from 非空=从该项目（id|名称）复制规则+域名组
+// CreateProject 新建项目（不切换，doc/CLI项目操作显式化设计.md：CLI/HTTP 不再变更
+// 全局当前项目）；from 非空=从该项目（id|名称）复制规则+域名组
 func (s *ctlService) CreateProject(name, from string) (any, error) {
 	a := s.app
+	// from 解析与创建同一临界区（与 App.CreateProject 形态一致，审计修订 2026-09-19）：
+	// 消除两段加锁间隙内源项目被并发删除的竞态窗口
+	a.projMu.Lock()
+	defer a.projMu.Unlock()
 	fromID := ""
 	if strings.TrimSpace(from) != "" {
-		a.projMu.Lock()
 		id, err := a.resolveProjectIDLocked(from)
-		a.projMu.Unlock()
 		if err != nil {
 			return nil, err
 		}
 		fromID = id
 	}
-	return a.CreateProject(name, fromID)
+	return a.createProjectNoSwitch(name, fromID)
 }
 
 func (s *ctlService) RenameProject(idOrName, name string) (any, error) {
@@ -205,21 +193,24 @@ func (s *ctlService) RenameProject(idOrName, name string) (any, error) {
 	return map[string]any{"ok": true, "id": id}, nil
 }
 
+// DeleteProject 拒绝删除当前项目（删当前会触发自动切换，违反「CLI/HTTP 不变更全局
+// 当前项目」）。resolve → 校验 → 删除全程持 projMu，消除校验后、删除前 GUI 恰好
+// 切到目标项目的 TOCTOU 窗口（doc/CLI项目操作显式化设计.md §5.3）。
 func (s *ctlService) DeleteProject(idOrName string) error {
 	a := s.app
 	a.projMu.Lock()
+	defer a.projMu.Unlock()
 	id, err := a.resolveProjectIDLocked(idOrName)
-	a.projMu.Unlock()
 	if err != nil {
 		return err
 	}
-	return a.DeleteProject(id)
+	if a.proj != nil && id == a.proj.ID {
+		return fmt.Errorf("不能通过 CLI/HTTP 删除当前项目 %q（删除当前项目会触发自动切换，请在 GUI 中操作；或先在 GUI 切到其他项目）", id)
+	}
+	return a.deleteProjectLocked(id)
 }
 
-// CloseProject 关闭当前项目进入欢迎页态（无打开项目时幂等）
-func (s *ctlService) CloseProject() error { return s.app.CloseProject() }
-
-// ---------- 规则（目标项目：project 空=当前项目；非当前项目只改文件不热切换） ----------
+// ---------- 规则（目标项目必填，服务端 requireProject 校验；非当前项目只改文件不热切换） ----------
 
 func (s *ctlService) ListRules(project string) (any, error) {
 	a := s.app
@@ -378,8 +369,9 @@ func (s *ctlService) GetSettings(project string) (any, error) {
 }
 
 // SaveSettings 与 GUI 同路径（设计 §6.3）：环境字段写全局、规则字段写目标项目；
-// 入参 currentProject/projects 一律忽略（切换走 project switch）。
+// 入参 currentProject/projects 一律忽略（当前项目仅 GUI 可变更）。
 // 目标为非当前项目时：规则半边先校验落盘（不热切换），环境半边借当前项目标准路径保存。
+// project 必填（服务端 requireProject 校验后此处不再有缺省当前项目语义）。
 func (s *ctlService) SaveSettings(project string, raw json.RawMessage) ([]string, error) {
 	a := s.app
 	var nu SettingsView
@@ -392,18 +384,6 @@ func (s *ctlService) SaveSettings(project string, raw json.RawMessage) ([]string
 	id, err := a.resolveProjectIDLocked(project)
 	a.projMu.Unlock()
 	if err != nil {
-		// 无项目态且未指定目标项目：放行环境半边保存（a.SaveSettings 内部 noProject
-		// 分支只存环境字段并热应用代理/bypass/ADB，规则半边跳过）；显式指定不存在的项目仍报错
-		if project == "" && curID == "" {
-			res, serr := a.SaveSettings(&nu)
-			if serr != nil {
-				return nil, serr
-			}
-			if res == nil {
-				return nil, nil
-			}
-			return res.Warnings, nil
-		}
 		return nil, err
 	}
 	if id == "" || id == curID {

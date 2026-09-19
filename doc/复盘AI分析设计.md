@@ -27,7 +27,7 @@
 - 分析结果落库持久化（会话内查看，刷新即重算；意图标注同样只存前端会话内存 Map，不入库；见 §十一待拍板 10）；
 - mermaid 图渲染（一期 Markdown 文本，时序图用编号步骤/列表表达，见 §十一 12）；
 - 非 OpenAI 兼容协议（Anthropic / Gemini 原生协议）、多服务商多密钥管理、用量计费统计；
-- AI CLI 子命令（`cli ai ...`）（一期不做，配置可走已有 `/api/v1/settings`，见 §十一 14）。
+- AI CLI 子命令（`cli ai ...`）（一期不做，配置可走已有 `/api/v1/settings`，见 §十一 14）。**补记（2026-09-19）**：`cli ai` 已于 M13 后补实现（`ai config [get|set --file f|-]`、`ai test`、`ai chat`）；且显式化后 `/api/v1/settings` 需 `?project=` 必填、不含 apiKey——headless 配置 AI 请走 `ai config set --file <f>` 或 `POST /api/v1/ai/config`，本条与 §十一 14 的旧指引作废。
 
 ---
 
@@ -473,7 +473,7 @@ analyze(
 11. **Demo 策略**：AI 分析 demo 本地模拟可玩（建议，与 compose 禁用相反，因无外部副作用且是 UI 演示重点）。
 12. **图表**：一期 Markdown（编号步骤表达时序），不引 mermaid（建议，减依赖与渲染风险）；二期可加 mermaid + 净化白名单。
 13. **匹配 Markdown 内联跳转**：一期点 match 卡片跳转；正文 `[#n]` 内联链接二期。
-14. **AI CLI**：一期不加 `cli ai`（建议）；headless 用户直接编辑 settings.json 或经 `/api/v1/settings`；`cli ui settings ai` 随 tab 白名单自然支持（GUI 在线时）。
+14. **AI CLI**：一期不加 `cli ai`（建议）；headless 用户直接编辑 settings.json 或经 `/api/v1/settings`；`cli ui settings ai` 随 tab 白名单自然支持（GUI 在线时）。**补记（2026-09-19）**：`cli ai` 已实现（`ai config [get|set --file f|-]`/`ai test`/`ai chat`，见 internal/ctlapi/cli_ai.go）；旧指引「编辑 settings.json 或经 /api/v1/settings」**作废**——显式化后 settings 接口需 `?project=` 且 SettingsView 不含 apiKey，AI 配置正确路径是 `ai config set`（支持 `--file f` 或 stdin `-`，key 明文入参仅在 `config set`）或 `/api/v1/ai/config`（部分更新、key 哨兵语义）。
 15. **推理模型 reasoning**：协议预留 `reason` 事件但一期 UI 不分区展示（如选 deepseek-reasoner 思考内容忽略，仅出正文）。
 16. **测试连接落库**：测试始终用界面当前值、不触发保存（建议），避免「测试=改配置」误解。
 

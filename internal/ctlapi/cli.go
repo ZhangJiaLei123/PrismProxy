@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -28,15 +29,21 @@ func RunCLI(configDir string, args []string) int {
 	pretty := fs.Bool("pretty", false, "人类可读输出（默认 JSON）")
 	addrFlag := fs.String("addr", "", "控制 API 地址（默认自动发现）")
 	tokenFlag := fs.String("token", "", "控制 API token（默认自动发现）")
-	projectFlag := fs.String("project", "", "目标项目 id|名称（规则/设置类命令；默认当前项目）")
+	projectFlag := fs.String("project", "", "目标项目 id|名称（rules/settings/domains 类命令必填）")
 	projectShort := fs.String("P", "", "目标项目 id|名称（--project 简写）")
-	fs.Usage = func() { printCLIUsage(os.Stderr) }
-	// 全局 flag（--pretty/--addr/--token）可出现在子命令前或后：前置后解析；
-	// 未定义的子命令 flag（--filter 等）不在此 fs，遇首个位置参数即停止解析。
-	fs.Parse(reorderFlagsGlobal(args))
+	// 解析期不自动打 usage（--help/-h 与错误场景在下方统一决定输出目标与退出码）
+	fs.Usage = func() {}
+	parseErr := fs.Parse(reorderFlagsGlobal(args))
+	if parseErr == flag.ErrHelp {
+		// `cli --help` / `cli -h` 与 `cli help` 等价：stdout + exit 0。
+		// （惯例：帮助是正常请求不是错误；若只打 stderr，仅捕获 stdout 的调用方（AI 工具/重定向）会当成"无输出"）
+		printCLIUsage(os.Stdout)
+		return 0
+	}
 	// pos[0]=子系统名（status/flows/rules/...），各处理器内部 pos[1:] 自行剥离
 	pos := fs.Args()
-	if len(pos) == 0 {
+	if len(pos) == 0 || parseErr != nil {
+		// flag 包已向 stderr 打过具体错误行（如 --addr 缺值、未定义 flag），这里只补 usage
 		printCLIUsage(os.Stderr)
 		return 2
 	}
@@ -50,6 +57,27 @@ func RunCLI(configDir string, args []string) int {
 	if cmd == "flows" && subCmd(pos[1:]) == "watch" {
 		return runWatch(configDir, *addrFlag, *tokenFlag, pos)
 	}
+	// 项目操作显式化（doc/CLI项目操作显式化设计.md）：switch/close 已移除，前置拦截给
+	// exit 2（用法错误码）+ 引导文案；不依赖实例连接，无需 newClient
+	if cmd == "project" {
+		if sub := subCmd(pos[1:]); sub == "switch" || sub == "close" {
+			fmt.Fprintf(os.Stderr, "错误: CLI 已移除 project %s：切换/关闭项目请在 GUI 顶栏操作；CLI 的规则与配置操作请用 --project/-P 指定目标项目\n", sub)
+			return 2
+		}
+	}
+
+	// 项目操作显式化（doc/CLI项目操作显式化设计.md）：规则/设置/域名组类命令必须显式指定
+	// 目标项目，CLI 不再默认作用于"当前项目"——防止多 CLI / 多 AI 会话并发操作同一实例
+	// 时随切换漂移互相踩踏。校验只依赖 flag 局部变量，前置于 newClient：无论实例是否
+	// 在线，该用法错误一律稳定返回 exit 2 + 引导文案（审计修订，2026-09-19）。
+	target := *projectFlag
+	if target == "" {
+		target = *projectShort
+	}
+	if (cmd == "rules" || cmd == "settings" || cmd == "domains") && target == "" {
+		fmt.Fprintln(os.Stderr, "错误: rules/settings/domains 命令须用 --project/-P 显式指定目标项目（CLI 不再默认作用于当前项目，防止多会话互相干扰；project list 可查看可用项目）")
+		return 2
+	}
 
 	c, err := newClient(configDir, *addrFlag, *tokenFlag)
 	if err != nil {
@@ -57,10 +85,7 @@ func RunCLI(configDir string, args []string) int {
 		return 1
 	}
 	// 目标项目（M9，设计 §6.3）：--project 优先于 -P；仅规则/设置类命令生效
-	c.project = *projectFlag
-	if c.project == "" {
-		c.project = *projectShort
-	}
+	c.project = target
 
 	// pos[0] 是子命令名（flows/rules/...）；各处理器内部自行剥离
 	var out any
@@ -111,9 +136,13 @@ func RunCLI(configDir string, args []string) int {
 	return 0
 }
 
-// printCLIUsage 输出命令帮助
+// printCLIUsage 输出命令帮助（exe 名按实际入口显示：PrismProxy.exe / prism-cli.exe）
 func printCLIUsage(w io.Writer) {
-	fmt.Fprint(w, `PrismProxy cli — 控制运行中的 PrismProxy 实例（M8，方案 §4.12）
+	fmt.Fprint(w, strings.ReplaceAll(cliUsageText, "PrismProxy.exe", filepath.Base(os.Args[0])))
+}
+
+// cliUsageText 帮助文本；"PrismProxy.exe" 是占位符，由 printCLIUsage 按实际入口替换
+const cliUsageText = `PrismProxy cli — 控制运行中的 PrismProxy 实例（M8，方案 §4.12）
 
 用法: PrismProxy.exe cli <命令> [参数] [--pretty] [--addr 地址] [--token token] [--project 项目]
 
@@ -179,7 +208,7 @@ func printCLIUsage(w io.Writer) {
   ai chat --mode explain|intent|locate|flowmap [--flow ID | --ids a,b]
           [--question 文本] [--req-body] [--resp-body] [--raw]
                                          SSE 分析（默认打印答案文本，--raw 输出 ndjson 帧）
-  domains list                           域名组清单（--project 可指定目标项目）
+  domains list --project <id|名称>       域名组清单
   domains get <id>                       查看域名组原始文本
   domains save <id> <域名...>            新建/覆盖域名组（空格分隔，每行一个域名）
   domains import <文件路径|URL> [--id]   从本地 txt 或 http(s) URL 导入域名组
@@ -190,13 +219,12 @@ func printCLIUsage(w io.Writer) {
                                          调试重发：独立直连目标，结果作为新流入列表
                                          （--header 可重复；值可含分号如 Cookie，每个 --header 一个头）
   processes                              枚举系统运行中进程名（ignore process 候选）
-  project list                           项目列表 + 当前项目
-  project switch <id|名称>               切换当前项目（运行中热切换，规则与流量历史随之切换）
-  project create <名称> [--from id|名称] 新建项目并切换；--from 从指定项目复制规则+域名组
+  project list                           项目列表 + 当前项目（当前项目仅 GUI 可切换/关闭）
+  project create <名称> [--from id|名称] 新建项目（不自动切换，当前项目仅 GUI 可变更）；
+                                         --from 从指定项目复制规则+域名组
   project rename <id|名称> <新名称>      重命名项目（名称含空格时用 --name 指定新名）
-  project delete <id|名称>               删除项目（删当前项目后自动打开剩余首个；无剩余则进欢迎页）
-  project close                         关闭当前项目（不删除），进入欢迎页态
-  rules list                             过滤规则组 + 解密规则
+  project delete <id|名称>               删除项目（不能删当前项目；欢迎页态下可删任意项目）
+  rules list --project <id|名称>         过滤规则组 + 解密规则
   rules ignore host <域名>               快捷忽略域名（自身+全部子域）
   rules ignore path <路径>               快捷忽略路径（精确+下级路径，支持 *? 通配，自动去 query）
   rules ignore process <进程名>          快捷忽略进程
@@ -205,7 +233,7 @@ func printCLIUsage(w io.Writer) {
   sysproxy status                        系统代理状态（off|on|occupied）
   sysproxy on                            接管系统代理
   sysproxy off                           恢复系统代理
-  settings get                           读取全部配置（JSON）
+  settings get --project <id|名称>       读取指定项目全部配置（JSON）
   settings set <key> <value>             改单项配置（maxFlows/listenAddr/upstreamMode 等）
   ui clear                               清除 GUI 记录列表（headless 下仅清数据）
   ui settings [tab]                      打开 GUI 设置面板（tab: general|network|pool|adb|decrypt|capture|domains|ai）
@@ -214,19 +242,19 @@ func printCLIUsage(w io.Writer) {
   --pretty      人类可读缩进输出（默认单行 JSON，便于 AI/脚本解析）
   --addr        控制 API 地址（默认从 config/ctl-endpoint.json 自动发现）
   --token       控制 API token（默认自动发现）
-  --project, -P 目标项目 id|名称（仅规则/设置类命令生效；默认当前项目。
-                指定非当前项目时只改其配置文件，不切换当前项目、不影响运行中的代理；
-                flows/sysproxy/status/ui 命令不受此参数影响）
+  --project, -P 目标项目 id|名称。rules/settings/domains 的全部子命令**必填**——
+                CLI 不再默认作用于"当前项目"，防止多 CLI / 多 AI 会话并发操作互相踩踏
+                （project list 可查看可用项目）。指定非当前项目时只改其配置文件，不切换
+                当前项目、不影响运行中的代理；flows/sysproxy/status/ui 命令不受此参数影响
 
 示例:
   PrismProxy.exe cli status --pretty
   PrismProxy.exe cli flows list --filter baidu --limit 20
-  PrismProxy.exe cli rules ignore host api.example.com
+  PrismProxy.exe cli rules ignore host api.example.com -P 商城联调
   PrismProxy.exe cli rules list --project 商城联调
-  PrismProxy.exe cli project switch 商城联调
+  PrismProxy.exe cli project create 复测环境 --from 商城联调
   PrismProxy.exe cli sysproxy on
-`)
-}
+`
 
 // ---------- 子命令实现 ----------
 
@@ -464,9 +492,10 @@ func cliUI(c *client, pos []string) (any, error) {
 	}
 }
 
-// cliProject 项目管理（M9，设计 §6.3）：list/switch/create [--from]/rename/delete
+// cliProject 项目管理（M9，设计 §6.3；doc/CLI项目操作显式化设计.md）：
+// list/create [--from]/rename/delete。switch/close 已移除（CLI 不再变更全局当前项目）。
 func cliProject(c *client, pos []string) (any, error) {
-	// pos[0]="project"；第一个非 flag 位置参数是动作（list/switch/create/rename/delete，默认 list）
+	// pos[0]="project"；第一个非 flag 位置参数是动作（list/create/rename/delete，默认 list）
 	args := pos[1:]
 	sub := "list"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -476,11 +505,6 @@ func cliProject(c *client, pos []string) (any, error) {
 	switch sub {
 	case "list", "":
 		return c.get("/projects")
-	case "switch":
-		if len(args) < 1 {
-			return nil, fmt.Errorf("用法: project switch <id|名称>")
-		}
-		return c.post("/projects", map[string]any{"action": "switch", "id": strings.Join(args, " ")})
 	case "create":
 		fs := flag.NewFlagSet("project-create", flag.ContinueOnError)
 		from := fs.String("from", "", "从指定项目复制规则+域名组（id|名称）")
@@ -519,10 +543,8 @@ func cliProject(c *client, pos []string) (any, error) {
 			return nil, fmt.Errorf("用法: project delete <id|名称>")
 		}
 		return c.post("/projects", map[string]any{"action": "delete", "id": strings.Join(args, " ")})
-	case "close":
-		return c.post("/projects", map[string]any{"action": "close"})
 	default:
-		return nil, fmt.Errorf("未知 project 子命令: %s（list|switch|create|rename|delete|close）", sub)
+		return nil, fmt.Errorf("未知 project 子命令: %s（list|create|rename|delete）", sub)
 	}
 }
 
@@ -1162,7 +1184,7 @@ func printResult(v any, pretty bool) {
 type client struct {
 	base       string
 	token      string
-	project    string       // 目标项目（M9：全局 --project/-P；空=当前项目）
+	project    string       // 目标项目（--project/-P；rules/settings/domains 类命令必填）
 	http       *http.Client // 普通请求-响应（含快照拉取）
 	streamHTTP *http.Client // SSE 事件流长连接（watch 专用：无总超时、独立连接不复用）
 }

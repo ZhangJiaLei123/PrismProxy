@@ -1,10 +1,14 @@
 # PrismProxy AI CLI 使用说明
 
-PrismProxy 内置一个**本地控制 CLI**：同一个 `PrismProxy.exe` 既可以启动抓包实例（GUI 或 headless），也可以用 `cli` 子命令控制正在运行的实例——查询状态、读取/清空流量、增改规则、切换系统代理、修改配置，甚至驱动 GUI 界面动作。
+PrismProxy 内置一个**本地控制 CLI**：同一个 `PrismProxy.exe` 既可以启动抓包实例（GUI 或 headless），也可以用 `cli` 子命令控制正在运行的实例——查询状态、读取/清空流量、增改规则、切换系统代理、修改配置，甚至驱动 GUI 界面动作。另有同源码的控制台专用入口 `prism-cli.exe`（交互式终端推荐，见 §1.1），`cli` 子命令与 `PrismProxy.exe` 完全同构。
 
 它的设计目标读者是 **AI agent / 自动化脚本**：默认输出单行 JSON（stdout），错误信息走 stderr 并以非零码退出，便于程序化解析；加 `--pretty` 可切换为人类可读的缩进格式。
 
 > 设计与实现细节见 [方案.md](./方案.md) §4.12；实时推送（`flows watch` / SSE）设计见 [CLI实时推送设计.md](./CLI实时推送设计.md)；多项目隔离与目标项目写入规则见 [项目配置设计.md](./项目配置设计.md) §6.3；开发/验收记录见 [开发进度.md](./开发进度.md) 的 M8/M9 章节。
+
+> **破坏性变更（2026-09-19，详见 [CLI项目操作显式化设计.md](./CLI项目操作显式化设计.md)）**：
+> 1. `project switch` / `project close` 命令已**移除**（旧脚本收到 exit 2 + 引导文案）——切换/关闭项目请在 GUI 顶栏操作；
+> 2. `rules` / `settings` / `domains` 全部子命令须用 `--project/-P` **显式指定目标项目**（不再默认作用于当前项目，旧脚本缺省收到 exit 2）——防止多 CLI / 多 AI 会话并发操作同一实例时随切换漂移互相踩踏。
 
 ---
 
@@ -16,15 +20,36 @@ PrismProxy.exe                  :: GUI 模式（正常双击启动等价）
 PrismProxy.exe -headless        :: 无界面模式（后台常驻，适合服务器/自动化）
 
 :: 2. 另开终端，用 cli 子命令控制它
-PrismProxy.exe cli status --pretty
-PrismProxy.exe cli flows list --limit 5
-PrismProxy.exe cli rules ignore host api.example.com
+::    交互式终端（cmd / PowerShell）推荐 prism-cli.exe（原因见 §1.1）；
+::    AI 工具 / 脚本（经管道或重定向启动）两种入口均可
+prism-cli.exe cli status --pretty
+prism-cli.exe cli flows list --limit 5
+prism-cli.exe cli rules ignore host api.example.com -P 默认项目
 ```
 
 CLI 与实例之间通过**本地回环控制 API**（默认 `127.0.0.1:9595`，与代理端口 9090 相互独立）通信。实例启动时自动生成随机 token 并把 `{addr, token}` 写入 **`config/ctl-endpoint.json`**（exe 同级 config 目录，与 settings.json 同目录；权限收紧为当前用户可读）。CLI 默认自动发现该文件，**无需手动传地址或 token**。
 
 - 实例正常退出时自动删除 endpoint 文件；若实例被强杀导致文件残留，CLI 会报连接失败（友好提示），下次启动自动覆盖。
 - GUI 与 headless 两种模式都开放控制 API，命令行为完全一致；仅 `ui` 界面类命令在 headless 下返回 `"ui": false`。
+
+### 1.1 交互式终端请用 prism-cli.exe（console 子系统入口）
+
+`PrismProxy.exe` 是 GUI 子系统（windowsgui）程序，**cmd/PowerShell 不会等待它**：在交互式终端里直接裸跑 `PrismProxy.exe cli help`，提示符会先打印出来，帮助文本出现在下一个提示符之后（看起来像多敲了一条命令）。这是 GUI 子系统的固有行为，进程内无法修复。
+
+为此提供同源码的控制台子系统入口 **`prism-cli.exe`**（`build\bin\prism-cli.exe`，初名 `prism.exe`，2026-09-19 更名）：console 进程会被 cmd/PowerShell 等待，输出次序与退出码天然正确。
+
+```bat
+:: 交互式终端推荐（cmd / PowerShell / Windows Terminal）
+prism-cli.exe cli help
+prism-cli.exe cli status --pretty
+
+:: AI 工具 / 脚本（经管道或重定向启动）两种入口均可，PrismProxy.exe 行为不变
+PrismProxy.exe cli status
+```
+
+- `prism-cli.exe` 与 `PrismProxy.exe` 的 `cli` 子命令完全同构（同一套代码），帮助文本会按实际入口显示 exe 名。
+- `prism-cli.exe` 只承载 CLI：不带 `cli` 参数会报错引导（exit 2）；图形界面请运行 `PrismProxy.exe`。
+- 重建命令：`go build -tags prismcli -o build\bin\prism-cli.exe .`（与 `wails build` 相互独立）。
 
 ---
 
@@ -55,22 +80,24 @@ CLI 与实例之间通过**本地回环控制 API**（默认 `127.0.0.1:9595`，
   adb test [--adb 路径]                   测试 adb 连通性并列出已连接设备
   adb set [--adb 路径] [--serial 序列号]  给设备写全局 http_proxy（指向本机代理）
   adb clear [--adb 路径] [--serial ...]   清除设备全局 http_proxy
-  domains list                           域名组清单（--project 可指定目标项目）
+  domains list --project <id|名称>       域名组清单
   domains get <id>                       查看域名组原始文本
   domains save <id> <域名...>            新建/覆盖域名组（空格分隔，每行一个域名）
   domains import <文件路径|URL> [--id]   从本地 txt 或 http(s) URL 导入域名组
   domains delete <id>                    删除自定义域名组
-  rules export [--embed]                 导出规则 JSON（原文直出 stdout，可 > 文件）
+  rules export --project <id|名称> [--embed]
+                                         导出规则 JSON（原文直出 stdout，可 > 文件）
   rules import <文件路径|URL>            导入规则（整体替换，内嵌域名组自动补建）
   compose <URL> [--method M] [--header 'K: V']... [--body 文本] [--insecure]
                                          调试重发：独立直连目标，结果作为新流入列表
+                                         （--header 可重复；值可含分号如 Cookie，每个 --header 一个头）
   processes                              枚举系统运行中进程名（ignore process 候选）
-  project list                           项目列表 + 当前项目
-  project switch <id|名称>               切换当前项目（运行中热切换，规则与流量历史随之切换）
-  project create <名称> [--from id|名称] 新建项目并切换；--from 从指定项目复制规则+域名组
-  project rename <id|名称> <新名称>      重命名项目
-  project delete <id|名称>               删除项目（当前项目不可删）
-  rules list                             过滤规则组 + 解密规则
+  project list                           项目列表 + 当前项目（当前项目仅 GUI 可切换/关闭）
+  project create <名称> [--from id|名称] 新建项目（不自动切换，当前项目仅 GUI 可变更）；
+                                         --from 从指定项目复制规则+域名组
+  project rename <id|名称> <新名称>      重命名项目（名称含空格时用 --name 指定新名）
+  project delete <id|名称>               删除项目（不能删当前项目；欢迎页态下可删任意项目）
+  rules list --project <id|名称>         过滤规则组 + 解密规则
   rules ignore host <域名>               快捷忽略域名（自身+全部子域）
   rules ignore process <进程名>          快捷忽略进程
   rules group <id> enable|disable        启用/停用过滤规则组
@@ -78,12 +105,14 @@ CLI 与实例之间通过**本地回环控制 API**（默认 `127.0.0.1:9595`，
   sysproxy status                        系统代理状态（off|on|occupied）
   sysproxy on                            接管系统代理
   sysproxy off                           恢复系统代理
-  settings get                           读取全部配置（JSON）
+  settings get --project <id|名称>       读取全部配置（JSON）
   settings set <key> <value>             改单项配置（读-改-写，自动热应用）
   ui clear                               清除记录列表（headless 下仅清数据）
   ui settings [tab]                      打开 GUI 设置面板
                                          （tab: general|network|pool|adb|decrypt|capture|domains|ai）
 ```
+
+示例中的 `PrismProxy.exe` 可整体替换为 `prism-cli.exe`（交互式终端推荐，见 §1.1）；`cli help` 帮助文本按实际入口自动显示 exe 名，无需区分。
 
 全局参数可放在子命令前或后：
 
@@ -92,13 +121,15 @@ CLI 与实例之间通过**本地回环控制 API**（默认 `127.0.0.1:9595`，
 | `--pretty` | 缩进输出，便于人眼阅读（默认单行 JSON） |
 | `--addr <host:port>` | 手动指定控制 API 地址（默认自动发现） |
 | `--token <token>` | 手动指定 token（默认自动发现） |
-| `--project <id\|名称>` / `-P` | 目标项目（**rules/settings/domains 类命令生效**，M9）：空=当前项目；指定非当前项目时只改其配置文件（project.json + 该项目 domains 目录），不切换当前项目、不影响运行中的代理；`flows`/`proxy`/`ca`/`adb`/`compose`/`sysproxy`/`status`/`ui` 命令不受影响。项目解析顺序：id 精确匹配 → 名称匹配（重名报错并提示改用 id）→ 不存在时报错并列出全部可用项目 |
+| `--project <id\|名称>` / `-P` | 目标项目（**rules/settings/domains 类命令必填**，M9 起）：不再默认作用于"当前项目"（防止多 CLI / 多 AI 会话并发操作互相踩踏），缺省直接报错（exit 2）；指定**当前项目**时内存修改 + 落盘并热生效，指定**非当前项目**时只改其配置文件（project.json + 该项目 domains 目录），不切换当前项目、不影响运行中的代理；`flows`/`proxy`/`ca`/`adb`/`compose`/`sysproxy`/`status`/`ui` 命令不受影响。项目解析顺序：id 精确匹配 → 名称匹配（重名报错并提示改用 id）→ 不存在时报错并列出全部可用项目 |
 
 退出码：`0` 成功；`1` 运行错误（实例未运行、HTTP 4xx/5xx 等，错误信息在 stderr）；`2` 用法错误（未知命令/缺参数）。`cli help` 无需实例在线即可查看帮助。
 
 ---
 
 ## 3. 命令详解与输出示例
+
+> 下文示例统一写 `PrismProxy.exe`。在交互式终端手动执行时请替换为 `prism-cli.exe`（cmd/PowerShell 会等待其输出，次序正确，见 §1.1）；AI 工具 / 脚本经管道或重定向调用时两者均可。
 
 ### 3.1 status — 实例总状态
 
@@ -131,7 +162,7 @@ PrismProxy.exe cli status --pretty
 
 - `proxy.running`：代理监听是否在运行；`mode`：`MITM`（解密）或 `tunnel-only`（仅透传）。
 - `systemProxy.state`：`off`（未接管）/ `on`（本工具已接管）/ `occupied`（系统代理指向别处，未被本工具占用）。
-- `project`：当前项目（id + 名称，M9）；`rules`/`settings` 不带 `--project` 时均作用于该项目。
+- `project`：当前项目（id + 名称，M9）。当前项目仅 GUI 可切换；CLI 的 `rules`/`settings`/`domains` 命令必须用 `--project/-P` 显式指定目标项目，不随当前项目隐式生效。
 - `ui` / `headless`：当前是否为 GUI 模式——AI 可据此判断 `ui settings` 类命令是否会生效。
 
 ### 3.2 flows — 流量记录
@@ -184,27 +215,26 @@ PrismProxy.exe cli flows clear
 ### 3.3 rules — 规则管理
 
 ```bat
-PrismProxy.exe cli rules list
-PrismProxy.exe cli rules ignore host api.example.com     :: 之后该域名及其全部子域的流量不再入列表
-PrismProxy.exe cli rules ignore process curl.exe         :: 忽略该进程的所有流量
-PrismProxy.exe cli rules group grp_abc123 disable        :: 停用某个过滤规则组
-PrismProxy.exe cli rules group grp_abc123 enable
-PrismProxy.exe cli rules decrypt mitm api.example.com    :: 对该域名强制 MITM 解密
-PrismProxy.exe cli rules decrypt bypass pay.example.com  :: 对该域名跳过解密（盲透传）
-PrismProxy.exe cli rules export --embed > rules.json     :: 导出规则（JSON 原文直出 stdout）
-PrismProxy.exe cli rules import rules.json               :: 从本地文件导入（整体替换）
-PrismProxy.exe cli rules import https://example.com/rules.json [--project 项目id]
+PrismProxy.exe cli rules list -P 商城联调                   :: 指定目标项目（必填，id 或名称）
+PrismProxy.exe cli rules ignore host api.example.com -P 商城联调  :: 之后该域名及其全部子域的流量不再入列表
+PrismProxy.exe cli rules ignore process curl.exe -P 商城联调      :: 忽略该进程的所有流量
+PrismProxy.exe cli rules group grp_abc123 disable -P 商城联调     :: 停用某个过滤规则组
+PrismProxy.exe cli rules decrypt mitm api.example.com -P 商城联调 :: 对该域名强制 MITM 解密
+PrismProxy.exe cli rules decrypt bypass pay.example.com -P 商城联调 :: 对该域名跳过解密（盲透传）
+PrismProxy.exe cli rules export --embed -P 商城联调 > rules.json  :: 导出规则（JSON 原文直出 stdout）
+PrismProxy.exe cli rules import rules.json -P 商城联调            :: 从本地文件导入（整体替换）
+PrismProxy.exe cli rules import https://example.com/rules.json -P 抖音专项
 ```
 
-- **export `[--embed]`**：把规则导出为规则文件 JSON（`version`/`exportedAt`/`filterGroups`/`decryptRules`/`bypassList`/`groups`）。**JSON 原文直接写到 stdout**（不经结果封装），请重定向保存：cmd 用 `PrismProxy.exe cli rules export --embed > rules.json`；**PowerShell 5.1 注意**：原生 `>` 会产生 0 字节文件（管道提前关闭），`Out-File -Encoding utf8` 会写入 UTF-8 BOM，请改用 `cmd /c "PrismProxy.exe cli rules export --embed > rules.json 2>nul"`，或 PowerShell 7（`>` 默认无 BOM）。`--embed` 时把规则组通过 `@组id` 引用到的域名组全文内嵌进 `groups`，便于跨实例迁移。`bypassList`（系统代理绕过列表）是全局环境属性，仅随出供参照。
-- **import `<本地文件路径 | http(s) URL>`**：整体替换目标项目的规则。来源由**运行中的实例读取**（本地路径相对实例工作目录，或 http(s) 下载，限 4MB/20s）；**自动容忍 UTF-8 BOM**（PowerShell 5.1 落盘文件常见）；文件内嵌的域名组会自动补建到目标项目 domains 目录；导入前做规则编译预检，非法规则拒绝且不落盘；`bypassList` 字段导入时忽略并给 warning。返回 `{"ok": true, "warnings": [...]}`。当前项目导入立即生效（引擎热重建）；带 `--project` 指向非当前项目时只改文件，切到该项目后生效。
+- **export `[--embed]`**：把规则导出为规则文件 JSON（`version`/`exportedAt`/`filterGroups`/`decryptRules`/`bypassList`/`groups`）。**JSON 原文直接写到 stdout**（不经结果封装），请重定向保存：cmd 用 `PrismProxy.exe cli rules export --embed -P 商城联调 > rules.json`；**PowerShell 5.1 注意**：原生 `>` 会产生 0 字节文件（管道提前关闭），`Out-File -Encoding utf8` 会写入 UTF-8 BOM，请改用 `cmd /c "PrismProxy.exe cli rules export --embed -P 商城联调 > rules.json 2>nul"`，或 PowerShell 7（`>` 默认无 BOM）。`--embed` 时把规则组通过 `@组id` 引用到的域名组全文内嵌进 `groups`，便于跨实例迁移。`bypassList`（系统代理绕过列表）是全局环境属性，仅随出供参照。
+- **import `<本地文件路径 | http(s) URL>`**：整体替换目标项目的规则。来源由**运行中的实例读取**（本地路径相对实例工作目录，或 http(s) 下载，限 4MB/20s）；**自动容忍 UTF-8 BOM**（PowerShell 5.1 落盘文件常见）；文件内嵌的域名组会自动补建到目标项目 domains 目录；导入前做规则编译预检，非法规则拒绝且不落盘；`bypassList` 字段导入时忽略并给 warning。返回 `{"ok": true, "warnings": [...]}`。`-P` 指向**当前项目**时导入立即生效（引擎热重建）；指向**非当前项目**时只改文件，GUI 切到该项目后生效。
 
-- **list** 返回 `project`（目标项目 id）、`filterGroups`（过滤规则组，含 id/名称/启用状态/黑白名单模式/hosts/paths/processes 条目）、`decryptRules`（解密规则）、`quickIgnore`（两个内置快捷忽略组的 id）。带 `--project` 时读取并返回**目标项目**的规则（读其 project.json，不影响运行状态）。
+- **list** 返回 `project`（目标项目 id）、`filterGroups`（过滤规则组，含 id/名称/启用状态/黑白名单模式/hosts/paths/processes 条目）、`decryptRules`（解密规则）、`quickIgnore`（两个内置快捷忽略组的 id）。读取并返回 `-P` 指定**目标项目**的规则（读其 project.json，不影响运行状态）。
 - **ignore** 写入内置「快捷忽略」组（域名组/进程组，组间 OR 互不干扰），幂等（重复添加返回 `{"added": false}`）；**只影响后续新流量，不删存量记录**；立即生效并落盘。
   - 域名按**裸域名语义**匹配：`example.com` 同时覆盖自身与全部子域。
 - **group** 启用/停用过滤规则组（id 取自 `rules list`）；不存在的 id 返回 400。
 - **decrypt** 追加解密规则并热重建引擎；`mitm` = 强制解密，`bypass` = 跳过解密（CONNECT 直接隧道）。
-- **目标项目写入语义（M9）**：`--project` 指向**当前项目** → 内存修改 + 落盘 + 引擎热重建（立即生效）；指向**非当前项目** → 只修改该项目的 project.json（写入前做规则编译校验，非法规则被拒绝且不落盘），不改变当前项目、不触发热切换、不影响运行中的代理——修改要到下次 `project switch` 切到该项目时才生效。
+- **目标项目写入语义（M9）**：`-P` 指向**当前项目** → 内存修改 + 落盘 + 引擎热重建（立即生效）；指向**非当前项目** → 只修改该项目的 project.json（写入前做规则编译校验，非法规则被拒绝且不落盘），不改变当前项目、不触发热切换、不影响运行中的代理——修改要到 GUI 顶栏切到该项目时才生效。
 
 ### 3.4 sysproxy — 系统代理开关
 
@@ -219,18 +249,18 @@ PrismProxy.exe cli sysproxy off        :: 恢复备份
 ### 3.5 settings — 配置读写
 
 ```bat
-PrismProxy.exe cli settings get
-PrismProxy.exe cli settings set maxFlows 5000
-PrismProxy.exe cli settings set listenAddr 127.0.0.1:9090
-PrismProxy.exe cli settings set autoSysProxy true
+PrismProxy.exe cli settings get -P 商城联调
+PrismProxy.exe cli settings set maxFlows 5000 -P 商城联调
+PrismProxy.exe cli settings set listenAddr 127.0.0.1:9090 -P 商城联调
+PrismProxy.exe cli settings set autoSysProxy true -P 商城联调
 ```
 
-- **get**：返回完整配置合并视图（监听地址、上游代理、存储上限 maxFlows/maxBodyMB、规则组、解密规则、绕过列表、界面偏好等）。带 `--project` 时规则类字段（filterGroups/decryptRules/rulesProject）取目标项目，环境类字段仍为全局值。
+- **get**：返回完整配置合并视图（监听地址、上游代理、存储上限 maxFlows/maxBodyMB、规则组、解密规则、绕过列表、界面偏好等）。规则类字段（filterGroups/decryptRules/rulesProject）取 `-P` 指定的目标项目，环境类字段仍为全局值。
 - **set `<key> <value>`**：读-改-写（先 GET 全量 → 改一个键 → PUT 整体提交），后端做校验并**热应用**（监听地址/上游变更会自动重启代理）。
   - 值自动按 JSON 标量解析：`true`/`false` → 布尔，纯数字 → 数字，其余 → 字符串。
   - 返回 `{"ok": true, "key": ..., "value": ..., "warnings": [...]}`；`warnings` 非空表示保存成功但有告警（如规则引用了不存在的域名组）。
   - 常用 key：`maxFlows`（流上限）、`maxBodyMB`（体上限）、`listenAddr`、`upstreamMode`（`direct`/`system`/`manual`）、`upstreamProxy`、`autoSysProxy`（启动自动接管系统代理）、`showSysProxySwitch`、`bypassList`（需整体替换时建议直接用 get/PUT HTTP API）。
-  - **目标项目语义（M9）**：`--project` 指非当前项目时，规则类字段写入该项目 project.json（编译校验通过才落盘），环境类字段仍走全局保存；入参中的 currentProject/projects 一律被忽略——切换项目唯一入口是 `project switch`。
+  - **目标项目语义（M9）**：`-P` 指非当前项目时，规则类字段写入该项目 project.json（编译校验通过才落盘），环境类字段仍走全局保存；入参中的 currentProject/projects 一律被忽略。当前项目仅 GUI 可切换（CLI 的 `project switch` 已移除）。
 
 ### 3.6 ui — GUI 界面控制
 
@@ -300,28 +330,28 @@ PrismProxy 支持**多项目隔离**：过滤规则、解密规则、用户域�
 
 ```bat
 PrismProxy.exe cli project list                          :: 项目清单 + 当前项目
-PrismProxy.exe cli project switch 商城联调               :: 热切换（id 或名称均可）
-PrismProxy.exe cli project create 抖音专项               :: 新建空白项目并切换
-PrismProxy.exe cli project create 抖音专项 --from 商城联调 :: 从"商城联调"复制规则+域名组后切换
+PrismProxy.exe cli project create 抖音专项               :: 新建空白项目（不切换）
+PrismProxy.exe cli project create 抖音专项 --from 商城联调 :: 从"商城联调"复制规则+域名组（不切换）
 PrismProxy.exe cli project rename 抖音专项 "抖音联调"    :: 重命名
 PrismProxy.exe cli project delete 商城联调               :: 删除项目（目录连历史库一起删除）
 ```
 
 - **list**：返回 `{"projects": [{id, name}, ...], "currentProject": "<id>"}`。
-- **switch**：运行中热切换，等价 GUI 顶栏切换器——代理不重启、规则引擎热重建、内存流量列表清空（含置顶）后载入新项目历史（若该项目开启持久化）。切换失败不留半切换态（配置损坏/规则编译失败时整体拒绝）。
-- **create**：新建项目并自动切换；`--from` 从指定项目复制过滤/解密规则与整个域名组目录，**不复制流量历史**（prism.db 全新空白）。名称重复自动加序号（如 "专项-2"）。
+- **switch / close 已移除（本版破坏性变更）**：CLI 不再提供切换/关闭项目命令，执行直接报错（exit 2）并引导去 GUI 操作。当前项目由 GUI 顶栏独占管理，避免多 CLI / 多 AI 会话并发切换互相踩踏；`rules`/`settings`/`domains` 一律用 `--project/-P` 指定目标项目，无"当前项目"隐式态。
+- **create**：新建项目，**不自动切换**当前项目；`--from` 从指定项目复制过滤/解密规则与整个域名组目录，**不复制流量历史**（prism.db 全新空白）。名称重复自动加序号（如 "专项-2"）。
 - **rename / delete**：重命名（重名自动加序号）/ 删除（连 `config/projects/<id>/` 整个目录）。**当前项目不可删、至少保留一个项目**。
 - 项目解析：参数可传 id 或名称；名称重名时报错并提示改用 id，不存在时列出全部可用项目。
 
 典型多项目自动化链路：
 
 ```bat
-:: 1. 为每个被测 App 建项目（规则从模板项目复制）
+:: 1. 为每个被测 App 建项目（规则从模板项目复制；不切换、不影响当前抓包）
 PrismProxy.exe cli project create AppA --from 商城联调
-:: 2. 切到 AppA 后的抓包/规则操作都只影响该项目
-PrismProxy.exe cli rules ignore host api.appA.com
-:: 3. 也可以不切换，直接给别的项目预写规则（下次切换过去才生效）
-PrismProxy.exe cli rules decrypt mitm api.appB.com --project AppB
+:: 2. 直接给 AppA 预写规则（只落盘，不影响运行中的代理）
+PrismProxy.exe cli rules ignore host api.appA.com -P AppA
+:: 3. 给当前项目改规则也必须显式 -P，命中当前项目即热生效
+PrismProxy.exe cli rules decrypt mitm api.x.com -P 商城联调
+:: 4. 需要切到新项目抓包时，在 GUI 顶栏切换（CLI 已无 project switch）
 ```
 
 ### 3.9 proxy / ca — 代理启停与根证书
@@ -353,22 +383,22 @@ PrismProxy.exe cli adb clear                          :: 清除设备 http_proxy
 
 ### 3.11 domains — 域名组管理
 
-域名组是命名的域名集合（txt，每行一个裸域名，`#` 开头注释），规则组通过 `@组id` 引用。全部组按项目隔离存储，本组命令受 `--project` 影响。
+域名组是命名的域名集合（txt，每行一个裸域名，`#` 开头注释），规则组通过 `@组id` 引用。全部组按项目隔离存储，本组命令必须用 `--project/-P` 指定目标项目。
 
 ```bat
-PrismProxy.exe cli domains list                                   :: 清单（id/名称/域名数/是否自定义）
-PrismProxy.exe cli domains get mall                               :: 查看组原文 {project,id,text}
-PrismProxy.exe cli domains save mytest api.a.com www.b.com c.com  :: 新建/覆盖（空格分隔）
-PrismProxy.exe cli domains import D:\lists\mall.txt               :: 从本地文件导入
-PrismProxy.exe cli domains import https://example.com/g.json --id remote-grp
-PrismProxy.exe cli domains delete mytest                          :: 删除自定义组
+PrismProxy.exe cli domains list -P 商城联调                        :: 清单（id/名称/域名数/是否自定义）
+PrismProxy.exe cli domains get mall -P 商城联调                    :: 查看组原文 {project,id,text}
+PrismProxy.exe cli domains save mytest api.a.com www.b.com c.com -P 商城联调 :: 新建/覆盖（空格分隔）
+PrismProxy.exe cli domains import D:\lists\mall.txt -P 商城联调    :: 从本地文件导入
+PrismProxy.exe cli domains import https://example.com/g.json --id remote-grp -P 商城联调
+PrismProxy.exe cli domains delete mytest -P 商城联调               :: 删除自定义组
 ```
 
-- **list**：当前项目返回内存全量清单（含内置组分发信息）；带 `--project` 读目标项目 domains 目录构建，返回 `{"project": "...", "groups": [{id, name, count, custom}, ...]}`。
+- **list**：返回 `-P` 指定目标项目的全量清单（目标为当前项目时含内置组分发信息），格式 `{"project": "...", "groups": [{id, name, count, custom}, ...]}`。
 - **save `<id> <域名...>`**：新建或整体覆盖一个组，位置参数以空格分隔（服务端按行落盘，等价每行一个域名）。组 id 须匹配 `^[a-z0-9][a-z0-9-]{0,63}$`。
 - **import `<文件路径 | http(s) URL> [--id <组id>]`**：来源由实例读取（本地/URL，限 4MB/20s）；id 缺省取来源文件名（去扩展名）；同 id 覆盖。
 - **delete `<id>`**：删除用户自定义组（domains 目录下对应 txt）。
-- **目标项目语义**：写当前项目 → 落盘 + 引擎热更新立即生效；写非当前项目（`--project`）→ 只写其 domains 目录，不热更新，切到该项目后生效。规则组引用的组不存在时 settings 保存/规则导入会给 warning。
+- **目标项目语义**：`-P` 指向**当前项目** → 落盘 + 引擎热更新立即生效；指向**非当前项目** → 只写其 domains 目录，不热更新，GUI 切到该项目后生效。规则组引用的组不存在时 settings 保存/规则导入会给 warning。
 
 ### 3.12 compose — 调试重发（Composer）
 
@@ -452,11 +482,12 @@ status 输出示例（`--pretty`）：
   1. `sysproxy on`（或让目标应用显式走 `127.0.0.1:9090`）；
   2. 操作目标 App 产生流量；
   3. `flows list --filter <关键字>` 定位流，`flows get <id> --body resp` 取响应体分析；需要重放时 `flows curl <id>` 生成 cURL 或 `compose <URL> ...` 直接重发；
-  4. 噪声太多时 `processes` 找进程名 → `rules ignore process <进程名>` 收敛，或 `rules group <id> disable` 临时关规则组；
+  4. 噪声太多时 `processes` 找进程名 → `rules ignore process <进程名> -P <项目>` 收敛，或 `rules group <id> disable -P <项目>` 临时关规则组；
   5. 结束后 `sysproxy off` 恢复系统代理。
 - **设备抓包链路（模拟器/真机）**：`adb devices` 确认设备配置 → `proxy start`（或 `sysproxy on`）→ `adb set` 给设备写代理 → 设备上操作 App → `flows list --filter` 分析 → `adb clear` 清除设备代理（实例退出也会自动清 autoSet 设备）。
-- **配置即代码**：`rules export --embed > rules.json` 把当前项目规则与内嵌域名组纳入版本管理；换机器/换项目时 `rules import <文件|URL>`（或 `domains import`）整体下发；写非当前项目加 `--project <id>` 预配置，不影响正在抓包的实例。
-- **直接调 HTTP API**：CLI 只是薄封装，也可以直接用任意 HTTP 客户端访问 `http://127.0.0.1:9595/api/v1/...`，请求头带 `Authorization: Bearer <token>`（或 `X-Prism-Token: <token>`），token 从 `config/ctl-endpoint.json` 读取。路由与 CLI 命令一一对应：`GET /flows?filter=&limit=`、`POST /flows/clear`（注意：裸 `POST /flows` 不带 action 会 400）、`GET/POST /flows/{id}/body|pin|curl`、`GET/PUT /settings`、`POST /ui/settings|clear`、`POST /proxy`（`{action:start|stop}`）、`POST /ca/install`、`GET /adb`、`POST /adb/{test|set|clear}`、`GET/POST/DELETE /domains[/{id}|/import]`、`GET /rules/export`（原文 JSON）、`POST /rules/import`、`POST /compose`、`GET /processes`；项目类：`GET /projects`（清单）、`POST /projects`（`{"action":"switch|create|rename|delete", ...}`）。rules/settings/domains 类端点支持 `?project=<id|名称>` 查询参数指定目标项目。实时推送走 SSE 端点 `GET /events?channels=flows,status`（唯一支持 query 参数 `token=` 的端点，详见 §3.7）。
+- **配置即代码**：`rules export --embed -P <项目> > rules.json` 把指定项目规则与内嵌域名组纳入版本管理；换机器/换项目时 `rules import <文件|URL> -P <项目>`（或 `domains import`）整体下发；`-P` 指向非当前项目时只落盘预配置，不影响正在抓包的实例，指向当前项目则立即热生效。
+- **tags / ai 命令的当前项目漂移（多项目自动化注意）**：复盘打标（`tags list|add|flows|flow|body|rename|delete|histogram|ignore`）与 AI 分析（`ai config|test|chat`）**不支持 `--project`**，读写的是实例**当前项目**的数据（tags/flows 查询与 `ai chat` 取数均落在当前项目的归档库；`ai config` 配置本身是全局不受影响）。若自动化批次进行期间有人在 GUI 顶栏切换了项目，同一脚本前后两次调用会作用于不同项目的数据。多项目工作流建议：每批 tags/ai 操作前先 `status` 核对 `project.id` 是否为预期项目；跨项目的打标/分析分批做，中途避免 GUI 切换。
+- **直接调 HTTP API**：CLI 只是薄封装，也可以直接用任意 HTTP 客户端访问 `http://127.0.0.1:9595/api/v1/...`，请求头带 `Authorization: Bearer <token>`（或 `X-Prism-Token: <token>`），token 从 `config/ctl-endpoint.json` 读取。路由与 CLI 命令一一对应：`GET /flows?filter=&limit=`、`POST /flows/clear`（注意：裸 `POST /flows` 不带 action 会 400）、`GET/POST /flows/{id}/body|pin|curl`、`GET/PUT /settings`、`POST /ui/settings|clear`、`POST /proxy`（`{action:start|stop}`）、`POST /ca/install`、`GET /adb`、`POST /adb/{test|set|clear}`、`GET/POST/DELETE /domains[/{id}|/import]`、`GET /rules/export`（原文 JSON）、`POST /rules/import`、`POST /compose`、`GET /processes`；项目类：`GET /projects`（清单）、`POST /projects`（`{"action":"create|rename|delete", ...}`；`switch`/`close` action 已移除，返回 400）。rules/settings/domains 类端点 `?project=<id|名称>` **必填**（缺省返回 400）。实时推送走 SSE 端点 `GET /events?channels=flows,status`（唯一支持 query 参数 `token=` 的端点，详见 §3.7）。
 
 ## 5. 安全说明
 

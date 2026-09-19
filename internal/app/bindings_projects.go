@@ -103,12 +103,10 @@ func (a *App) switchProjectLocked(id string) error {
 	return nil
 }
 
-// CreateProject 新建项目并自动切换（设计 §5.4）。
+// createProjectNoSwitch 新建项目（清单登记 + 目录 + 落盘 + 失败回滚），不切换当前项目
+//（doc/CLI项目操作显式化设计.md：CLI 建项目不再触发切换；调用方须持 projMu）。
 // fromID 非空=从该项目复制规则与整个 domains/（不复制历史库）；重名自动加序号。
-func (a *App) CreateProject(name, fromID string) (settings.ProjectMeta, error) {
-	a.projMu.Lock()
-	defer a.projMu.Unlock()
-
+func (a *App) createProjectNoSwitch(name, fromID string) (settings.ProjectMeta, error) {
 	meta, err := settings.CreateProjectDir(a.cfgDir, a.gcfg, name, fromID)
 	if err != nil {
 		return settings.ProjectMeta{}, err
@@ -124,8 +122,21 @@ func (a *App) CreateProject(name, fromID string) (settings.ProjectMeta, error) {
 		_ = settings.DeleteProjectDir(a.cfgDir, meta.ID)
 		return settings.ProjectMeta{}, fmt.Errorf("全局配置落盘: %w", serr)
 	}
-	// 创建后自动切换（项目已在清单，switchProjectLocked 不会再失败于"不存在"，
-	// 但配置损坏/规则编译失败仍可能拒绝：此时项目保留在清单中，仅未切换）
+	return meta, nil
+}
+
+// CreateProject 新建项目并自动切换（GUI 语义不变：Wails binding，前端零改动）。
+// fromID 非空=从该项目复制规则与整个 domains/（不复制历史库）；重名自动加序号。
+func (a *App) CreateProject(name, fromID string) (settings.ProjectMeta, error) {
+	a.projMu.Lock()
+	defer a.projMu.Unlock()
+
+	meta, err := a.createProjectNoSwitch(name, fromID)
+	if err != nil {
+		return settings.ProjectMeta{}, err
+	}
+	// 创建后自动切换（仅 GUI 路径；项目已在清单，switchProjectLocked 不会再失败于
+	// "不存在"，但配置损坏/规则编译失败仍可能拒绝：此时项目保留在清单中，仅未切换）
 	if serr := a.switchProjectLocked(meta.ID); serr != nil {
 		return meta, fmt.Errorf("项目已创建，但切换失败: %w", serr)
 	}
@@ -225,7 +236,13 @@ func (a *App) enterNoProjectLocked() {
 func (a *App) DeleteProject(id string) error {
 	a.projMu.Lock()
 	defer a.projMu.Unlock()
+	return a.deleteProjectLocked(id)
+}
 
+// deleteProjectLocked 删除实现（调用方持 projMu）。GUI binding 与 CLI/HTTP 桥接共用；
+// 桥接层须在持锁状态下完成「resolve → 拒删当前项目 → 删除」全流程，
+// 消除校验与删除之间的 TOCTOU 窗口（doc/CLI项目操作显式化设计.md §5.3）。
+func (a *App) deleteProjectLocked(id string) error {
 	idx := -1
 	for i, m := range a.gcfg.Projects {
 		if m.ID == id {

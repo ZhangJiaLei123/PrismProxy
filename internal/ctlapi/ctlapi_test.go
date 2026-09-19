@@ -31,7 +31,6 @@ type fakeService struct {
 	sysproxyAct   string
 	savedSettings []byte
 	projSeen      string // 最近一次规则/设置调用的 project 参数
-	switchTo      string
 
 	pinID     string // 最近一次 SetFlowPinned 调用
 	pinPinned bool
@@ -140,12 +139,6 @@ func (f *fakeService) ListProjects() any {
 		"currentProject": "p1",
 	}
 }
-func (f *fakeService) SwitchProject(idOrName string) (any, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.switchTo = idOrName
-	return map[string]any{"id": "p1", "name": "默认项目"}, nil
-}
 func (f *fakeService) CreateProject(name, from string) (any, error) {
 	return map[string]any{"id": "p2", "name": name, "from": from}, nil
 }
@@ -153,7 +146,6 @@ func (f *fakeService) RenameProject(idOrName, name string) (any, error) {
 	return map[string]any{"ok": true, "id": idOrName, "name": name}, nil
 }
 func (f *fakeService) DeleteProject(idOrName string) error { return nil }
-func (f *fakeService) CloseProject() error                 { return nil }
 func (f *fakeService) UIClear() (int, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -608,21 +600,21 @@ func TestFlowPinCurlEndpoints(t *testing.T) {
 	}
 }
 
-// rules 写入路径
+// rules 写入路径（项目操作显式化：rules 类请求必须携带 ?project=）
 func TestRulesEndpoints(t *testing.T) {
 	svc := &fakeService{}
 	_, addr, token := startTestServer(t, svc)
 
-	code, _ := doRequest(t, "POST", addr, token, "/rules",
+	code, _ := doRequest(t, "POST", addr, token, "/rules?project=p1",
 		strings.NewReader(`{"action":"ignore","target":"host","value":"example.com"}`))
 	if code != 200 {
 		t.Fatalf("rules ignore 应 200，得 %d", code)
 	}
-	if svc.ignoredTarget != "host" || svc.ignoredValue != "example.com" {
-		t.Fatalf("RuleIgnore 参数错误: %s %s", svc.ignoredTarget, svc.ignoredValue)
+	if svc.ignoredTarget != "host" || svc.ignoredValue != "example.com" || svc.projSeen != "p1" {
+		t.Fatalf("RuleIgnore 参数错误: %s %s project=%s", svc.ignoredTarget, svc.ignoredValue, svc.projSeen)
 	}
 
-	code, _ = doRequest(t, "POST", addr, token, "/rules/groups/g1/enabled",
+	code, _ = doRequest(t, "POST", addr, token, "/rules/groups/g1/enabled?project=p1",
 		strings.NewReader(`{"enabled":false}`))
 	if code != 200 {
 		t.Fatalf("group enabled 应 200，得 %d", code)
@@ -631,7 +623,7 @@ func TestRulesEndpoints(t *testing.T) {
 		t.Fatalf("RuleGroupSetEnabled 参数错误: %s %v", svc.groupID, svc.groupEnabled)
 	}
 
-	code, _ = doRequest(t, "POST", addr, token, "/rules",
+	code, _ = doRequest(t, "POST", addr, token, "/rules?project=p1",
 		strings.NewReader(`{"action":"decrypt","kind":"bypass","host":"pinned.app"}`))
 	if code != 200 || svc.decryptAction != "bypass" || svc.decryptHost != "pinned.app" {
 		t.Fatalf("decrypt 参数/状态错误: code=%d %s %s", code, svc.decryptAction, svc.decryptHost)
@@ -648,9 +640,12 @@ func TestRulesEndpoints(t *testing.T) {
 func TestSettingsPut(t *testing.T) {
 	svc := &fakeService{}
 	_, addr, token := startTestServer(t, svc)
-	code, m := doRequest(t, "PUT", addr, token, "/settings", strings.NewReader(`{"maxFlows":3000}`))
+	code, m := doRequest(t, "PUT", addr, token, "/settings?project=p1", strings.NewReader(`{"maxFlows":3000}`))
 	if code != 200 {
 		t.Fatalf("PUT settings 应 200，得 %d", code)
+	}
+	if svc.projSeen != "p1" {
+		t.Fatalf("SaveSettings project 透传错误: %q", svc.projSeen)
 	}
 	if !strings.Contains(string(svc.savedSettings), "3000") {
 		t.Fatalf("SaveSettings 未收到新配置: %s", svc.savedSettings)
@@ -658,6 +653,76 @@ func TestSettingsPut(t *testing.T) {
 	warns, _ := m["warnings"].([]any)
 	if len(warns) != 1 {
 		t.Fatalf("warnings 应透传 1 条，得 %v", m["warnings"])
+	}
+}
+
+// 项目操作显式化（doc/CLI项目操作显式化设计.md §10）：
+// POST /projects action=switch/close → 400 + 引导文案；rules/settings/domains 缺 project query → 400
+func TestProjectExplicitness(t *testing.T) {
+	svc := &fakeService{}
+	_, addr, token := startTestServer(t, svc)
+
+	// switch / close action 已移除 → 400 + 引导文案
+	for _, action := range []string{"switch", "close"} {
+		code, m := doRequest(t, "POST", addr, token, "/projects",
+			strings.NewReader(`{"action":"`+action+`"}`))
+		if code != http.StatusBadRequest {
+			t.Fatalf("projects action=%s 应 400，得 %d (%v)", action, code, m)
+		}
+		if !strings.Contains(fmt.Sprint(m["error"]), "已移除") {
+			t.Fatalf("projects action=%s 文案应含「已移除」: %v", action, m["error"])
+		}
+	}
+
+	// 缺 project query → 400 + 提示文案
+	for _, tc := range []struct {
+		method, path string
+		body         io.Reader
+	}{
+		{"GET", "/rules", nil},
+		{"PUT", "/settings", strings.NewReader(`{}`)},
+		{"GET", "/domains", nil},
+	} {
+		code, m := doRequest(t, tc.method, addr, token, tc.path, tc.body)
+		if code != http.StatusBadRequest {
+			t.Fatalf("%s %s 缺 project 应 400，得 %d (%v)", tc.method, tc.path, code, m)
+		}
+		if !strings.Contains(fmt.Sprint(m["error"]), "缺少 project") {
+			t.Fatalf("%s %s 文案应含「缺少 project」: %v", tc.method, tc.path, m["error"])
+		}
+	}
+}
+
+// CLI 侧显式化校验：project switch/close 前置拦截 exit 2；rules/settings 缺 --project exit 2
+func TestCLIExplicitProject(t *testing.T) {
+	svc := &fakeService{uiOn: true}
+	srv, _, _ := startTestServer(t, svc)
+	dir := filepath.Dir(srv.endpoint)
+
+	if code := RunCLI(dir, []string{"project", "switch", "p1"}); code != 2 {
+		t.Fatalf("cli project switch 应 exit 2（已移除），得 %d", code)
+	}
+	if code := RunCLI(dir, []string{"project", "close"}); code != 2 {
+		t.Fatalf("cli project close 应 exit 2（已移除），得 %d", code)
+	}
+	if code := RunCLI(dir, []string{"rules", "list"}); code != 2 {
+		t.Fatalf("cli rules list 缺 --project 应 exit 2，得 %d", code)
+	}
+	if code := RunCLI(dir, []string{"settings", "get"}); code != 2 {
+		t.Fatalf("cli settings get 缺 --project 应 exit 2，得 %d", code)
+	}
+	// exit 2 路径不应触达 Service（无副作用）
+	if svc.projSeen != "" || svc.uiTab != "" {
+		t.Fatalf("exit 2 路径不应触达 Service: projSeen=%q uiTab=%q", svc.projSeen, svc.uiTab)
+	}
+
+	// 审计修订回归（2026-09-19）：缺 --project 校验前置于 newClient，实例未启动
+	// （无 endpoint 文件）时同一用法错误仍 exit 2，而非 exit 1 连接错误
+	if code := RunCLI(t.TempDir(), []string{"rules", "list"}); code != 2 {
+		t.Fatalf("离线时 rules list 缺 --project 仍应 exit 2，得 %d", code)
+	}
+	if code := RunCLI(t.TempDir(), []string{"domains", "list"}); code != 2 {
+		t.Fatalf("离线时 domains list 缺 --project 仍应 exit 2，得 %d", code)
 	}
 }
 
@@ -703,12 +768,12 @@ func TestRunCLIEndToEnd(t *testing.T) {
 	if svc.uiTab != "network" {
 		t.Fatalf("ui tab 应为 network，得 %q", svc.uiTab)
 	}
-	// rules ignore host
-	if code := RunCLI(dir, []string{"rules", "ignore", "host", "cli.example.com"}); code != 0 {
+	// rules ignore host（-P 显式指定目标项目；缺省时 RunCLI 直接 exit 2，见 TestCLIExplicitProject）
+	if code := RunCLI(dir, []string{"rules", "ignore", "host", "cli.example.com", "-P", "默认项目"}); code != 0 {
 		t.Fatalf("cli rules ignore 退出码应 0，得 %d", code)
 	}
-	if svc.ignoredValue != "cli.example.com" {
-		t.Fatalf("ignore value 应为 cli.example.com，得 %q", svc.ignoredValue)
+	if svc.ignoredValue != "cli.example.com" || svc.projSeen != "默认项目" {
+		t.Fatalf("ignore 透传错误: value=%q project=%q", svc.ignoredValue, svc.projSeen)
 	}
 
 	// 无实例（空目录）→ 非零退出码
