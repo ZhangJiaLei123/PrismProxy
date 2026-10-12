@@ -413,6 +413,7 @@ func (a *App) publishStatus() {
 	if hub != nil {
 		hub.Publish("status", a.ctlStatusSnapshot())
 	}
+	a.notifyTray() // serve 托盘状态跟随（未注册回调时零开销）
 }
 
 // publishStatusHoldingProj 调用方已持 projMu 时的免锁推送变体（SaveSettings 热应用等
@@ -425,6 +426,7 @@ func (a *App) publishStatusHoldingProj() {
 	if hub != nil {
 		hub.Publish("status", a.ctlStatusSnapshotWithProject(a.currentMeta()))
 	}
+	a.notifyTray()
 }
 
 // ctlHub 返回当前控制 API 的 SSE Hub；控制 API 未启动（端口占用降级）时为 nil。

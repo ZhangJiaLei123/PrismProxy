@@ -3,6 +3,7 @@ module prismproxy
 go 1.25.0
 
 require (
+	fyne.io/systray v1.12.2
 	github.com/andybalholm/brotli v1.2.3
 	github.com/klauspost/compress v1.20.0
 	github.com/wailsapp/wails/v2 v2.15.0

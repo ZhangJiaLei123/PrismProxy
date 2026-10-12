@@ -19,6 +19,10 @@
 *.test
 *.out
 
+# 运行时临时产物（构建日志、测试缓存）
+/cache/
+/logs/
+
 # IDE
 .idea/
 .vscode/

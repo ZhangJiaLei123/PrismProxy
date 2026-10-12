@@ -292,8 +292,10 @@ func (a *App) deleteProjectLocked(id string) error {
 	return nil
 }
 
-// emitProjectChanged 通知前端项目已切换/改名（载荷 {id, name}；设计 §6.2）
+// emitProjectChanged 通知项目已切换/改名：serve 托盘刷新（进程内回调，不依赖 Wails）
+// + 前端 Wails 事件（载荷 {id, name}；设计 §6.2）
 func (a *App) emitProjectChanged() {
+	a.notifyTray() // serve 下 a.ctx==nil，托盘刷新不受下方 Wails 分支早退影响
 	if a.ctx == nil {
 		return
 	}
